@@ -1,29 +1,32 @@
 
 import admin from 'firebase-admin';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const serviceAccountPath = path.resolve(__dirname, '../../service-account.json');
+import 'dotenv/config';
 
 // Initialize only once
 if (!admin.apps.length) {
     try {
-        if (fs.existsSync(serviceAccountPath)) {
-            const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+        const projectId = process.env.FIREBASE_PROJECT_ID;
+        const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+        const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+        if (projectId && clientEmail && privateKey) {
+            // Clean up the private key
+            let formattedKey = privateKey.trim();
+            if (formattedKey.startsWith('"') && formattedKey.endsWith('"')) {
+                formattedKey = formattedKey.substring(1, formattedKey.length - 1);
+            }
+            formattedKey = formattedKey.replace(/\\n/g, '\n');
+
             admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
+                credential: admin.credential.cert({
+                    projectId,
+                    clientEmail,
+                    privateKey: formattedKey
+                })
             });
-            console.log('Firebase initialized with service-account.json');
-        } else if (process.env.FIREBASE_CONFIG) {
-            const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
-            });
-            console.log('Firebase initialized with environment variables');
+            console.log('Firebase initialized with individual environment variables');
         } else {
-            console.warn('Firebase configuration missing. Push notifications may not work.');
+            console.warn('Firebase individual variables missing in .env. Push notifications will not work.');
         }
     } catch (error) {
         console.error('Failed to initialize Firebase:', error.message);
