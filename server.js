@@ -1,13 +1,13 @@
 import express from 'express';
 import cors from 'cors';
-import 'dotenv/config';
+import config from './config/env.js';
 // Forced restart to pick up route changes
 import { identifyUser } from './middleware/auth.js';
 import { auditLogger } from './middleware/audit.js';
 import { errorHandler } from './utils/asyncHandler.js';
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = config.port;
 
 // CORS - Allow all origins for mobile app
 app.use(cors());
