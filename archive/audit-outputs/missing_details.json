@@ -1,0 +1,20 @@
+{
+  "missingTables": [],
+  "missingColumns": {
+    "staff": [
+      "deleted_at"
+    ],
+    "student_fees": [
+      "deleted_at"
+    ],
+    "users": [
+      "deleted_at"
+    ]
+  },
+  "missingEnums": [],
+  "missingFunctions": [],
+  "missingTriggers": {},
+  "missingIndexes": {},
+  "missingConstraints": {},
+  "missingPolicies": {}
+}

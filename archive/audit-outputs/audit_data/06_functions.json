@@ -1,0 +1,485 @@
+[
+  {
+    "routine_name": "ensure_student_enrollment",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n    v_person_id UUID;\r\n    v_student_id UUID;\r\n    v_academic_year_id UUID;\r\n    v_class_section_id UUID;\r\n    v_enrollment_id UUID;\r\n    v_enrollment_exists BOOLEAN;\r\nBEGIN\r\n    -- 0. Resolve Student ID from User ID\r\n    SELECT person_id INTO v_person_id FROM users WHERE id = p_user_id;\r\n    \r\n    IF v_person_id IS NULL THEN\r\n         RAISE EXCEPTION 'User not found';\r\n    END IF;\r\n\r\n    SELECT id INTO v_student_id FROM students WHERE person_id = v_person_id;\r\n\r\n    IF v_student_id IS NULL THEN\r\n        RAISE EXCEPTION 'Student profile not found for this user';\r\n    END IF;\r\n\r\n    -- Check if enrollment exists for CURRENT academic year\r\n    -- 1. Get Current Academic Year\r\n    SELECT id INTO v_academic_year_id\r\n    FROM academic_years\r\n    WHERE start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE\r\n    LIMIT 1;\r\n\r\n    IF v_academic_year_id IS NULL THEN\r\n        -- Fallback: Get the latest one if no current one matches date\r\n        SELECT id INTO v_academic_year_id\r\n        FROM academic_years\r\n        ORDER BY start_date DESC\r\n        LIMIT 1;\r\n    END IF;\r\n    \r\n    IF v_academic_year_id IS NULL THEN\r\n        RAISE EXCEPTION 'No academic year configured.';\r\n    END IF;\r\n\r\n    -- 2. Check existing enrollment\r\n    SELECT EXISTS (\r\n        SELECT 1 FROM student_enrollments\r\n        WHERE student_id = v_student_id\r\n          AND academic_year_id = v_academic_year_id\r\n          AND deleted_at IS NULL\r\n    ) INTO v_enrollment_exists;\r\n\r\n    IF v_enrollment_exists THEN\r\n        RETURN jsonb_build_object('status', 'exists', 'message', 'Enrollment already exists');\r\n    END IF;\r\n\r\n    -- 3. Find Default Class/Section (Deterministic: First alphabetical class & section)\r\n    -- We join with classes and sections to order by name ensuring \"Class 1\" comes before \"Class 2\"\r\n    SELECT cs.id INTO v_class_section_id\r\n    FROM class_sections cs\r\n    JOIN classes c ON cs.class_id = c.id\r\n    JOIN sections s ON cs.section_id = s.id\r\n    WHERE cs.academic_year_id = v_academic_year_id\r\n    ORDER BY c.name ASC, s.name ASC\r\n    LIMIT 1;\r\n\r\n    IF v_class_section_id IS NULL THEN\r\n         RAISE EXCEPTION 'No class sections defined for the current academic year.';\r\n    END IF;\r\n\r\n    -- 4. Calculate next roll number (Atomic / Locked)\r\n    -- Acquire advisory lock based on class_section_id hash to prevent race conditions\r\n    PERFORM pg_advisory_xact_lock(hashtext(v_class_section_id::text));\r\n    \r\n    INSERT INTO student_enrollments (\r\n        student_id, academic_year_id, class_section_id, status, start_date, roll_number\r\n    )\r\n    VALUES (\r\n        v_student_id, \r\n        v_academic_year_id, \r\n        v_class_section_id, \r\n        'active', \r\n        CURRENT_DATE,\r\n        (SELECT COALESCE(MAX(roll_number), 0) + 1 FROM student_enrollments WHERE class_section_id = v_class_section_id)\r\n    )\r\n    RETURNING id INTO v_enrollment_id;\r\n\r\n    RETURN jsonb_build_object('status', 'created', 'enrollment_id', v_enrollment_id);\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "prevent_fee_transaction_mutation",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    RAISE EXCEPTION 'fee_transactions is append-only. UPDATE and DELETE are forbidden.';\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "update_user_settings_updated_at",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\n            BEGIN\n                NEW.updated_at = NOW();\n                RETURN NEW;\n            END;\n            "
+  },
+  {
+    "routine_name": "ensure_active_student_parent",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF EXISTS (SELECT 1 FROM students WHERE id = NEW.student_id AND deleted_at IS NOT NULL) THEN\r\n    RAISE EXCEPTION 'Cannot link to deleted student';\r\n  END IF;\r\n  IF EXISTS (SELECT 1 FROM parents WHERE id = NEW.parent_id AND deleted_at IS NOT NULL) THEN\r\n    RAISE EXCEPTION 'Cannot link to deleted parent';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "is_principal",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n  RETURN EXISTS (\r\n    SELECT 1 \r\n    FROM public.staff s \r\n    WHERE s.user_id = auth.uid() AND s.designation_id = 1\r\n  );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "recalculate_fee_ledger",
+    "routine_type": "FUNCTION",
+    "data_type": "void",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    r_fee RECORD;\r\n    v_calculated_paid DECIMAL(12,2);\r\n    v_new_status fee_status_enum;\r\n    v_remaining DECIMAL(12,2);\r\nBEGIN\r\n    -- Set GUC flag to bypass prevent_direct_fee_update guard trigger\r\n    PERFORM set_config('app.fee_recalc_mode', 'true', true);\r\n\r\n    FOR r_fee IN \r\n        SELECT sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.status\r\n        FROM student_fees sf\r\n    LOOP\r\n        -- Calculate total from transactions\r\n        SELECT COALESCE(SUM(amount), 0) INTO v_calculated_paid\r\n        FROM fee_transactions\r\n        WHERE student_fee_id = r_fee.id;\r\n\r\n        -- Only update if different\r\n        IF v_calculated_paid IS DISTINCT FROM r_fee.amount_paid THEN\r\n            \r\n            v_remaining := r_fee.amount_due - r_fee.discount - v_calculated_paid;\r\n\r\n            IF v_remaining <= 0 THEN\r\n                v_new_status := 'paid';\r\n            ELSIF v_calculated_paid > 0 THEN\r\n                v_new_status := 'partial';\r\n            ELSE\r\n                IF r_fee.status = 'overdue' THEN\r\n                    v_new_status := 'overdue';\r\n                ELSE\r\n                    v_new_status := 'pending';\r\n                END IF;\r\n            END IF;\r\n\r\n            UPDATE student_fees\r\n            SET \r\n                amount_paid = v_calculated_paid,\r\n                status = v_new_status,\r\n                updated_at = NOW()\r\n            WHERE id = r_fee.id;\r\n            \r\n            RAISE NOTICE 'Fixed Fee ID %: Old Paid %, New Paid %', r_fee.id, r_fee.amount_paid, v_calculated_paid;\r\n        END IF;\r\n    END LOOP;\r\n\r\n    -- Reset GUC flag\r\n    PERFORM set_config('app.fee_recalc_mode', '', true);\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "set_updated_at",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  NEW.updated_at = now();\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "auto_assign_fees_on_structure_creation",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    INSERT INTO student_fees (student_id, fee_structure_id, amount_due, amount_paid, status, due_date)\r\n    SELECT se.student_id, NEW.id, NEW.amount, 0, 'pending', NEW.due_date\r\n    FROM student_enrollments se\r\n    JOIN class_sections cs ON se.class_section_id = cs.id\r\n    WHERE cs.class_id = NEW.class_id AND se.academic_year_id = NEW.academic_year_id AND se.status = 'active'\r\n      AND NOT EXISTS (SELECT 1 FROM student_fees sf WHERE sf.student_id = se.student_id AND sf.fee_structure_id = NEW.id);\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "prevent_direct_fee_update",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    -- Block direct manual tampering at depth 0, but allow system recalculation via GUC flag\r\n    IF (pg_trigger_depth() = 0)\r\n       AND COALESCE(current_setting('app.fee_recalc_mode', true), '') != 'true'\r\n    THEN\r\n        IF NEW.amount_paid IS DISTINCT FROM OLD.amount_paid THEN\r\n            RAISE EXCEPTION 'Direct update of student_fees.amount_paid is strictly forbidden. Use fee_transactions.';\r\n        END IF;\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "ensure_active_person_staff",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF EXISTS (SELECT 1 FROM persons WHERE id = NEW.person_id AND deleted_at IS NOT NULL) THEN\r\n    RAISE EXCEPTION 'Cannot link staff to deleted person';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "update_fee_status",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.amount_paid >= (NEW.amount_due - NEW.discount) THEN\r\n        NEW.status := 'paid';\r\n    ELSIF NEW.amount_paid > 0 THEN\r\n        NEW.status := 'partial';\r\n    ELSIF NEW.due_date < CURRENT_DATE AND NEW.status = 'pending' THEN\r\n        NEW.status := 'overdue';\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_transaction_immutability",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF (TG_OP = 'DELETE') THEN\r\n        RAISE EXCEPTION 'Hard delete of financial transactions is FORBIDDEN. Use voiding.';\r\n    END IF;\r\n\r\n    IF (TG_OP = 'UPDATE') THEN\r\n        -- Allow updating ONLY voided_at or purely metadata fields if strictness needed\r\n        IF (NEW.amount != OLD.amount) OR (NEW.student_fee_id != OLD.student_fee_id) THEN\r\n            RAISE EXCEPTION 'Modification of Transaction Amount/Linkage is FORBIDDEN.';\r\n        END IF;\r\n        \r\n        IF (OLD.voided_at IS NOT NULL) THEN\r\n            RAISE EXCEPTION 'Cannot modify an already voided transaction.';\r\n        END IF;\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_prevent_immutable_changes",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF (OLD.id IS DISTINCT FROM NEW.id) THEN\r\n        RAISE EXCEPTION 'Modification of ID is not allowed.';\r\n    END IF;\r\n    \r\n    -- Check created_at only if it exists in the table (generic safety)\r\n    -- Note: We assume the column is named 'created_at' standardly.\r\n    IF (OLD.created_at IS DISTINCT FROM NEW.created_at) THEN\r\n        RAISE EXCEPTION 'Modification of created_at is not allowed.';\r\n    END IF;\r\n    \r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_prevent_overpayment",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.amount_paid > NEW.amount_due THEN\r\n        RAISE EXCEPTION 'Overpayment Violation: Paid (%) > Due (%)', NEW.amount_paid, NEW.amount_due;\r\n    END IF;\r\n    \r\n    -- Auto-status\r\n    IF NEW.amount_paid = NEW.amount_due THEN\r\n        NEW.status = 'paid';\r\n    ELSIF NEW.amount_paid > 0 THEN\r\n        NEW.status = 'partial';\r\n    ELSE\r\n        NEW.status = 'unpaid';\r\n    END IF;\r\n    \r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_check_academic_year_dates",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.start_date > NEW.end_date THEN\r\n        RAISE EXCEPTION 'Academic Year Start Date (%) cannot be after End Date (%).', NEW.start_date, NEW.end_date;\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "is_management",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n  RETURN (public.is_principal() OR public.is_accounts());\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_update_fee_balance",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_fee public.student_fees%ROWTYPE;\r\nBEGIN\r\n    -- LOCK the parent row to prevent race conditions\r\n    SELECT * INTO v_fee\r\n    FROM public.student_fees\r\n    WHERE id = NEW.student_fee_id\r\n    FOR UPDATE;\r\n\r\n    -- Handle Insert\r\n    IF (TG_OP = 'INSERT') THEN\r\n        UPDATE public.student_fees\r\n        SET amount_paid = v_fee.amount_paid + NEW.amount\r\n        WHERE id = v_fee.id;\r\n        RETURN NEW;\r\n    END IF;\r\n\r\n    -- Handle Voiding\r\n    IF (TG_OP = 'UPDATE') THEN\r\n        IF OLD.voided_at IS NULL AND NEW.voided_at IS NOT NULL THEN\r\n            UPDATE public.student_fees\r\n            SET amount_paid = v_fee.amount_paid - NEW.amount\r\n            WHERE id = v_fee.id;\r\n        END IF;\r\n        RETURN NEW;\r\n    END IF;\r\n    \r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "trg_recalc_payroll_on_attendance",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_staff_id UUID;\r\n    v_date DATE;\r\nBEGIN\r\n    IF (TG_OP = 'DELETE') THEN\r\n        v_staff_id := OLD.staff_id;\r\n        v_date := OLD.attendance_date;\r\n    ELSE\r\n        v_staff_id := NEW.staff_id;\r\n        v_date := NEW.attendance_date;\r\n    END IF;\r\n    PERFORM recalculate_staff_payroll(v_staff_id, EXTRACT(MONTH FROM v_date)::INT, EXTRACT(YEAR FROM v_date)::INT);\r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "current_staff_id",
+    "routine_type": "FUNCTION",
+    "data_type": "uuid",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n  v_staff_id UUID;\r\nBEGIN\r\n  SELECT id INTO v_staff_id\r\n  FROM public.staff\r\n  WHERE user_id = auth.uid();\r\n  \r\n  RETURN v_staff_id;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "is_accounts",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n  RETURN EXISTS (\r\n    SELECT 1 \r\n    FROM public.staff s \r\n    WHERE s.user_id = auth.uid() AND s.designation_id = 4\r\n  );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_lower_email",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.email IS NOT NULL THEN\r\n        NEW.email = LOWER(NEW.email);\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_attendance_date",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF NOT EXISTS (\r\n    SELECT 1 FROM student_enrollments\r\n    WHERE id = NEW.student_enrollment_id\r\n      AND status = 'active'\r\n      AND NEW.attendance_date BETWEEN start_date AND COALESCE(end_date, NEW.attendance_date)\r\n      AND (end_date IS NULL OR NEW.attendance_date <= end_date)\r\n      AND deleted_at IS NULL\r\n  ) THEN\r\n    RAISE EXCEPTION 'Attendance date outside valid enrollment period or enrollment not active';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_verify_fee_integrity",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_sum NUMERIC;\r\nBEGIN\r\n    SELECT COALESCE(SUM(amount), 0)\r\n    INTO v_sum\r\n    FROM public.fee_transactions\r\n    WHERE student_fee_id = NEW.id\r\n      AND voided_at IS NULL;\r\n\r\n    -- Using small epsilon for float math if needed, but DECIMAL should be exact.\r\n    IF v_sum != NEW.amount_paid THEN\r\n        RAISE EXCEPTION 'Ledger Mismatch: Computed Sum (%) != Stored Paid Amount (%) for Fee ID %', v_sum, NEW.amount_paid, NEW.id;\r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_check_no_future_attendance",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.date > CURRENT_DATE THEN\r\n        RAISE EXCEPTION 'Cannot mark attendance for future date: % (Today is %)', NEW.date, CURRENT_DATE;\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "trg_recalc_payroll_on_leave",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_staff_id UUID;\r\n    v_start DATE;\r\n    v_end DATE;\r\n    v_d DATE;\r\nBEGIN\r\n    IF (TG_OP = 'UPDATE' AND (OLD.status IS DISTINCT FROM NEW.status OR OLD.start_date IS DISTINCT FROM NEW.start_date OR OLD.end_date IS DISTINCT FROM NEW.end_date)) \r\n       OR (TG_OP = 'INSERT') THEN\r\n       SELECT id INTO v_staff_id FROM staff WHERE person_id = (SELECT person_id FROM users WHERE id = NEW.applicant_id);\r\n       IF v_staff_id IS NOT NULL THEN\r\n           v_start := DATE_TRUNC('month', NEW.start_date);\r\n           v_end := DATE_TRUNC('month', NEW.end_date);\r\n           v_d := v_start;\r\n           WHILE v_d <= v_end LOOP\r\n               PERFORM recalculate_staff_payroll(v_staff_id, EXTRACT(MONTH FROM v_d)::INT, EXTRACT(YEAR FROM v_d)::INT);\r\n               v_d := v_d + interval '1 month';\r\n           END LOOP;\r\n       END IF;\r\n    END IF;\r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "is_admin",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\n            BEGIN\n                RETURN EXISTS (\n                    SELECT 1 FROM user_roles ur\n                    JOIN roles r ON ur.role_id = r.id\n                    WHERE ur.user_id = auth.uid() AND r.code = 'admin'\n                );\n            END;\n            "
+  },
+  {
+    "routine_name": "validate_lms_course_modify",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_is_admin BOOLEAN;\r\nBEGIN\r\n    -- Check if Admin\r\n    SELECT EXISTS (\r\n        SELECT 1 FROM user_roles ur\r\n        JOIN roles r ON ur.role_id = r.id\r\n        WHERE ur.user_id = auth.uid() AND r.code = 'admin'\r\n    ) INTO v_is_admin;\r\n\r\n    IF v_is_admin THEN\r\n        RETURN NEW;\r\n    END IF;\r\n\r\n    -- Check if Instructor\r\n    IF NEW.instructor_id IS NOT NULL THEN\r\n        IF NOT EXISTS (\r\n            SELECT 1 FROM staff s\r\n            WHERE s.id = NEW.instructor_id\r\n              AND s.person_id = (SELECT person_id FROM users WHERE id = auth.uid())\r\n        ) THEN\r\n            RAISE EXCEPTION 'Unauthorized: Only the assigned Instructor or Admin can modify this course';\r\n        END IF;\r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "prevent_complaint_delete",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF (current_user <> 'postgres') THEN -- Allow admin/migration tool to delete if needed\r\n        RAISE EXCEPTION 'Deleting complaints is not allowed. Update status instead.';\r\n    END IF;\r\n    RETURN OLD;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "update_timestamp",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  NEW.updated_at = now();\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "update_person_display_name",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  NEW.display_name := trim(concat_ws(' ', NEW.first_name, NEW.middle_name, NEW.last_name));\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "ensure_active_student_enrollment",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF EXISTS (SELECT 1 FROM students WHERE id = NEW.student_id AND deleted_at IS NOT NULL) THEN\r\n    RAISE EXCEPTION 'Cannot enroll a deleted student';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "promote_students_academic_year",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_promoted_count INT := 0;\r\n    v_graduated_count INT := 0;\r\n    r_enrollment RECORD;\r\n    v_next_class_id UUID;\r\n    v_next_section_id UUID; -- Keep same section? Usually yes.\r\n    v_next_class_section_id UUID;\r\n    v_class_name TEXT;\r\n    v_next_class_name TEXT;\r\n    v_class_number INT;\r\nBEGIN\r\n    -- Validate AYs\r\n    IF p_current_ay_id = p_next_ay_id THEN\r\n        RAISE EXCEPTION 'Source and Target Academic Years must be different';\r\n    END IF;\r\n\r\n    -- Loop through ACTIVE enrollments in current AY\r\n    FOR r_enrollment IN\r\n        SELECT se.*, c.id as class_id, c.name as class_name, cs.section_id\r\n        FROM student_enrollments se\r\n        JOIN class_sections cs ON se.class_section_id = cs.id\r\n        JOIN classes c ON cs.class_id = c.id\r\n        WHERE se.academic_year_id = p_current_ay_id\r\n          AND se.status = 'active'\r\n          AND se.deleted_at IS NULL\r\n    LOOP\r\n        -- 1. Determine Next Class\r\n        -- Logic: Attempt to parse \"Class 1\" -> 1. Increment to 2. Find \"Class 2\".\r\n        -- If fails (e.g. \"Kindergarten\"), this logic needs specific handling or a mapping table.\r\n        -- Assuming \"Class X\" format for simplicity as per common IMS.\r\n        \r\n        -- Simple Regex to extract number\r\n        v_class_number := substring(r_enrollment.class_name FROM '\\d+')::INT;\r\n        \r\n        IF v_class_number IS NOT NULL THEN\r\n            v_next_class_name := 'Class ' || (v_class_number + 1);\r\n            \r\n            -- Check if next class exists\r\n            SELECT id INTO v_next_class_id FROM classes WHERE name = v_next_class_name;\r\n            \r\n            IF v_next_class_id IS NOT NULL THEN\r\n                -- Find corresponding class_section in Next AY\r\n                -- We assume Section maps 1:1 by name (via section_id)\r\n                SELECT id INTO v_next_class_section_id\r\n                FROM class_sections\r\n                WHERE class_id = v_next_class_id\r\n                  AND section_id = r_enrollment.section_id\r\n                  AND academic_year_id = p_next_ay_id;\r\n                  \r\n                -- If section doesn't exist in next year, we cannot promote automatically\r\n                -- Possible fallback: Default section or error. We'll skip/log.\r\n                IF v_next_class_section_id IS NOT NULL THEN\r\n                    -- PROMOTE\r\n                    INSERT INTO student_enrollments (\r\n                        student_id, academic_year_id, class_section_id, status, start_date, roll_number\r\n                    ) VALUES (\r\n                        r_enrollment.student_id,\r\n                        p_next_ay_id,\r\n                        v_next_class_section_id,\r\n                        'active',\r\n                        (SELECT start_date FROM academic_years WHERE id = p_next_ay_id),\r\n                        NULL -- To be recalculated\r\n                    );\r\n                    \r\n                    -- Mark old as completed\r\n                    UPDATE student_enrollments \r\n                    SET status = 'completed', end_date = (SELECT end_date FROM academic_years WHERE id = p_current_ay_id)\r\n                    WHERE id = r_enrollment.id;\r\n                    \r\n                    v_promoted_count := v_promoted_count + 1;\r\n                ELSE\r\n                    -- Log missing section?\r\n                END IF;\r\n            ELSE\r\n                -- Next class not found -> GRADUATE\r\n                -- Assume highest class means graduation\r\n                UPDATE students SET status_id = (SELECT id FROM student_statuses WHERE is_terminal = true LIMIT 1) \r\n                WHERE id = r_enrollment.student_id;\r\n                \r\n                UPDATE student_enrollments \r\n                SET status = 'completed', end_date = (SELECT end_date FROM academic_years WHERE id = p_current_ay_id)\r\n                WHERE id = r_enrollment.id;\r\n                \r\n                v_graduated_count := v_graduated_count + 1;\r\n            END IF;\r\n        ELSE\r\n            -- Non-numeric class name? Skip for safety.\r\n        END IF;\r\n    END LOOP;\r\n\r\n    -- Recalculate Roll Numbers for ALL sections in Next AY\r\n    -- (We can optimize to only touch affected sections, but this is safer)\r\n    PERFORM recalculate_section_rolls(cs.id, p_next_ay_id)\r\n    FROM class_sections cs\r\n    WHERE cs.academic_year_id = p_next_ay_id;\r\n\r\n    RETURN jsonb_build_object(\r\n        'status', 'success',\r\n        'promoted', v_promoted_count,\r\n        'graduated', v_graduated_count\r\n    );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "log_financial_destruction",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n    current_user_id UUID;\r\n    reason_text TEXT;\r\nBEGIN\r\n    current_user_id := auth.uid();\r\n    BEGIN\r\n        reason_text := current_setting('app.delete_reason', true);\r\n    EXCEPTION WHEN OTHERS THEN\r\n        reason_text := 'No reason provided';\r\n    END;\r\n\r\n    IF (TG_OP = 'DELETE') THEN\r\n        INSERT INTO financial_audit_logs (\r\n            table_name, record_id, action_type, old_data, reason, performed_by\r\n        ) VALUES (\r\n            TG_TABLE_NAME, OLD.id::text, 'DELETE', row_to_json(OLD),\r\n            COALESCE(reason_text, 'Unknown (Direct DB Delete)'), current_user_id\r\n        );\r\n        RETURN OLD;\r\n    ELSIF (TG_OP = 'UPDATE') THEN\r\n        INSERT INTO financial_audit_logs (\r\n            table_name, record_id, action_type, old_data, new_data, reason, performed_by\r\n        ) VALUES (\r\n            TG_TABLE_NAME, NEW.id::text, 'UPDATE', row_to_json(OLD), row_to_json(NEW),\r\n            'Update Operation', current_user_id\r\n        );\r\n        RETURN NEW;\r\n    END IF;\r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "generate_monthly_payroll",
+    "routine_type": "FUNCTION",
+    "data_type": "void",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  INSERT INTO staff_payroll (staff_id, base_salary, net_salary, payroll_month, payroll_year, status)\r\n  SELECT \r\n    id, \r\n    COALESCE(salary, 0), \r\n    COALESCE(salary, 0), \r\n    p_month, \r\n    p_year, \r\n    'pending'\r\n  FROM staff\r\n  WHERE status_id = 1 -- Active (assuming 1 is active based on staff_statuses)\r\n    AND deleted_at IS NULL\r\n    AND NOT EXISTS (\r\n      SELECT 1 FROM staff_payroll sp \r\n      WHERE sp.staff_id = staff.id \r\n        AND sp.payroll_month = p_month \r\n        AND sp.payroll_year = p_year\r\n    );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "safe_div",
+    "routine_type": "FUNCTION",
+    "data_type": "numeric",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF d = 0 OR d IS NULL THEN RETURN 0; END IF;\r\n    RETURN n / d;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "get_dashboard_insights",
+    "routine_type": "FUNCTION",
+    "data_type": "record",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    -- Insight 1: Low Attendance Alert (Last 7 Days)\r\n    RETURN QUERY\r\n    SELECT \r\n        'ATTENDANCE_DROP'::TEXT,\r\n        format('Class %s attendance dropped to %s%% yesterday.', c.name, ROUND(AVG(CASE WHEN da.status IN ('present','late') THEN 100.0 ELSE 0 END), 0)),\r\n        'high'::TEXT\r\n    FROM daily_attendance da\r\n    JOIN student_enrollments se ON da.student_enrollment_id = se.id\r\n    JOIN class_sections cs ON se.class_section_id = cs.id\r\n    JOIN classes c ON cs.class_id = c.id\r\n    WHERE da.attendance_date = CURRENT_DATE - 1\r\n    GROUP BY c.name\r\n    HAVING AVG(CASE WHEN da.status IN ('present','late') THEN 100.0 ELSE 0 END) < 75;\r\n\r\n    -- Insight 2: Collection Spike\r\n    RETURN QUERY\r\n    SELECT \r\n        'COLLECTION_SPIKE'::TEXT,\r\n        format('High collections detected on %s (?%s)', TO_CHAR(paid_at, 'DD Mon'), SUM(amount)),\r\n        'info'::TEXT\r\n    FROM fee_transactions\r\n    WHERE paid_at >= CURRENT_DATE - 7\r\n    GROUP BY paid_at::DATE, paid_at\r\n    HAVING SUM(amount) > (SELECT AVG(amt) * 1.5 FROM (SELECT SUM(amount) as amt FROM fee_transactions WHERE paid_at >= CURRENT_DATE - 30 GROUP BY paid_at::DATE) sub);\r\n\r\n    -- Insight 3: Pending Dues Warning\r\n    IF EXISTS (\r\n        SELECT 1 \r\n        FROM student_fees sf\r\n        WHERE (sf.amount_due - sf.discount - sf.amount_paid) > 50000\r\n          AND sf.status != 'waived'\r\n    ) THEN\r\n        RETURN QUERY SELECT 'HIGH_DUES'::TEXT, 'Multiple students have outstanding dues > ?50k', 'medium'::TEXT;\r\n    END IF;\r\n\r\n    RETURN;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "debug_user_permissions",
+    "routine_type": "FUNCTION",
+    "data_type": "record",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n    RETURN QUERY\r\n    SELECT r.code::VARCHAR, p.code::VARCHAR, p.name::VARCHAR\r\n    FROM user_roles ur\r\n    JOIN roles r ON ur.role_id = r.id\r\n    JOIN role_permissions rp ON r.id = rp.role_id\r\n    JOIN permissions p ON rp.permission_id = p.id\r\n    WHERE ur.user_id = p_user_id;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "debug_teacher_profile",
+    "routine_type": "FUNCTION",
+    "data_type": "record",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n    RETURN QUERY\r\n    SELECT \r\n        ts.period_number, \r\n        c.name::VARCHAR, \r\n        s.name::VARCHAR, \r\n        sub.name::VARCHAR,\r\n        ts.room_no::VARCHAR\r\n    FROM timetable_slots ts\r\n    JOIN class_sections cs ON ts.class_section_id = cs.id\r\n    JOIN classes c ON cs.class_id = c.id\r\n    JOIN sections s ON cs.section_id = s.id\r\n    JOIN subjects sub ON ts.subject_id = sub.id\r\n    WHERE ts.teacher_id = (SELECT id FROM staff WHERE staff_code = p_staff_code)\r\n    ORDER BY ts.period_number;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_attendance_entry",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_class_section_id UUID;\r\n    v_class_teacher_id UUID;\r\n    v_is_admin BOOLEAN;\r\n    v_is_p1_teacher BOOLEAN;\r\nBEGIN\r\n    -- 1. Basic Date Validation \r\n    IF NOT EXISTS (\r\n        SELECT 1 FROM student_enrollments\r\n        WHERE id = NEW.student_enrollment_id\r\n          AND status = 'active'\r\n          AND NEW.attendance_date BETWEEN start_date AND COALESCE(end_date, '9999-12-31'::date)\r\n          AND deleted_at IS NULL\r\n    ) THEN\r\n        RAISE EXCEPTION 'Invalid Attendance: Student is not active in this enrollment on %', NEW.attendance_date;\r\n    END IF;\r\n\r\n    -- 2. Authorization Check\r\n    IF NEW.marked_by IS NOT NULL THEN\r\n        SELECT se.class_section_id, cs.class_teacher_id INTO v_class_section_id, v_class_teacher_id\r\n        FROM student_enrollments se\r\n        JOIN class_sections cs ON se.class_section_id = cs.id\r\n        WHERE se.id = NEW.student_enrollment_id;\r\n\r\n        SELECT EXISTS (\r\n            SELECT 1 FROM user_roles ur\r\n            JOIN roles r ON ur.role_id = r.id\r\n            WHERE ur.user_id = NEW.marked_by AND r.code = 'admin'\r\n        ) INTO v_is_admin;\r\n\r\n        IF NOT v_is_admin THEN\r\n            SELECT EXISTS (\r\n                SELECT 1 FROM timetable_slots ts\r\n                JOIN staff s ON ts.teacher_id = s.id\r\n                WHERE ts.class_section_id = v_class_section_id\r\n                  AND ts.period_number = 1\r\n                  AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)\r\n                  AND ts.deleted_at IS NULL\r\n            ) INTO v_is_p1_teacher;\r\n\r\n            IF NOT v_is_p1_teacher AND v_class_teacher_id IS NOT NULL THEN\r\n                IF NOT EXISTS (\r\n                    SELECT 1 FROM staff s\r\n                    WHERE s.id = v_class_teacher_id\r\n                      AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)\r\n                ) THEN\r\n                    RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, or Admin can mark attendance';\r\n                END IF;\r\n            END IF;\r\n        END IF;\r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "prevent_system_role_change",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF OLD.is_system THEN\r\n    RAISE EXCEPTION 'System roles cannot be modified or deleted';\r\n  END IF;\r\n\r\n  IF TG_OP = 'DELETE' THEN\r\n    RETURN OLD;\r\n  END IF;\r\n  \r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "ensure_active_person_ref",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF TG_OP = 'UPDATE' AND NEW.person_id <> OLD.person_id THEN\r\n    RAISE EXCEPTION 'person_id cannot be changed once linked to user';\r\n  END IF;\r\n\r\n  IF EXISTS (SELECT 1 FROM persons WHERE id = NEW.person_id AND deleted_at IS NOT NULL) THEN\r\n    RAISE EXCEPTION 'Cannot link user to deleted person';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "recalculate_section_rolls",
+    "routine_type": "FUNCTION",
+    "data_type": "void",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    WITH ordered_students AS (\r\n        SELECT \r\n            se.id AS enrollment_id,\r\n            ROW_NUMBER() OVER (\r\n                ORDER BY p.first_name ASC, p.last_name ASC\r\n            ) as new_roll\r\n        FROM student_enrollments se\r\n        JOIN students s ON se.student_id = s.id\r\n        JOIN persons p ON s.person_id = p.id\r\n        WHERE se.class_section_id = p_class_section_id\r\n          AND se.academic_year_id = p_academic_year_id\r\n          AND se.status = 'active'\r\n          AND se.deleted_at IS NULL\r\n          AND s.deleted_at IS NULL\r\n    )\r\n    UPDATE student_enrollments se\r\n    SET roll_number = os.new_roll\r\n    FROM ordered_students os\r\n    WHERE se.id = os.enrollment_id\r\n      AND se.roll_number IS DISTINCT FROM os.new_roll;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_enrollment_year",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF NOT EXISTS (\r\n    SELECT 1 FROM class_sections\r\n    WHERE id = NEW.class_section_id\r\n      AND academic_year_id = NEW.academic_year_id\r\n  ) THEN\r\n    RAISE EXCEPTION 'Class section does not belong to academic year';\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "propagate_fee_structure_updates",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.amount IS DISTINCT FROM OLD.amount THEN\r\n        UPDATE student_fees\r\n        SET amount_due = NEW.amount, updated_at = now()\r\n        WHERE fee_structure_id = NEW.id AND status IN ('pending', 'partial', 'overdue');\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "update_fee_paid_amount",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    UPDATE student_fees\r\n    SET amount_paid = amount_paid + NEW.amount\r\n    WHERE id = NEW.student_fee_id;\r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "auth_has_role",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n  RETURN EXISTS (\r\n    SELECT 1 \r\n    FROM user_roles ur\r\n    JOIN roles r ON ur.role_id = r.id\r\n    WHERE ur.user_id = auth.uid()\r\n      AND r.code = ANY(role_codes)\r\n  );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "sync_class_teacher_from_timetable",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n    IF (TG_OP = 'DELETE') THEN\r\n        IF OLD.period_number = 1 THEN\r\n             UPDATE class_sections \r\n             SET class_teacher_id = NULL \r\n             WHERE id = OLD.class_section_id;\r\n        END IF;\r\n        RETURN OLD;\r\n    END IF;\r\n\r\n    IF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN\r\n        IF NEW.period_number = 1 THEN\r\n             UPDATE class_sections \r\n             SET class_teacher_id = NEW.teacher_id \r\n             WHERE id = NEW.class_section_id;\r\n        END IF;\r\n        RETURN NEW;\r\n    END IF;\r\n    \r\n    RETURN NULL;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_timetable_entry",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_teacher_collision BOOLEAN;\r\n    v_room_collision BOOLEAN;\r\nBEGIN\r\n    IF NEW.teacher_id IS NOT NULL THEN\r\n        SELECT EXISTS (\r\n            SELECT 1 FROM timetable_slots\r\n            WHERE teacher_id = NEW.teacher_id\r\n              AND period_number = NEW.period_number\r\n              AND academic_year_id = NEW.academic_year_id\r\n              AND id <> COALESCE(NEW.id, '00000000-0000-0000-0000-000000000000'::uuid)\r\n        ) INTO v_teacher_collision;\r\n\r\n        IF v_teacher_collision THEN\r\n            RAISE EXCEPTION 'Teacher Collision: Teacher is already booked for period %', NEW.period_number;\r\n        END IF;\r\n    END IF;\r\n\r\n    IF NEW.room_no IS NOT NULL AND NEW.room_no <> '' THEN\r\n        SELECT EXISTS (\r\n            SELECT 1 FROM timetable_slots\r\n            WHERE room_no = NEW.room_no\r\n              AND period_number = NEW.period_number\r\n              AND academic_year_id = NEW.academic_year_id\r\n              AND id <> COALESCE(NEW.id, '00000000-0000-0000-0000-000000000000'::uuid)\r\n        ) INTO v_room_collision;\r\n\r\n        IF v_room_collision THEN\r\n            RAISE EXCEPTION 'Room Collision: Room % is already occupied during period %', NEW.room_no, NEW.period_number;\r\n        END IF;\r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "recalculate_staff_payroll",
+    "routine_type": "FUNCTION",
+    "data_type": "void",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n    v_base_salary DECIMAL(12,2);\r\n    v_per_day_salary DECIMAL(12,2);\r\n    v_absent_days INTEGER := 0;\r\n    v_rejected_leave_days INTEGER := 0;\r\n    v_total_deduction_days INTEGER := 0;\r\n    v_deduction_amount DECIMAL(12,2);\r\n    v_start_date DATE;\r\n    v_end_date DATE;\r\nBEGIN\r\n    SELECT salary INTO v_base_salary FROM staff WHERE id = p_staff_id;\r\n    IF v_base_salary IS NULL THEN v_base_salary := 0; END IF;\r\n    v_per_day_salary := v_base_salary / 30.0;\r\n    v_start_date := make_date(p_year, p_month, 1);\r\n    v_end_date := (v_start_date + interval '1 month' - interval '1 day')::DATE;\r\n\r\n    WITH deductible_dates AS (\r\n        SELECT attendance_date AS d_date\r\n        FROM staff_attendance\r\n        WHERE staff_id = p_staff_id\r\n          AND attendance_date BETWEEN v_start_date AND v_end_date\r\n          AND status = 'absent'\r\n          AND deleted_at IS NULL\r\n        UNION\r\n        SELECT generate_series(\r\n            GREATEST(start_date, v_start_date), \r\n            LEAST(end_date, v_end_date), \r\n            interval '1 day'\r\n        )::DATE AS d_date\r\n        FROM leave_applications\r\n        WHERE applicant_id = (SELECT id FROM users WHERE person_id = (SELECT person_id FROM staff WHERE id = p_staff_id))\r\n          AND status = 'rejected'\r\n          AND leave_type != 'unpaid'\r\n          AND end_date >= v_start_date\r\n          AND start_date <= v_end_date\r\n    )\r\n    SELECT COUNT(DISTINCT d_date) INTO v_total_deduction_days FROM deductible_dates;\r\n\r\n    v_deduction_amount := v_total_deduction_days * v_per_day_salary;\r\n\r\n    INSERT INTO staff_payroll (staff_id, payroll_month, payroll_year, base_salary, deductions, net_salary, status)\r\n    VALUES (p_staff_id, p_month, p_year, v_base_salary, v_deduction_amount, GREATEST(0, v_base_salary - v_deduction_amount), 'pending')\r\n    ON CONFLICT (staff_id, payroll_month, payroll_year) \r\n    DO UPDATE SET \r\n        base_salary = EXCLUDED.base_salary,\r\n        deductions = EXCLUDED.deductions,\r\n        net_salary = EXCLUDED.net_salary,\r\n        updated_at = now();\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "trg_check_expense_policy",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_is_admin BOOLEAN;\r\nBEGIN\r\n    -- Block Self-Approval\r\n    IF (TG_OP = 'UPDATE' AND NEW.status = 'approved' AND OLD.status != 'approved') THEN\r\n       IF NEW.created_by = auth.uid() THEN\r\n           SELECT EXISTS (\r\n               SELECT 1 FROM user_roles ur \r\n               JOIN roles r ON ur.role_id = r.id \r\n               WHERE ur.user_id = auth.uid() AND r.code = 'admin'\r\n           ) INTO v_is_admin;\r\n           \r\n           IF NOT v_is_admin THEN\r\n               RAISE EXCEPTION 'You cannot approve your own expense request.';\r\n           END IF;\r\n       END IF;\r\n    END IF;\r\n\r\n    IF (TG_OP = 'INSERT') OR (TG_OP = 'UPDATE' AND NEW.amount IS DISTINCT FROM OLD.amount) THEN\r\n        IF NEW.status = 'approved' THEN PERFORM check_financial_permission('EXPENSE_AUTO_APPROVE', NEW.amount); END IF;\r\n        PERFORM enforce_financial_lock(NEW.expense_date, 'EXPENSE');\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "delete_record_with_reason",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE v_query TEXT; v_rows_deleted INT;\r\nBEGIN\r\n    PERFORM set_config('app.delete_reason', p_reason, true);\r\n    IF p_table_name NOT IN ('receipts', 'student_fees', 'expenses', 'staff_payroll') THEN\r\n        RAISE EXCEPTION 'Table % is not approved for generic deletion.', p_table_name;\r\n    END IF;\r\n    v_query := format('DELETE FROM %I WHERE id = $1', p_table_name);\r\n    EXECUTE v_query USING p_record_id;\r\n    GET DIAGNOSTICS v_rows_deleted = ROW_COUNT;\r\n    IF v_rows_deleted = 0 THEN RAISE EXCEPTION 'Record not found or permission denied.'; END IF;\r\n    RETURN jsonb_build_object('status', 'success', 'deleted_id', p_record_id);\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "get_financial_analytics",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_total_collected DECIMAL(12,2) := 0;\r\n    v_total_collected_prev DECIMAL(12,2) := 0;\r\n    v_total_outstanding DECIMAL(12,2) := 0;\r\n    v_total_outstanding_prev DECIMAL(12,2) := 0;\r\n    v_eff_current NUMERIC(5,2) := 0;\r\n    v_eff_prev NUMERIC(5,2) := 0;\r\n    v_duration INTEGER;\r\n    v_prev_from DATE;\r\n    v_prev_to DATE;\r\n    v_trend_data JSONB;\r\nBEGIN\r\n    v_duration := p_to_date - p_from_date;\r\n    v_prev_to := p_from_date - 1;\r\n    v_prev_from := v_prev_to - v_duration;\r\n\r\n    -- 1. Current Period Collection\r\n    SELECT COALESCE(SUM(amount), 0) INTO v_total_collected\r\n    FROM fee_transactions\r\n    WHERE paid_at::DATE BETWEEN p_from_date AND p_to_date;\r\n\r\n    -- 2. Previous Period Collection\r\n    SELECT COALESCE(SUM(amount), 0) INTO v_total_collected_prev\r\n    FROM fee_transactions\r\n    WHERE paid_at::DATE BETWEEN v_prev_from AND v_prev_to;\r\n\r\n    -- 3. Outstanding Calculation (Snapshots)\r\n    -- Current Outstanding\r\n    SELECT COALESCE(SUM(amount_due - discount - amount_paid), 0) INTO v_total_outstanding\r\n    FROM student_fees\r\n    WHERE deleted_at IS NULL AND status != 'waived';\r\n    \r\n    -- Prev Outstanding (at start of current range)\r\n    -- Total Due before p_from - Total Paid before p_from\r\n    SELECT \r\n        (SELECT COALESCE(SUM(amount_due - discount), 0) FROM student_fees WHERE created_at::DATE < p_from_date AND deleted_at IS NULL AND status != 'waived') -\r\n        (SELECT COALESCE(SUM(amount), 0) FROM fee_transactions WHERE paid_at::DATE < p_from_date)\r\n    INTO v_total_outstanding_prev;\r\n\r\n    -- Ensure non-negative\r\n    IF v_total_outstanding < 0 THEN v_total_outstanding := 0; END IF;\r\n    IF v_total_outstanding_prev < 0 THEN v_total_outstanding_prev := 0; END IF;\r\n\r\n    -- 4. Efficiency\r\n    v_eff_current := ROUND(safe_div(v_total_collected * 100.0, v_total_collected + v_total_outstanding), 1);\r\n    v_eff_prev := ROUND(safe_div(v_total_collected_prev * 100.0, v_total_collected_prev + v_total_outstanding_prev), 1);\r\n\r\n    -- 5. Trend Data\r\n    IF p_group_by = 'month' THEN\r\n        SELECT jsonb_agg(dataset) INTO v_trend_data\r\n        FROM (\r\n            SELECT \r\n                TO_CHAR(date_trunc('month', paid_at), 'Mon') as label,\r\n                SUM(amount) as value\r\n            FROM fee_transactions\r\n            WHERE paid_at::DATE BETWEEN p_from_date AND p_to_date\r\n            GROUP BY date_trunc('month', paid_at)\r\n            ORDER BY date_trunc('month', paid_at)\r\n        ) dataset;\r\n    ELSE\r\n         SELECT jsonb_agg(dataset) INTO v_trend_data\r\n        FROM (\r\n            SELECT \r\n                TO_CHAR(date_trunc('week', paid_at), 'DD Mon') as label,\r\n                SUM(amount) as value\r\n            FROM fee_transactions\r\n            WHERE paid_at::DATE BETWEEN p_from_date AND p_to_date\r\n            GROUP BY date_trunc('week', paid_at)\r\n            ORDER BY date_trunc('week', paid_at)\r\n        ) dataset;\r\n    END IF;\r\n\r\n    RETURN jsonb_build_object(\r\n        'total_collected', v_total_collected,\r\n        'total_collected_prev', v_total_collected_prev,\r\n        'outstanding_dues', v_total_outstanding,\r\n        'outstanding_dues_prev', v_total_outstanding_prev,\r\n        'collection_efficiency', v_eff_current,\r\n        'collection_efficiency_prev', v_eff_prev,\r\n        'trend', COALESCE(v_trend_data, '[]'::jsonb)\r\n    );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "get_attendance_analytics",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_avg_attendance NUMERIC(5,2);\r\n    v_avg_attendance_prev NUMERIC(5,2);\r\n    v_total_records INTEGER;\r\n    v_total_present INTEGER;\r\n    v_total_records_prev INTEGER;\r\n    v_total_present_prev INTEGER;\r\n    v_chronic_absentees INTEGER;\r\n    v_duration INTEGER;\r\n    v_prev_from DATE;\r\n    v_prev_to DATE;\r\n    v_trend_data JSONB;\r\nBEGIN\r\n    v_duration := p_to_date - p_from_date;\r\n    v_prev_to := p_from_date - 1;\r\n    v_prev_from := v_prev_to - v_duration;\r\n\r\n    -- 1. Current Average Attendance %\r\n    SELECT \r\n        COUNT(*),\r\n        COUNT(*) FILTER (WHERE status IN ('present', 'late', 'half_day'))\r\n    INTO v_total_records, v_total_present\r\n    FROM daily_attendance\r\n    WHERE attendance_date BETWEEN p_from_date AND p_to_date\r\n      AND deleted_at IS NULL;\r\n\r\n    v_avg_attendance := safe_div(v_total_present * 100.0, v_total_records);\r\n\r\n    -- 2. Previous Average Attendance %\r\n    SELECT \r\n        COUNT(*),\r\n        COUNT(*) FILTER (WHERE status IN ('present', 'late', 'half_day'))\r\n    INTO v_total_records_prev, v_total_present_prev\r\n    FROM daily_attendance\r\n    WHERE attendance_date BETWEEN v_prev_from AND v_prev_to\r\n      AND deleted_at IS NULL;\r\n\r\n    v_avg_attendance_prev := safe_div(v_total_present_prev * 100.0, v_total_records_prev);\r\n\r\n    -- 3. Chronic Absenteeism (Current Period)\r\n    WITH student_stats AS (\r\n        SELECT \r\n            student_enrollment_id,\r\n            COUNT(*) as total_days,\r\n            COUNT(*) FILTER (WHERE status IN ('present', 'late', 'half_day')) as present_days\r\n        FROM daily_attendance\r\n        WHERE attendance_date BETWEEN p_from_date AND p_to_date\r\n          AND deleted_at IS NULL\r\n        GROUP BY student_enrollment_id\r\n    )\r\n    SELECT COUNT(*) INTO v_chronic_absentees\r\n    FROM student_stats\r\n    WHERE safe_div(present_days::NUMERIC, total_days::NUMERIC) < 0.8;\r\n\r\n    -- 4. Trend (Daily Avg Current Period)\r\n    SELECT jsonb_agg(dataset) INTO v_trend_data\r\n    FROM (\r\n        SELECT \r\n            TO_CHAR(attendance_date, 'DD Mon') as label,\r\n            ROUND(AVG(CASE WHEN status IN ('present', 'late', 'half_day') THEN 100.0 ELSE 0.0 END), 1) as value\r\n        FROM daily_attendance\r\n        WHERE attendance_date BETWEEN p_from_date AND p_to_date\r\n          AND deleted_at IS NULL\r\n        GROUP BY attendance_date\r\n        ORDER BY attendance_date\r\n    ) dataset;\r\n\r\n    RETURN jsonb_build_object(\r\n        'avg_attendance', COALESCE(v_avg_attendance, 0),\r\n        'avg_attendance_prev', COALESCE(v_avg_attendance_prev, 0),\r\n        'chronic_absentees', COALESCE(v_chronic_absentees, 0),\r\n        'trend', COALESCE(v_trend_data, '[]'::jsonb)\r\n    );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "perform_data_audit",
+    "routine_type": "FUNCTION",
+    "data_type": "record",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n    -- 1. Orphan Enrollments\r\n    RETURN QUERY\r\n    SELECT 'ORPHAN_ENROLLMENT'::TEXT, se.id::TEXT, format('Student %s missing or deleted', se.student_id)\r\n    FROM student_enrollments se \r\n    LEFT JOIN students s ON se.student_id = s.id \r\n    WHERE (s.id IS NULL OR s.deleted_at IS NOT NULL) AND se.deleted_at IS NULL;\r\n\r\n    -- 2. Invalid Class Teachers\r\n    RETURN QUERY\r\n    SELECT 'INVALID_CLASS_TEACHER'::TEXT, cs.id::TEXT, format('Staff %s missing or deleted', cs.class_teacher_id)\r\n    FROM class_sections cs\r\n    LEFT JOIN staff s ON cs.class_teacher_id = s.id\r\n    WHERE cs.class_teacher_id IS NOT NULL AND (s.id IS NULL OR s.deleted_at IS NOT NULL);\r\n\r\n    -- 3. Duplicate Attendance\r\n    RETURN QUERY\r\n    SELECT 'DUPLICATE_ATTENDANCE'::TEXT, da.student_enrollment_id::TEXT, format('Date: %s', da.attendance_date)\r\n    FROM daily_attendance da\r\n    WHERE da.deleted_at IS NULL\r\n    GROUP BY da.student_enrollment_id, da.attendance_date\r\n    HAVING COUNT(*) > 1;\r\n\r\n    -- 4. Multiple Active Enrollments\r\n    RETURN QUERY\r\n    SELECT 'MULTIPLE_ACTIVE_ENROLLMENTS'::TEXT, se.student_id::TEXT, format('Academic Year ID: %s', se.academic_year_id)\r\n    FROM student_enrollments se\r\n    WHERE se.status = 'active' AND se.deleted_at IS NULL\r\n    GROUP BY se.student_id, se.academic_year_id\r\n    HAVING COUNT(*) > 1;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "run_integrity_check",
+    "routine_type": "FUNCTION",
+    "data_type": "record",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n    -- 1. Teacher Collision Audit\r\n    RETURN QUERY\r\n    SELECT \r\n        'CRITICAL'::TEXT, 'COLLISION'::TEXT, t1.id::TEXT, \r\n        format('Teacher %s is double-booked for period %s on %s', t1.teacher_id, t1.period_number, t1.day_of_week)\r\n    FROM timetable_slots t1\r\n    JOIN timetable_slots t2 ON t1.teacher_id = t2.teacher_id \r\n        AND t1.day_of_week = t2.day_of_week \r\n        AND t1.period_number = t2.period_number\r\n        AND t1.academic_year_id = t2.academic_year_id\r\n    WHERE t1.id < t2.id;\r\n\r\n    -- 2. Duplicate Attendance Audit\r\n    RETURN QUERY\r\n    SELECT \r\n        'HIGH'::TEXT, 'DUPLICATE_DATA'::TEXT, da.student_enrollment_id::TEXT, \r\n        format('Multiple attendance records for date %s', da.attendance_date)\r\n    FROM daily_attendance da\r\n    WHERE da.deleted_at IS NULL\r\n    GROUP BY da.student_enrollment_id, da.attendance_date\r\n    HAVING COUNT(*) > 1;\r\n\r\n    -- 3. Unauthorized Subject Mapping\r\n    RETURN QUERY\r\n    SELECT \r\n        'MEDIUM'::TEXT, 'MAPPING_ERROR'::TEXT, ts.id::TEXT, \r\n        format('Teacher is teaching Subject %s in Class Section %s without assignment', ts.subject_id, ts.class_section_id)\r\n    FROM timetable_slots ts\r\n    WHERE ts.teacher_id IS NOT NULL \r\n      AND NOT EXISTS (\r\n        SELECT 1 FROM class_subjects cs \r\n        WHERE cs.class_section_id = ts.class_section_id \r\n          AND cs.teacher_id = ts.teacher_id \r\n          AND cs.subject_id = ts.subject_id\r\n          AND cs.deleted_at IS NULL\r\n      );\r\n\r\n    -- 4. Multi-Section Enrollment Check\r\n    RETURN QUERY\r\n    SELECT \r\n        'CRITICAL'::TEXT, 'ENROLLMENT_ERROR'::TEXT, se.student_id::TEXT, \r\n        format('Student has %s active enrollments in Academic Year %s', COUNT(*), se.academic_year_id)\r\n    FROM student_enrollments se\r\n    WHERE se.status = 'active' AND se.deleted_at IS NULL\r\n    GROUP BY se.student_id, se.academic_year_id\r\n    HAVING COUNT(*) > 1;\r\n\r\n    -- 5. Orphan Check\r\n    RETURN QUERY\r\n    SELECT 'HIGH'::TEXT, 'ORPHAN'::TEXT, se.id::TEXT, 'Enrollment linked to deleted student'\r\n    FROM student_enrollments se\r\n    LEFT JOIN students s ON se.student_id = s.id\r\n    WHERE (s.id IS NULL OR s.deleted_at IS NOT NULL) AND se.deleted_at IS NULL;\r\n\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_marks_entry",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_max_marks DECIMAL(5,2);\r\nBEGIN\r\n    -- 1. Check Max Marks\r\n    SELECT max_marks INTO v_max_marks\r\n    FROM exam_subjects\r\n    WHERE id = NEW.exam_subject_id;\r\n\r\n    IF NEW.marks_obtained IS NOT NULL AND NEW.marks_obtained > v_max_marks THEN\r\n        RAISE EXCEPTION 'Invalid Marks: Obtained marks (%) exceed maximum marks (%)', NEW.marks_obtained, v_max_marks;\r\n    END IF;\r\n\r\n    -- 2. Check Range\r\n    IF NEW.marks_obtained IS NOT NULL AND NEW.marks_obtained < 0 THEN\r\n        RAISE EXCEPTION 'Invalid Marks: Marks cannot be negative';\r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "auto_assign_fees_on_enrollment",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE v_class_id UUID;\r\nBEGIN\r\n    IF NEW.status = 'active' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'active') THEN\r\n        SELECT class_id INTO v_class_id FROM class_sections WHERE id = NEW.class_section_id;\r\n        INSERT INTO student_fees (student_id, fee_structure_id, amount_due, amount_paid, status, due_date)\r\n        SELECT NEW.student_id, fs.id, fs.amount, 0, 'pending', fs.due_date\r\n        FROM fee_structures fs\r\n        WHERE fs.class_id = v_class_id AND fs.academic_year_id = NEW.academic_year_id\r\n          AND NOT EXISTS (SELECT 1 FROM student_fees sf WHERE sf.student_id = NEW.student_id AND sf.fee_structure_id = fs.id);\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "generate_ticket_no",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n  IF NEW.ticket_no IS NULL THEN\r\n    NEW.ticket_no := 'TKT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || \r\n                     LPAD(NEXTVAL('complaint_ticket_seq')::TEXT, 4, '0');\r\n  END IF;\r\n  RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "enforce_class_teacher_source_of_truth",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    -- Allow updates if they match Monday Period 1 (which the trigger above does)\r\n    -- But if a user manually tries to set it to something else, we should either:\r\n    -- A) Block it.\r\n    -- B) Let it happen but it will be overwritten next timetable change.\r\n    \r\n    -- Let's just rely on the trigger. If they manually change it, it might be for a valid reason \r\n    -- (temp substitute), but the next timetable edit will reset it. \r\n    -- User requirement: \"No static or manually assigned class teacher logic.\"\r\n    -- So we should probably effectively make it read-only from the API perspective, \r\n    -- or just let the trigger handle it.\r\n    \r\n    -- To adhere to \"Single Source of Truth\", we can force checking against timetable on update.\r\n    -- But that causes circular logic if we aren't careful.\r\n    -- Let's stick to the AFTER trigger on timetable_slots as the primary mechanism.\r\n    \r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "trg_check_fee_cash_limit",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.payment_method = 'cash' THEN PERFORM check_financial_permission('FEE_COLLECT_CASH', NEW.amount); END IF;\r\n    PERFORM enforce_financial_lock(NEW.paid_at::DATE, 'FEE');\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "auto_generate_receipt",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nDECLARE\r\n    v_receipt_id UUID;\r\n    v_student_id UUID;\r\n    v_receipt_no TEXT;\r\nBEGIN\r\n    SELECT student_id INTO v_student_id FROM student_fees WHERE id = NEW.student_fee_id;\r\n\r\n    v_receipt_no := 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');\r\n\r\n    INSERT INTO receipts (receipt_no, student_id, total_amount, issued_at, issued_by, remarks)\r\n    VALUES (v_receipt_no, v_student_id, NEW.amount, NEW.paid_at, NEW.received_by, COALESCE(NEW.remarks, 'System Generated'))\r\n    RETURNING id INTO v_receipt_id;\r\n\r\n    INSERT INTO receipt_items (receipt_id, fee_transaction_id, amount)\r\n    VALUES (v_receipt_id, NEW.id, NEW.amount);\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "validate_diary_entry",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    -- 1. Subject Assignment Check\r\n    IF NEW.subject_id IS NOT NULL THEN\r\n        IF NOT EXISTS (\r\n            SELECT 1 FROM class_subjects cs\r\n            JOIN staff s ON cs.teacher_id = s.id\r\n            WHERE cs.class_section_id = NEW.class_section_id\r\n              AND cs.subject_id = NEW.subject_id\r\n              AND cs.deleted_at IS NULL\r\n              AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.created_by)\r\n        ) THEN\r\n            RAISE EXCEPTION 'Unauthorized: You are not assigned to teach this subject in this class';\r\n        END IF;\r\n    END IF;\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_update_timestamp",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    NEW.updated_at = NOW();\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "get_financial_policy_value",
+    "routine_type": "FUNCTION",
+    "data_type": "jsonb",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE val JSONB;\r\nBEGIN\r\n    SELECT current_value INTO val FROM financial_policy_rules WHERE rule_code = code_input;\r\n    RETURN val;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "enforce_financial_lock",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE v_lock_days INT;\r\nBEGIN\r\n    SELECT (current_value->>'amount')::INT INTO v_lock_days FROM financial_policy_rules WHERE rule_code = 'LOCK_PAST_MONTHS_DAYS';\r\n    IF v_lock_days IS NULL THEN v_lock_days := 7; END IF;\r\n    IF p_date < DATE_TRUNC('month', CURRENT_DATE) THEN\r\n        IF EXTRACT(DAY FROM CURRENT_DATE) > v_lock_days THEN\r\n            RAISE EXCEPTION 'Financial period for % is locked. (Automatic lock enabled after day % of subsequent month)', p_date, v_lock_days;\r\n        END IF;\r\n    END IF;\r\n    RETURN TRUE;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "fn_check_invoice_amounts",
+    "routine_type": "FUNCTION",
+    "data_type": "trigger",
+    "security_type": "INVOKER",
+    "routine_definition": "\r\nBEGIN\r\n    IF NEW.paid_amount > NEW.total_amount THEN\r\n        RAISE EXCEPTION 'Paid amount (%) cannot exceed Total amount (%).', NEW.paid_amount, NEW.total_amount;\r\n    END IF;\r\n    \r\n    -- Auto-update status based on payment\r\n    IF NEW.paid_amount = NEW.total_amount THEN\r\n        NEW.status = 'paid';\r\n    ELSIF NEW.paid_amount > 0 THEN\r\n        NEW.status = 'partial';\r\n    ELSIF NEW.paid_amount = 0 THEN\r\n         -- Optional: Reset to unpaid if it was something else, or leave logic to app.\r\n         -- Safest to only strictly set 'paid' or 'partial' if logic dictates.\r\n         IF NEW.status = 'paid' THEN NEW.status = 'unpaid'; END IF; \r\n    END IF;\r\n\r\n    RETURN NEW;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "is_staff",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nBEGIN\r\n  RETURN EXISTS (\r\n    SELECT 1 FROM public.staff WHERE user_id = auth.uid()\r\n  );\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "check_financial_permission",
+    "routine_type": "FUNCTION",
+    "data_type": "boolean",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n    v_user_id UUID;\r\n    v_role_code TEXT;\r\n    v_auto_approve_limit DECIMAL;\r\nBEGIN\r\n    v_user_id := auth.uid();\r\n    SELECT r.code INTO v_role_code FROM user_roles ur JOIN roles r ON ur.role_id = r.id WHERE ur.user_id = v_user_id\r\n    ORDER BY (CASE WHEN r.code = 'admin' THEN 1 WHEN r.code = 'principal' THEN 2 ELSE 3 END) LIMIT 1;\r\n\r\n    IF v_role_code = 'admin' THEN RETURN TRUE; END IF;\r\n\r\n    IF p_action_code = 'EXPENSE_AUTO_APPROVE' THEN\r\n        SELECT current_value->>'amount' INTO v_auto_approve_limit FROM financial_policy_rules WHERE rule_code = 'EXPENSE_AUTO_APPROVE_LIMIT';\r\n        IF v_auto_approve_limit IS NOT NULL AND p_amount > v_auto_approve_limit::DECIMAL THEN\r\n             RAISE EXCEPTION 'Amount % exceeds auto-approval limit of %', p_amount, v_auto_approve_limit;\r\n        END IF;\r\n    END IF;\r\n\r\n    IF p_action_code = 'FEE_COLLECT_CASH' THEN\r\n        DECLARE\r\n            v_today_total DECIMAL;\r\n            v_daily_limit JSONB;\r\n        BEGIN\r\n            SELECT COALESCE(SUM(amount), 0) INTO v_today_total FROM fee_transactions WHERE received_by = v_user_id AND payment_method = 'cash' AND paid_at::DATE = CURRENT_DATE;\r\n            SELECT current_value INTO v_daily_limit FROM financial_policy_rules WHERE rule_code = 'CASH_COLLECTION_DAILY_LIMIT';\r\n            IF v_daily_limit IS NOT NULL AND (v_today_total + p_amount) > (v_daily_limit->>'amount')::DECIMAL THEN\r\n                 RAISE EXCEPTION 'Daily cash limit exceeded. Collected: %, Attempt: %, Limit: %', v_today_total, p_amount, v_daily_limit->>'amount';\r\n            END IF;\r\n        END;\r\n    END IF;\r\n    RETURN TRUE;\r\nEND;\r\n"
+  },
+  {
+    "routine_name": "repair_data_integrity",
+    "routine_type": "FUNCTION",
+    "data_type": "void",
+    "security_type": "DEFINER",
+    "routine_definition": "\r\nDECLARE\r\n    v_count INTEGER;\r\nBEGIN\r\n    -- 1. Deduplicate daily_attendance (Keep latest)\r\n    WITH duplicates AS (\r\n        SELECT id, ROW_NUMBER() OVER (PARTITION BY student_enrollment_id, attendance_date ORDER BY updated_at DESC) as rn\r\n        FROM daily_attendance WHERE deleted_at IS NULL\r\n    )\r\n    UPDATE daily_attendance SET deleted_at = NOW()\r\n    WHERE id IN (SELECT id FROM duplicates WHERE rn > 1);\r\n\r\n    -- 2. Deduplicate class_subjects\r\n    UPDATE class_subjects SET deleted_at = NOW()\r\n    WHERE id IN (\r\n        SELECT id FROM (\r\n            SELECT id, ROW_NUMBER() OVER (PARTITION BY class_section_id, subject_id ORDER BY id) as rn\r\n            FROM class_subjects WHERE deleted_at IS NULL\r\n        ) t WHERE rn > 1\r\n    );\r\n\r\n    -- 3. Backfill class_subjects from timetable_slots\r\n    INSERT INTO class_subjects (class_section_id, subject_id, teacher_id)\r\n    SELECT DISTINCT ts.class_section_id, ts.subject_id, ts.teacher_id\r\n    FROM timetable_slots ts\r\n    WHERE ts.teacher_id IS NOT NULL \r\n      AND NOT EXISTS (\r\n        SELECT 1 FROM class_subjects cs\r\n        WHERE cs.class_section_id = ts.class_section_id AND cs.subject_id = ts.subject_id\r\n    );\r\n\r\n    -- 4. Sync teacher_id in class_subjects from timetable if mismatch\r\n    UPDATE class_subjects cs\r\n    SET teacher_id = ts.teacher_id\r\n    FROM timetable_slots ts\r\n    WHERE cs.class_section_id = ts.class_section_id\r\n      AND cs.subject_id = ts.subject_id\r\n      AND cs.teacher_id IS DISTINCT FROM ts.teacher_id\r\n      AND cs.deleted_at IS NULL\r\n      AND ts.teacher_id IS NOT NULL;\r\nEND;\r\n"
+  }
+]

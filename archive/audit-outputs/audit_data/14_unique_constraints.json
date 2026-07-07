@@ -1,0 +1,437 @@
+[
+  {
+    "table_name": "periods",
+    "constraint_name": "periods_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "uniq_delivery_notification_channel",
+    "column_name": "notification_id"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "uniq_delivery_notification_channel",
+    "column_name": "channel"
+  },
+  {
+    "table_name": "countries",
+    "constraint_name": "countries_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "genders",
+    "constraint_name": "genders_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "student_categories",
+    "constraint_name": "student_categories_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "religions",
+    "constraint_name": "religions_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "blood_groups",
+    "constraint_name": "blood_groups_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "relationship_types",
+    "constraint_name": "relationship_types_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "financial_policy_rules_rule_code_key",
+    "column_name": "rule_code"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "notification_templates_event_type_key",
+    "column_name": "event_type"
+  },
+  {
+    "table_name": "staff_designations",
+    "constraint_name": "staff_designations_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "roles",
+    "constraint_name": "roles_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "permissions",
+    "constraint_name": "permissions_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "users_person_id_key",
+    "column_name": "person_id"
+  },
+  {
+    "table_name": "student_statuses",
+    "constraint_name": "student_statuses_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "students_person_id_key",
+    "column_name": "person_id"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "students_admission_no_key",
+    "column_name": "admission_no"
+  },
+  {
+    "table_name": "parents",
+    "constraint_name": "parents_person_id_key",
+    "column_name": "person_id"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "uq_active_parent",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "uq_active_parent",
+    "column_name": "parent_id"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "academic_years_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "classes",
+    "constraint_name": "classes_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "sections",
+    "constraint_name": "sections_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "class_sections_class_id_section_id_academic_year_id_key",
+    "column_name": "class_id"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "class_sections_class_id_section_id_academic_year_id_key",
+    "column_name": "section_id"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "class_sections_class_id_section_id_academic_year_id_key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "student_enrollments_class_section_id_academic_year_id_roll__key",
+    "column_name": "class_section_id"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "student_enrollments_class_section_id_academic_year_id_roll__key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "student_enrollments_class_section_id_academic_year_id_roll__key",
+    "column_name": "roll_number"
+  },
+  {
+    "table_name": "staff_statuses",
+    "constraint_name": "staff_statuses_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "staff_person_id_key",
+    "column_name": "person_id"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "staff_staff_code_key",
+    "column_name": "staff_code"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "fee_types_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "fee_types_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "fee_structures_academic_year_id_class_id_fee_type_id_key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "fee_structures_academic_year_id_class_id_fee_type_id_key",
+    "column_name": "class_id"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "fee_structures_academic_year_id_class_id_fee_type_id_key",
+    "column_name": "fee_type_id"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "timetable_entries_class_section_id_period_id_day_of_week_key",
+    "column_name": "class_section_id"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "timetable_entries_class_section_id_period_id_day_of_week_key",
+    "column_name": "period_id"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "timetable_entries_class_section_id_period_id_day_of_week_key",
+    "column_name": "day_of_week"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "receipts_receipt_no_key",
+    "column_name": "receipt_no"
+  },
+  {
+    "table_name": "subjects",
+    "constraint_name": "subjects_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "class_subjects_class_section_id_subject_id_key",
+    "column_name": "class_section_id"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "class_subjects_class_section_id_subject_id_key",
+    "column_name": "subject_id"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "exam_subjects_exam_id_subject_id_class_id_key",
+    "column_name": "exam_id"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "exam_subjects_exam_id_subject_id_class_id_key",
+    "column_name": "subject_id"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "exam_subjects_exam_id_subject_id_class_id_key",
+    "column_name": "class_id"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "marks_exam_subject_id_student_enrollment_id_key",
+    "column_name": "exam_subject_id"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "marks_exam_subject_id_student_enrollment_id_key",
+    "column_name": "student_enrollment_id"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "complaints_ticket_no_key",
+    "column_name": "ticket_no"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "transport_routes_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "buses_bus_no_key",
+    "column_name": "bus_no"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "buses_registration_no_key",
+    "column_name": "registration_no"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "transport_stops_route_id_stop_order_key",
+    "column_name": "route_id"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "transport_stops_route_id_stop_order_key",
+    "column_name": "stop_order"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "student_transport_student_id_academic_year_id_key",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "student_transport_student_id_academic_year_id_key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "constraint_name": "hostel_blocks_name_key",
+    "column_name": "name"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "hostel_rooms_block_id_room_no_key",
+    "column_name": "block_id"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "hostel_rooms_block_id_room_no_key",
+    "column_name": "room_no"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "hostel_allocations_student_id_academic_year_id_key",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "hostel_allocations_student_id_academic_year_id_key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "notification_events_idempotency_key_key",
+    "column_name": "idempotency_key"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "staff_payroll_staff_id_payroll_month_payroll_year_key",
+    "column_name": "staff_id"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "staff_payroll_staff_id_payroll_month_payroll_year_key",
+    "column_name": "payroll_month"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "staff_payroll_staff_id_payroll_month_payroll_year_key",
+    "column_name": "payroll_year"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "uniq_notifications_event_user",
+    "column_name": "event_id"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "uniq_notifications_event_user",
+    "column_name": "user_id"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "bus_locations_bus_id_key",
+    "column_name": "bus_id"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "feature_flags_code_key",
+    "column_name": "code"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "ui_route_permissions_route_key_key",
+    "column_name": "route_key"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "staff_attendance_staff_id_attendance_date_key",
+    "column_name": "staff_id"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "staff_attendance_staff_id_attendance_date_key",
+    "column_name": "attendance_date"
+  },
+  {
+    "table_name": "school_settings",
+    "constraint_name": "school_settings_key_key",
+    "column_name": "key"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "student_money_science_progress_student_id_module_id_key",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "student_money_science_progress_student_id_module_id_key",
+    "column_name": "module_id"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "user_devices_user_id_fcm_token_key",
+    "column_name": "user_id"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "user_devices_user_id_fcm_token_key",
+    "column_name": "fcm_token"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "student_science_projects_student_id_project_id_key",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "student_science_projects_student_id_project_id_key",
+    "column_name": "project_id"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "student_life_values_progress_student_id_module_id_academic__key",
+    "column_name": "student_id"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "student_life_values_progress_student_id_module_id_academic__key",
+    "column_name": "module_id"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "student_life_values_progress_student_id_module_id_academic__key",
+    "column_name": "academic_year_id"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "trip_stop_status_trip_id_stop_id_key",
+    "column_name": "trip_id"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "trip_stop_status_trip_id_stop_id_key",
+    "column_name": "stop_id"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "constraint_name": "girl_safety_complaints_ticket_no_key",
+    "column_name": "ticket_no"
+  }
+]

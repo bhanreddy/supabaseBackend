@@ -1,0 +1,570 @@
+[
+  {
+    "table_schema": "auth",
+    "table_name": "audit_log_entries"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "custom_oauth_providers"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "flow_state"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "identities"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "instances"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "mfa_amr_claims"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "mfa_challenges"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "mfa_factors"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "oauth_authorizations"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "oauth_client_states"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "oauth_clients"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "oauth_consents"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "one_time_tokens"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "refresh_tokens"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "saml_providers"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "saml_relay_states"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "schema_migrations"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "sessions"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "sso_domains"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "sso_providers"
+  },
+  {
+    "table_schema": "auth",
+    "table_name": "users"
+  },
+  {
+    "table_schema": "extensions",
+    "table_name": "pg_stat_statements"
+  },
+  {
+    "table_schema": "extensions",
+    "table_name": "pg_stat_statements_info"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "academic_years"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "access_requests"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "active_persons"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "active_students"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "admin_notifications"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "audit_logs"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "blood_groups"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "bus_locations"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "bus_trip_history"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "buses"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "class_sections"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "class_subjects"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "classes"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "complaints"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "countries"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "daily_attendance"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "debug_class_teachers"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "debug_role_permissions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "diary_entries"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "discipline_records"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "driver_devices"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "driver_heartbeat"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "events"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "exam_subjects"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "exams"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "expenses"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "feature_flags"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "fee_installments"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "fee_structures"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "fee_transactions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "fee_types"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "financial_audit_logs"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "financial_policy_rules"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "genders"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "girl_safety_complaint_threads"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "girl_safety_complaints"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "grading_scales"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "hostel_allocations"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "hostel_blocks"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "hostel_rooms"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "leave_applications"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "life_values_modules"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "lms_courses"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "lms_materials"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "marks"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "money_science_modules"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notices"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_audit_logs"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_batches"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_config"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_deliveries"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_events"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_logs"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_preferences"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notification_templates"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "notifications"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "parents"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "periods"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "permissions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "person_contacts"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "persons"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "receipt_items"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "receipts"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "relationship_types"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "religions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "role_permissions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "roles"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "schema_meta"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "school_settings"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "science_projects"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "sections"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "staff"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "staff_attendance"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "staff_designations"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "staff_payroll"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "staff_statuses"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_categories"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_enrollments"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_fees"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_life_values_progress"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_money_science_progress"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_parents"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_science_projects"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_statuses"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "student_transport"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "students"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "subjects"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "temp_access_grants"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "timetable_entries"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "timetable_slots"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "transport_routes"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "transport_stops"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "trip_stop_status"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "trips"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "ui_route_permissions"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_devices"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_roles"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_settings"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "users"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_06"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_07"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_08"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_09"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_10"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_11"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "messages_2026_03_12"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "schema_migrations"
+  },
+  {
+    "table_schema": "realtime",
+    "table_name": "subscription"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "buckets"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "buckets_analytics"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "buckets_vectors"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "migrations"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "objects"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "s3_multipart_uploads"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "s3_multipart_uploads_parts"
+  },
+  {
+    "table_schema": "storage",
+    "table_name": "vector_indexes"
+  },
+  {
+    "table_schema": "vault",
+    "table_name": "decrypted_secrets"
+  },
+  {
+    "table_schema": "vault",
+    "table_name": "secrets"
+  }
+]

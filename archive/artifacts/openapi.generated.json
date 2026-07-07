@@ -1,0 +1,325 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NexSyrus IMS API",
+    "version": "2.0.0",
+    "description": "Schema-driven Institute Management System API. All types, validations, and permissions derive from the database schema."
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "API v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Supabase JWT token"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          }
+        }
+      },
+      "PermissionPayload": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "first_name": {
+            "type": "string"
+          },
+          "last_name": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Role codes from the roles table"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permission codes from role_permissions"
+          },
+          "feature_flags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "Active feature flags for this user"
+          },
+          "ui_access_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "UI route access map derived from permissions"
+          },
+          "home_route": {
+            "type": "string",
+            "description": "Default home route for the user based on their highest role"
+          },
+          "has_student_profile": {
+            "type": "boolean"
+          },
+          "has_staff_profile": {
+            "type": "boolean"
+          },
+          "staff_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "class_section_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get current user profile with full permission payload",
+        "description": "Returns the complete user profile including roles, permissions,\nfeature flags, UI access map, and computed home route.\nThis is the central permission resolver — the frontend uses this\nto render routes dynamically and guard pages.\n",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full user profile with permission payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/schema/enums": {
+      "get": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Get all enum types and their values",
+        "description": "Returns all PostgreSQL enum types defined in the schema",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enum types map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/schema/permissions": {
+      "get": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Get all permission codes",
+        "description": "Returns all registered permission codes from the permissions table",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Permission list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/schema/roles": {
+      "get": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Get role-permission mapping",
+        "description": "Returns all roles with their associated permissions",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Role-permission map"
+          }
+        }
+      }
+    },
+    "/schema/reference/{table}": {
+      "get": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Get reference table data",
+        "description": "Returns data from allowed reference/lookup tables",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "genders",
+                "student_categories",
+                "religions",
+                "blood_groups",
+                "relationship_types",
+                "staff_designations",
+                "student_statuses",
+                "staff_statuses",
+                "countries"
+              ]
+            }
+          }
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reference data rows"
+          }
+        }
+      }
+    },
+    "/schema/table/{table}": {
+      "get": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Get table column metadata",
+        "description": "Returns column definitions for a table (admin only)",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Column metadata"
+          }
+        }
+      }
+    },
+    "/schema/cache/invalidate": {
+      "post": {
+        "tags": [
+          "Schema"
+        ],
+        "summary": "Invalidate schema metadata cache",
+        "description": "Force refresh of cached schema data (admin only). Call after migrations.",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cache invalidated"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Schema",
+      "description": "Database schema introspection endpoints"
+    }
+  ]
+}

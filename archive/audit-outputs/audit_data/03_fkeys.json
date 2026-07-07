@@ -1,0 +1,1181 @@
+[
+  {
+    "table_name": "student_transport",
+    "column_name": "bus_id",
+    "foreign_table": "buses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_transport_bus_id_fkey"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "column_name": "notification_id",
+    "foreign_table": "notifications",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "notification_deliveries_notification_id_fkey"
+  },
+  {
+    "table_name": "notification_audit_logs",
+    "column_name": "delivery_id",
+    "foreign_table": "notification_deliveries",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notification_audit_logs_delivery_id_fkey"
+  },
+  {
+    "table_name": "notification_audit_logs",
+    "column_name": "notification_id",
+    "foreign_table": "notifications",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notification_audit_logs_notification_id_fkey"
+  },
+  {
+    "table_name": "transport_routes",
+    "column_name": "bus_id",
+    "foreign_table": "buses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "transport_routes_bus_id_fkey"
+  },
+  {
+    "table_name": "buses",
+    "column_name": "driver_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "buses_driver_id_fkey"
+  },
+  {
+    "table_name": "notification_logs",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "notification_logs_user_id_fkey"
+  },
+  {
+    "table_name": "notification_batches",
+    "column_name": "admin_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notification_batches_admin_id_fkey"
+  },
+  {
+    "table_name": "class_sections",
+    "column_name": "class_teacher_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "fk_class_sections_teacher"
+  },
+  {
+    "table_name": "fee_transactions",
+    "column_name": "refund_of",
+    "foreign_table": "fee_transactions",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_transactions_refund_of_fkey"
+  },
+  {
+    "table_name": "timetable_slots",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "timetable_slots_academic_year_id_fkey"
+  },
+  {
+    "table_name": "timetable_slots",
+    "column_name": "class_section_id",
+    "foreign_table": "class_sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "timetable_slots_class_section_id_fkey"
+  },
+  {
+    "table_name": "timetable_slots",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "timetable_slots_subject_id_fkey"
+  },
+  {
+    "table_name": "timetable_slots",
+    "column_name": "teacher_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "timetable_slots_teacher_id_fkey"
+  },
+  {
+    "table_name": "persons",
+    "column_name": "gender_id",
+    "foreign_table": "genders",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "persons_gender_id_fkey"
+  },
+  {
+    "table_name": "persons",
+    "column_name": "nationality_code",
+    "foreign_table": "countries",
+    "foreign_column": "code",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "persons_nationality_code_fkey"
+  },
+  {
+    "table_name": "person_contacts",
+    "column_name": "person_id",
+    "foreign_table": "persons",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "person_contacts_person_id_fkey"
+  },
+  {
+    "table_name": "role_permissions",
+    "column_name": "role_id",
+    "foreign_table": "roles",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "role_permissions_role_id_fkey"
+  },
+  {
+    "table_name": "role_permissions",
+    "column_name": "permission_id",
+    "foreign_table": "permissions",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "role_permissions_permission_id_fkey"
+  },
+  {
+    "table_name": "users",
+    "column_name": "person_id",
+    "foreign_table": "persons",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "users_person_id_fkey"
+  },
+  {
+    "table_name": "user_roles",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "user_roles_user_id_fkey"
+  },
+  {
+    "table_name": "user_roles",
+    "column_name": "role_id",
+    "foreign_table": "roles",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "user_roles_role_id_fkey"
+  },
+  {
+    "table_name": "user_roles",
+    "column_name": "granted_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "user_roles_granted_by_fkey"
+  },
+  {
+    "table_name": "students",
+    "column_name": "person_id",
+    "foreign_table": "persons",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "students_person_id_fkey"
+  },
+  {
+    "table_name": "students",
+    "column_name": "category_id",
+    "foreign_table": "student_categories",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "students_category_id_fkey"
+  },
+  {
+    "table_name": "students",
+    "column_name": "religion_id",
+    "foreign_table": "religions",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "students_religion_id_fkey"
+  },
+  {
+    "table_name": "students",
+    "column_name": "blood_group_id",
+    "foreign_table": "blood_groups",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "students_blood_group_id_fkey"
+  },
+  {
+    "table_name": "students",
+    "column_name": "status_id",
+    "foreign_table": "student_statuses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "students_status_id_fkey"
+  },
+  {
+    "table_name": "parents",
+    "column_name": "person_id",
+    "foreign_table": "persons",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "parents_person_id_fkey"
+  },
+  {
+    "table_name": "student_parents",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "student_parents_student_id_fkey"
+  },
+  {
+    "table_name": "student_parents",
+    "column_name": "parent_id",
+    "foreign_table": "parents",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "student_parents_parent_id_fkey"
+  },
+  {
+    "table_name": "student_parents",
+    "column_name": "relationship_id",
+    "foreign_table": "relationship_types",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_parents_relationship_id_fkey"
+  },
+  {
+    "table_name": "class_sections",
+    "column_name": "class_id",
+    "foreign_table": "classes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_sections_class_id_fkey"
+  },
+  {
+    "table_name": "class_sections",
+    "column_name": "section_id",
+    "foreign_table": "sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_sections_section_id_fkey"
+  },
+  {
+    "table_name": "class_sections",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_sections_academic_year_id_fkey"
+  },
+  {
+    "table_name": "student_enrollments",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "student_enrollments_student_id_fkey"
+  },
+  {
+    "table_name": "student_enrollments",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "student_enrollments_academic_year_id_fkey"
+  },
+  {
+    "table_name": "student_enrollments",
+    "column_name": "class_section_id",
+    "foreign_table": "class_sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "student_enrollments_class_section_id_fkey"
+  },
+  {
+    "table_name": "daily_attendance",
+    "column_name": "student_enrollment_id",
+    "foreign_table": "student_enrollments",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "daily_attendance_student_enrollment_id_fkey"
+  },
+  {
+    "table_name": "daily_attendance",
+    "column_name": "marked_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "daily_attendance_marked_by_fkey"
+  },
+  {
+    "table_name": "staff",
+    "column_name": "person_id",
+    "foreign_table": "persons",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "RESTRICT",
+    "constraint_name": "staff_person_id_fkey"
+  },
+  {
+    "table_name": "staff",
+    "column_name": "designation_id",
+    "foreign_table": "staff_designations",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "staff_designation_id_fkey"
+  },
+  {
+    "table_name": "staff",
+    "column_name": "status_id",
+    "foreign_table": "staff_statuses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "staff_status_id_fkey"
+  },
+  {
+    "table_name": "fee_structures",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_structures_academic_year_id_fkey"
+  },
+  {
+    "table_name": "fee_structures",
+    "column_name": "class_id",
+    "foreign_table": "classes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_structures_class_id_fkey"
+  },
+  {
+    "table_name": "fee_structures",
+    "column_name": "fee_type_id",
+    "foreign_table": "fee_types",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_structures_fee_type_id_fkey"
+  },
+  {
+    "table_name": "student_fees",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_fees_student_id_fkey"
+  },
+  {
+    "table_name": "student_fees",
+    "column_name": "fee_structure_id",
+    "foreign_table": "fee_structures",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_fees_fee_structure_id_fkey"
+  },
+  {
+    "table_name": "fee_transactions",
+    "column_name": "student_fee_id",
+    "foreign_table": "student_fees",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_transactions_student_fee_id_fkey"
+  },
+  {
+    "table_name": "fee_transactions",
+    "column_name": "received_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "fee_transactions_received_by_fkey"
+  },
+  {
+    "table_name": "receipts",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "receipts_student_id_fkey"
+  },
+  {
+    "table_name": "receipts",
+    "column_name": "issued_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "receipts_issued_by_fkey"
+  },
+  {
+    "table_name": "receipt_items",
+    "column_name": "receipt_id",
+    "foreign_table": "receipts",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "receipt_items_receipt_id_fkey"
+  },
+  {
+    "table_name": "receipt_items",
+    "column_name": "fee_transaction_id",
+    "foreign_table": "fee_transactions",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "receipt_items_fee_transaction_id_fkey"
+  },
+  {
+    "table_name": "class_subjects",
+    "column_name": "class_section_id",
+    "foreign_table": "class_sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_subjects_class_section_id_fkey"
+  },
+  {
+    "table_name": "class_subjects",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_subjects_subject_id_fkey"
+  },
+  {
+    "table_name": "class_subjects",
+    "column_name": "teacher_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_subjects_teacher_id_fkey"
+  },
+  {
+    "table_name": "exams",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "exams_academic_year_id_fkey"
+  },
+  {
+    "table_name": "exam_subjects",
+    "column_name": "exam_id",
+    "foreign_table": "exams",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "exam_subjects_exam_id_fkey"
+  },
+  {
+    "table_name": "exam_subjects",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "exam_subjects_subject_id_fkey"
+  },
+  {
+    "table_name": "exam_subjects",
+    "column_name": "class_id",
+    "foreign_table": "classes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "exam_subjects_class_id_fkey"
+  },
+  {
+    "table_name": "marks",
+    "column_name": "exam_subject_id",
+    "foreign_table": "exam_subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "marks_exam_subject_id_fkey"
+  },
+  {
+    "table_name": "marks",
+    "column_name": "student_enrollment_id",
+    "foreign_table": "student_enrollments",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "marks_student_enrollment_id_fkey"
+  },
+  {
+    "table_name": "marks",
+    "column_name": "entered_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "marks_entered_by_fkey"
+  },
+  {
+    "table_name": "complaints",
+    "column_name": "raised_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "complaints_raised_by_fkey"
+  },
+  {
+    "table_name": "complaints",
+    "column_name": "raised_for_student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "complaints_raised_for_student_id_fkey"
+  },
+  {
+    "table_name": "complaints",
+    "column_name": "assigned_to",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "complaints_assigned_to_fkey"
+  },
+  {
+    "table_name": "complaints",
+    "column_name": "resolved_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "complaints_resolved_by_fkey"
+  },
+  {
+    "table_name": "notices",
+    "column_name": "target_class_id",
+    "foreign_table": "classes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notices_target_class_id_fkey"
+  },
+  {
+    "table_name": "notices",
+    "column_name": "created_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notices_created_by_fkey"
+  },
+  {
+    "table_name": "leave_applications",
+    "column_name": "applicant_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "leave_applications_applicant_id_fkey"
+  },
+  {
+    "table_name": "leave_applications",
+    "column_name": "reviewed_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "leave_applications_reviewed_by_fkey"
+  },
+  {
+    "table_name": "diary_entries",
+    "column_name": "class_section_id",
+    "foreign_table": "class_sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "diary_entries_class_section_id_fkey"
+  },
+  {
+    "table_name": "diary_entries",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "diary_entries_subject_id_fkey"
+  },
+  {
+    "table_name": "diary_entries",
+    "column_name": "created_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "diary_entries_created_by_fkey"
+  },
+  {
+    "table_name": "timetable_entries",
+    "column_name": "class_section_id",
+    "foreign_table": "class_sections",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "timetable_entries_class_section_id_fkey"
+  },
+  {
+    "table_name": "timetable_entries",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "timetable_entries_subject_id_fkey"
+  },
+  {
+    "table_name": "timetable_entries",
+    "column_name": "teacher_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "timetable_entries_teacher_id_fkey"
+  },
+  {
+    "table_name": "timetable_entries",
+    "column_name": "period_id",
+    "foreign_table": "periods",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "timetable_entries_period_id_fkey"
+  },
+  {
+    "table_name": "buses",
+    "column_name": "route_id",
+    "foreign_table": "transport_routes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "buses_route_id_fkey"
+  },
+  {
+    "table_name": "transport_stops",
+    "column_name": "route_id",
+    "foreign_table": "transport_routes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "transport_stops_route_id_fkey"
+  },
+  {
+    "table_name": "student_transport",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_transport_student_id_fkey"
+  },
+  {
+    "table_name": "student_transport",
+    "column_name": "route_id",
+    "foreign_table": "transport_routes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_transport_route_id_fkey"
+  },
+  {
+    "table_name": "student_transport",
+    "column_name": "stop_id",
+    "foreign_table": "transport_stops",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_transport_stop_id_fkey"
+  },
+  {
+    "table_name": "student_transport",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_transport_academic_year_id_fkey"
+  },
+  {
+    "table_name": "bus_locations",
+    "column_name": "bus_id",
+    "foreign_table": "buses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "bus_locations_bus_id_fkey"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "column_name": "gender_id",
+    "foreign_table": "genders",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_blocks_gender_id_fkey"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "column_name": "warden_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_blocks_warden_id_fkey"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "column_name": "block_id",
+    "foreign_table": "hostel_blocks",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_rooms_block_id_fkey"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_allocations_student_id_fkey"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "column_name": "room_id",
+    "foreign_table": "hostel_rooms",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_allocations_room_id_fkey"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "hostel_allocations_academic_year_id_fkey"
+  },
+  {
+    "table_name": "events",
+    "column_name": "created_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "events_created_by_fkey"
+  },
+  {
+    "table_name": "lms_courses",
+    "column_name": "subject_id",
+    "foreign_table": "subjects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "lms_courses_subject_id_fkey"
+  },
+  {
+    "table_name": "lms_courses",
+    "column_name": "class_id",
+    "foreign_table": "classes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "lms_courses_class_id_fkey"
+  },
+  {
+    "table_name": "lms_courses",
+    "column_name": "instructor_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "lms_courses_instructor_id_fkey"
+  },
+  {
+    "table_name": "lms_materials",
+    "column_name": "course_id",
+    "foreign_table": "lms_courses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "lms_materials_course_id_fkey"
+  },
+  {
+    "table_name": "audit_logs",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "audit_logs_user_id_fkey"
+  },
+  {
+    "table_name": "notification_preferences",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "notification_preferences_user_id_fkey"
+  },
+  {
+    "table_name": "notification_preferences",
+    "column_name": "event_type",
+    "foreign_table": "notification_templates",
+    "foreign_column": "event_type",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notification_preferences_event_type_fkey"
+  },
+  {
+    "table_name": "notification_events",
+    "column_name": "event_type",
+    "foreign_table": "notification_templates",
+    "foreign_column": "event_type",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "notification_events_event_type_fkey"
+  },
+  {
+    "table_name": "notification_events",
+    "column_name": "actor_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "notification_events_actor_id_fkey"
+  },
+  {
+    "table_name": "staff_payroll",
+    "column_name": "staff_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "staff_payroll_staff_id_fkey"
+  },
+  {
+    "table_name": "notification_events",
+    "column_name": "target_user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "notification_events_target_user_id_fkey"
+  },
+  {
+    "table_name": "notifications",
+    "column_name": "event_id",
+    "foreign_table": "notification_events",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "notifications_event_id_fkey"
+  },
+  {
+    "table_name": "staff_attendance",
+    "column_name": "staff_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "staff_attendance_staff_id_fkey"
+  },
+  {
+    "table_name": "staff_attendance",
+    "column_name": "marked_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "staff_attendance_marked_by_fkey"
+  },
+  {
+    "table_name": "notifications",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "notifications_user_id_fkey"
+  },
+  {
+    "table_name": "discipline_records",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "discipline_records_student_id_fkey"
+  },
+  {
+    "table_name": "discipline_records",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "discipline_records_academic_year_id_fkey"
+  },
+  {
+    "table_name": "discipline_records",
+    "column_name": "reported_by",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "discipline_records_reported_by_fkey"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_money_science_progress_student_id_fkey"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "column_name": "module_id",
+    "foreign_table": "money_science_modules",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_money_science_progress_module_id_fkey"
+  },
+  {
+    "table_name": "user_devices",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "user_devices_user_id_fkey"
+  },
+  {
+    "table_name": "student_science_projects",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_science_projects_student_id_fkey"
+  },
+  {
+    "table_name": "student_science_projects",
+    "column_name": "project_id",
+    "foreign_table": "science_projects",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_science_projects_project_id_fkey"
+  },
+  {
+    "table_name": "life_values_modules",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "life_values_modules_academic_year_id_fkey"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_life_values_progress_student_id_fkey"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "column_name": "module_id",
+    "foreign_table": "life_values_modules",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "student_life_values_progress_module_id_fkey"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "column_name": "academic_year_id",
+    "foreign_table": "academic_years",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "student_life_values_progress_academic_year_id_fkey"
+  },
+  {
+    "table_name": "class_sections",
+    "column_name": "class_teacher_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "class_sections_class_teacher_id_fkey"
+  },
+  {
+    "table_name": "trips",
+    "column_name": "bus_id",
+    "foreign_table": "buses",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "trips_bus_id_fkey"
+  },
+  {
+    "table_name": "trips",
+    "column_name": "route_id",
+    "foreign_table": "transport_routes",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "trips_route_id_fkey"
+  },
+  {
+    "table_name": "trips",
+    "column_name": "driver_id",
+    "foreign_table": "staff",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "trips_driver_id_fkey"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "column_name": "trip_id",
+    "foreign_table": "trips",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "trip_stop_status_trip_id_fkey"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "column_name": "stop_id",
+    "foreign_table": "transport_stops",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "NO ACTION",
+    "constraint_name": "trip_stop_status_stop_id_fkey"
+  },
+  {
+    "table_name": "user_settings",
+    "column_name": "user_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "user_settings_user_id_fkey"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "column_name": "student_id",
+    "foreign_table": "students",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "girl_safety_complaints_student_id_fkey"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "column_name": "assigned_to",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "girl_safety_complaints_assigned_to_fkey"
+  },
+  {
+    "table_name": "girl_safety_complaint_threads",
+    "column_name": "complaint_id",
+    "foreign_table": "girl_safety_complaints",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "CASCADE",
+    "constraint_name": "girl_safety_complaint_threads_complaint_id_fkey"
+  },
+  {
+    "table_name": "girl_safety_complaint_threads",
+    "column_name": "sender_id",
+    "foreign_table": "users",
+    "foreign_column": "id",
+    "update_rule": "NO ACTION",
+    "delete_rule": "SET NULL",
+    "constraint_name": "girl_safety_complaint_threads_sender_id_fkey"
+  }
+]

@@ -1,0 +1,42 @@
+[
+  {
+    "extname": "plpgsql",
+    "extversion": "1.0",
+    "nspname": "pg_catalog"
+  },
+  {
+    "extname": "pg_stat_statements",
+    "extversion": "1.11",
+    "nspname": "extensions"
+  },
+  {
+    "extname": "uuid-ossp",
+    "extversion": "1.1",
+    "nspname": "extensions"
+  },
+  {
+    "extname": "pgcrypto",
+    "extversion": "1.3",
+    "nspname": "extensions"
+  },
+  {
+    "extname": "supabase_vault",
+    "extversion": "0.3.1",
+    "nspname": "vault"
+  },
+  {
+    "extname": "pg_graphql",
+    "extversion": "1.5.11",
+    "nspname": "graphql"
+  },
+  {
+    "extname": "btree_gist",
+    "extversion": "1.7",
+    "nspname": "extensions"
+  },
+  {
+    "extname": "pg_trgm",
+    "extversion": "1.6",
+    "nspname": "extensions"
+  }
+]

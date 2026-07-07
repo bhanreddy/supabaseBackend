@@ -1,0 +1,16 @@
+.env
+.env.*
+node_modules
+npm-debug.log
+*.log
+*.txt
+service-account.json
+.git
+.idea
+.vscode
+dist
+build
+__pycache__
+test
+tests
+coverage

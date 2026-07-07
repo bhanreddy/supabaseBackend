@@ -1,0 +1,482 @@
+[
+  {
+    "typname": "contact_type_enum",
+    "enumlabel": "email",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "contact_type_enum",
+    "enumlabel": "phone",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "contact_type_enum",
+    "enumlabel": "address",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "account_status_enum",
+    "enumlabel": "active",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "account_status_enum",
+    "enumlabel": "locked",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "account_status_enum",
+    "enumlabel": "disabled",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "enrollment_status_enum",
+    "enumlabel": "active",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "enrollment_status_enum",
+    "enumlabel": "completed",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "enrollment_status_enum",
+    "enumlabel": "withdrawn",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "attendance_status_enum",
+    "enumlabel": "present",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "attendance_status_enum",
+    "enumlabel": "absent",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "attendance_status_enum",
+    "enumlabel": "late",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "attendance_status_enum",
+    "enumlabel": "half_day",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "fee_status_enum",
+    "enumlabel": "pending",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "fee_status_enum",
+    "enumlabel": "partial",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "fee_status_enum",
+    "enumlabel": "paid",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "fee_status_enum",
+    "enumlabel": "waived",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "fee_status_enum",
+    "enumlabel": "overdue",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "cash",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "card",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "upi",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "bank_transfer",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "cheque",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "payment_method_enum",
+    "enumlabel": "online",
+    "enumsortorder": 6
+  },
+  {
+    "typname": "exam_status_enum",
+    "enumlabel": "scheduled",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "exam_status_enum",
+    "enumlabel": "ongoing",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "exam_status_enum",
+    "enumlabel": "completed",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "exam_status_enum",
+    "enumlabel": "cancelled",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "complaint_status_enum",
+    "enumlabel": "open",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "complaint_status_enum",
+    "enumlabel": "in_progress",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "complaint_status_enum",
+    "enumlabel": "resolved",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "complaint_status_enum",
+    "enumlabel": "closed",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "complaint_status_enum",
+    "enumlabel": "rejected",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "complaint_priority_enum",
+    "enumlabel": "low",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "complaint_priority_enum",
+    "enumlabel": "medium",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "complaint_priority_enum",
+    "enumlabel": "high",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "complaint_priority_enum",
+    "enumlabel": "urgent",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "notice_audience_enum",
+    "enumlabel": "all",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "notice_audience_enum",
+    "enumlabel": "students",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "notice_audience_enum",
+    "enumlabel": "staff",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "notice_audience_enum",
+    "enumlabel": "parents",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "notice_audience_enum",
+    "enumlabel": "class",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "leave_status_enum",
+    "enumlabel": "pending",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "leave_status_enum",
+    "enumlabel": "approved",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "leave_status_enum",
+    "enumlabel": "rejected",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "leave_status_enum",
+    "enumlabel": "cancelled",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "casual",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "sick",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "earned",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "maternity",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "paternity",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "unpaid",
+    "enumsortorder": 6
+  },
+  {
+    "typname": "leave_type_enum",
+    "enumlabel": "other",
+    "enumsortorder": 7
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "monday",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "tuesday",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "wednesday",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "thursday",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "friday",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "saturday",
+    "enumsortorder": 6
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "sunday",
+    "enumsortorder": 7
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "academic",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "cultural",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "sports",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "holiday",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "meeting",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "exam",
+    "enumsortorder": 6
+  },
+  {
+    "typname": "event_type_enum",
+    "enumlabel": "other",
+    "enumsortorder": 7
+  },
+  {
+    "typname": "material_type_enum",
+    "enumlabel": "video",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "material_type_enum",
+    "enumlabel": "document",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "material_type_enum",
+    "enumlabel": "link",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "material_type_enum",
+    "enumlabel": "quiz",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "material_type_enum",
+    "enumlabel": "assignment",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "payroll_status_enum",
+    "enumlabel": "pending",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "payroll_status_enum",
+    "enumlabel": "paid",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "enrollment_status_enum",
+    "enumlabel": "pending",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "enrollment_status_enum",
+    "enumlabel": "failed",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "notification_channel",
+    "enumlabel": "IN_APP",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "notification_channel",
+    "enumlabel": "EMAIL",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "notification_channel",
+    "enumlabel": "SMS",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "notification_channel",
+    "enumlabel": "PUSH",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "PENDING",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "PROCESSING",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "DELIVERED",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "FAILED",
+    "enumsortorder": 4
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "READ",
+    "enumsortorder": 5
+  },
+  {
+    "typname": "notification_status",
+    "enumlabel": "DISMISSED",
+    "enumsortorder": 6
+  },
+  {
+    "typname": "event_status",
+    "enumlabel": "RECEIVED",
+    "enumsortorder": 1
+  },
+  {
+    "typname": "event_status",
+    "enumlabel": "PROCESSED",
+    "enumsortorder": 2
+  },
+  {
+    "typname": "event_status",
+    "enumlabel": "FAILED",
+    "enumsortorder": 3
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "mon",
+    "enumsortorder": 8
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "tue",
+    "enumsortorder": 9
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "wed",
+    "enumsortorder": 10
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "thu",
+    "enumsortorder": 11
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "fri",
+    "enumsortorder": 12
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "sat",
+    "enumsortorder": 13
+  },
+  {
+    "typname": "day_of_week_enum",
+    "enumlabel": "sun",
+    "enumsortorder": 14
+  }
+]

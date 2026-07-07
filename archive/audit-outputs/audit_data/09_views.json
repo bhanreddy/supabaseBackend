@@ -1,0 +1,22 @@
+[
+  {
+    "table_name": "active_students",
+    "view_definition": " SELECT id,\n    person_id,\n    admission_no,\n    admission_date,\n    category_id,\n    religion_id,\n    blood_group_id,\n    status_id,\n    created_at,\n    updated_at,\n    deleted_at,\n    school_id\n   FROM students\n  WHERE ((deleted_at IS NULL) AND (status_id = 1));"
+  },
+  {
+    "table_name": "active_persons",
+    "view_definition": " SELECT id,\n    first_name,\n    middle_name,\n    last_name,\n    display_name,\n    dob,\n    gender_id,\n    nationality_code,\n    photo_url,\n    created_at,\n    updated_at,\n    deleted_at\n   FROM persons\n  WHERE (deleted_at IS NULL);"
+  },
+  {
+    "table_name": "debug_class_teachers",
+    "view_definition": " SELECT c.name AS class_name,\n    s.name AS section_name,\n    p.display_name AS teacher_name,\n    ay.code AS academic_year\n   FROM (((((class_sections cs\n     JOIN classes c ON ((cs.class_id = c.id)))\n     JOIN sections s ON ((cs.section_id = s.id)))\n     JOIN academic_years ay ON ((cs.academic_year_id = ay.id)))\n     LEFT JOIN staff st ON ((cs.class_teacher_id = st.id)))\n     LEFT JOIN persons p ON ((st.person_id = p.id)));"
+  },
+  {
+    "table_name": "debug_role_permissions",
+    "view_definition": " SELECT r.code AS role,\n    string_agg((p.code)::text, ', '::text) AS permissions\n   FROM ((roles r\n     LEFT JOIN role_permissions rp ON ((r.id = rp.role_id)))\n     LEFT JOIN permissions p ON ((rp.permission_id = p.id)))\n  GROUP BY r.code;"
+  },
+  {
+    "table_name": "fee_installments",
+    "view_definition": " SELECT id,\n    student_id,\n    amount_due,\n    amount_paid,\n    discount,\n    status,\n    due_date,\n    created_at,\n    updated_at,\n    deleted_at\n   FROM student_fees;"
+  }
+]

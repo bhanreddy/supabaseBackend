@@ -1,0 +1,2407 @@
+[
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "chk_retry_time",
+    "check_clause": "(((status = 'FAILED'::notification_status) AND (next_retry_at IS NOT NULL)) OR (status <> 'FAILED'::notification_status))"
+  },
+  {
+    "table_name": "notification_logs",
+    "constraint_name": "notification_logs_status_check",
+    "check_clause": "(status = ANY (ARRAY['success'::text, 'failed'::text, 'partial'::text]))"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "expenses_amount_check",
+    "check_clause": "(amount > (0)::numeric)"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "expenses_status_check",
+    "check_clause": "(status = ANY (ARRAY['pending'::text, 'approved'::text, 'paid'::text]))"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "users_theme_check",
+    "check_clause": "(theme = ANY (ARRAY['light'::text, 'dark'::text]))"
+  },
+  {
+    "table_name": "notification_batches",
+    "constraint_name": "notification_batches_status_check",
+    "check_clause": "(status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text, 'aborted'::text]))"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "chk_no_negative_paid",
+    "check_clause": "(amount_paid >= (0)::numeric)"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "chk_time_order",
+    "check_clause": "(start_time < end_time)"
+  },
+  {
+    "table_name": "financial_audit_logs",
+    "constraint_name": "financial_audit_logs_action_type_check",
+    "check_clause": "(action_type = ANY (ARRAY['DELETE'::text, 'UPDATE'::text, 'CREATE'::text]))"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "financial_policy_rules_value_type_check",
+    "check_clause": "(value_type = ANY (ARRAY['amount'::text, 'percentage'::text, 'boolean'::text, 'json'::text]))"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "chk_person_dob_past",
+    "check_clause": "((dob IS NULL) OR (dob <= CURRENT_DATE))"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "chk_staff_joining_past",
+    "check_clause": "(joining_date <= CURRENT_DATE)"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "chk_parent_valid_range",
+    "check_clause": "((valid_from IS NULL) OR (valid_to IS NULL) OR (valid_to >= valid_from))"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "chk_academic_year",
+    "check_clause": "(start_date < end_date)"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "chk_attendance_date_past",
+    "check_clause": "(attendance_date <= CURRENT_DATE)"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "chk_fee_amount_positive",
+    "check_clause": "(amount > (0)::numeric)"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "chk_amounts",
+    "check_clause": "((amount_due >= (0)::numeric) AND (amount_paid >= (0)::numeric) AND (discount >= (0)::numeric))"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "chk_paid_not_exceed",
+    "check_clause": "(amount_paid <= (amount_due - discount))"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "chk_transaction_amount",
+    "check_clause": "(amount > (0)::numeric)"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "chk_exam_dates",
+    "check_clause": "((end_date IS NULL) OR (start_date IS NULL) OR (end_date >= start_date))"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "chk_marks_valid",
+    "check_clause": "((passing_marks <= max_marks) AND (max_marks > (0)::numeric))"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "chk_period_times",
+    "check_clause": "(end_time > start_time)"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "chk_percentage_range",
+    "check_clause": "((min_percentage >= (0)::numeric) AND (max_percentage <= (100)::numeric) AND (min_percentage < max_percentage))"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "chk_marks_or_absent",
+    "check_clause": "((is_absent = true) OR (marks_obtained IS NOT NULL))"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "chk_leave_dates",
+    "check_clause": "(end_date >= start_date)"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "staff_payroll_payroll_month_check",
+    "check_clause": "((payroll_month >= 1) AND (payroll_month <= 12))"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "chk_max_retries",
+    "check_clause": "(retry_count <= 5)"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "discipline_records_severity_check",
+    "check_clause": "((severity)::text = ANY ((ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying])::text[]))"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "student_money_science_progress_status_check",
+    "check_clause": "((status)::text = ANY ((ARRAY['not_started'::character varying, 'in_progress'::character varying, 'completed'::character varying])::text[]))"
+  },
+  {
+    "table_name": "science_projects",
+    "constraint_name": "science_projects_difficulty_level_check",
+    "check_clause": "((difficulty_level)::text = ANY ((ARRAY['beginner'::character varying, 'intermediate'::character varying, 'advanced'::character varying])::text[]))"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "user_devices_platform_check",
+    "check_clause": "(platform = ANY (ARRAY['android'::text, 'ios'::text]))"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "student_science_projects_status_check",
+    "check_clause": "((status)::text = ANY ((ARRAY['registered'::character varying, 'submitted'::character varying, 'evaluated'::character varying, 'certified'::character varying])::text[]))"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "student_life_values_progress_status_check",
+    "check_clause": "((status)::text = ANY ((ARRAY['active'::character varying, 'completed'::character varying])::text[]))"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "trips_status_check",
+    "check_clause": "((status)::text = ANY ((ARRAY['active'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[]))"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "trip_stop_status_status_check",
+    "check_clause": "((status)::text = ANY ((ARRAY['pending'::character varying, 'arrived'::character varying, 'completed'::character varying, 'skipped'::character varying])::text[]))"
+  },
+  {
+    "table_name": "user_settings",
+    "constraint_name": "user_settings_notification_sound_check",
+    "check_clause": "((notification_sound)::text = ANY ((ARRAY['custom'::character varying, 'default'::character varying])::text[]))"
+  },
+  {
+    "table_name": "notification_batches",
+    "constraint_name": "notification_batches_type_check",
+    "check_clause": "(type = ANY (ARRAY[('FEES'::character varying)::text, ('DIARY'::character varying)::text, ('RESULTS'::character varying)::text, ('NOTICE'::character varying)::text, ('TEST_TRIGGER'::character varying)::text]))"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "chk_bus_capacity",
+    "check_clause": "(capacity > 0)"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "chk_event_dates",
+    "check_clause": "((end_date IS NULL) OR (end_date >= start_date))"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "chk_staff_attendance_date_past",
+    "check_clause": "(attendance_date <= CURRENT_DATE)"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "chk_refund_must_be_negative",
+    "check_clause": "((refund_of IS NULL) OR (amount < (0)::numeric))"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "chk_homework_due_date",
+    "check_clause": "((homework_due_date IS NULL) OR (homework_due_date >= entry_date))"
+  },
+  {
+    "table_name": "notification_batches",
+    "constraint_name": "chk_notification_batches_type",
+    "check_clause": "(type = ANY (ARRAY['FEES'::text, 'GENERAL'::text, 'EXAM'::text, 'EMERGENCY'::text, 'DIARY'::text, 'RESULTS'::text, 'NOTICE'::text, 'TEST_TRIGGER'::text, 'ATTENDANCE'::text, 'CUSTOM'::text]))"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "chk_discount_not_exceed_due",
+    "check_clause": "(discount <= amount_due)"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_2_not_null",
+    "check_clause": "applicant_id IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_3_not_null",
+    "check_clause": "leave_type IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_4_not_null",
+    "check_clause": "start_date IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_5_not_null",
+    "check_clause": "end_date IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_6_not_null",
+    "check_clause": "reason IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_11_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "leave_applications",
+    "constraint_name": "31903_47528_12_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "31903_47654_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "31903_47654_2_not_null",
+    "check_clause": "route_id IS NOT NULL"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "31903_47654_3_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "transport_stops",
+    "constraint_name": "31903_47654_8_not_null",
+    "check_clause": "stop_order IS NOT NULL"
+  },
+  {
+    "table_name": "driver_devices",
+    "constraint_name": "31903_81839_1_not_null",
+    "check_clause": "driver_id IS NOT NULL"
+  },
+  {
+    "table_name": "driver_devices",
+    "constraint_name": "31903_81839_2_not_null",
+    "check_clause": "device_id IS NOT NULL"
+  },
+  {
+    "table_name": "driver_heartbeat",
+    "constraint_name": "31903_81847_1_not_null",
+    "check_clause": "driver_id IS NOT NULL"
+  },
+  {
+    "table_name": "bus_trip_history",
+    "constraint_name": "31903_81856_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "bus_trip_history",
+    "constraint_name": "31903_81856_2_not_null",
+    "check_clause": "bus_id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_logs",
+    "constraint_name": "31903_60136_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_logs",
+    "constraint_name": "31903_60136_4_not_null",
+    "check_clause": "notification_type IS NOT NULL"
+  },
+  {
+    "table_name": "access_requests",
+    "constraint_name": "31903_89903_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "access_requests",
+    "constraint_name": "31903_89903_3_not_null",
+    "check_clause": "department IS NOT NULL"
+  },
+  {
+    "table_name": "access_requests",
+    "constraint_name": "31903_89903_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "temp_access_grants",
+    "constraint_name": "31903_89923_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "temp_access_grants",
+    "constraint_name": "31903_89923_2_not_null",
+    "check_clause": "department IS NOT NULL"
+  },
+  {
+    "table_name": "temp_access_grants",
+    "constraint_name": "31903_89923_5_not_null",
+    "check_clause": "expires_at IS NOT NULL"
+  },
+  {
+    "table_name": "temp_access_grants",
+    "constraint_name": "31903_89923_6_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "science_projects",
+    "constraint_name": "31903_49474_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "science_projects",
+    "constraint_name": "31903_49474_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "science_projects",
+    "constraint_name": "31903_49474_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_3_not_null",
+    "check_clause": "content IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_4_not_null",
+    "check_clause": "audience IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_6_not_null",
+    "check_clause": "priority IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_7_not_null",
+    "check_clause": "is_pinned IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_8_not_null",
+    "check_clause": "publish_at IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_10_not_null",
+    "check_clause": "created_by IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_11_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "notices",
+    "constraint_name": "31903_47501_12_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "31903_47214_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "31903_47214_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "31903_47214_5_not_null",
+    "check_clause": "is_recurring IS NOT NULL"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "31903_47214_6_not_null",
+    "check_clause": "is_optional IS NOT NULL"
+  },
+  {
+    "table_name": "fee_types",
+    "constraint_name": "31903_47214_7_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_2_not_null",
+    "check_clause": "receipt_no IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_3_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_4_not_null",
+    "check_clause": "total_amount IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_5_not_null",
+    "check_clause": "issued_at IS NOT NULL"
+  },
+  {
+    "table_name": "receipts",
+    "constraint_name": "31903_47309_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_3_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_4_not_null",
+    "check_clause": "exam_type IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "exams",
+    "constraint_name": "31903_47381_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "money_science_modules",
+    "constraint_name": "31903_49441_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "money_science_modules",
+    "constraint_name": "31903_49441_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "money_science_modules",
+    "constraint_name": "31903_49441_7_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "user_roles",
+    "constraint_name": "31903_46934_1_not_null",
+    "check_clause": "user_id IS NOT NULL"
+  },
+  {
+    "table_name": "user_roles",
+    "constraint_name": "31903_46934_2_not_null",
+    "check_clause": "role_id IS NOT NULL"
+  },
+  {
+    "table_name": "user_roles",
+    "constraint_name": "31903_46934_4_not_null",
+    "check_clause": "granted_at IS NOT NULL"
+  },
+  {
+    "table_name": "life_values_modules",
+    "constraint_name": "31903_49511_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "life_values_modules",
+    "constraint_name": "31903_49511_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "life_values_modules",
+    "constraint_name": "31903_49511_5_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_3_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_4_not_null",
+    "check_clause": "incident_date IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_5_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_10_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "discipline_records",
+    "constraint_name": "31903_49413_11_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "roles",
+    "constraint_name": "31903_46882_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "roles",
+    "constraint_name": "31903_46882_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "roles",
+    "constraint_name": "31903_46882_3_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "roles",
+    "constraint_name": "31903_46882_4_not_null",
+    "check_clause": "is_system IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_3_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_4_not_null",
+    "check_clause": "class_section_id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_6_not_null",
+    "check_clause": "period_number IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_7_not_null",
+    "check_clause": "subject_id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_10_not_null",
+    "check_clause": "start_time IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_slots",
+    "constraint_name": "31903_80456_11_not_null",
+    "check_clause": "end_time IS NOT NULL"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "31903_49525_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "31903_49525_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "31903_49525_3_not_null",
+    "check_clause": "module_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "31903_49525_4_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_life_values_progress",
+    "constraint_name": "31903_49525_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_2_not_null",
+    "check_clause": "bus_id IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_3_not_null",
+    "check_clause": "route_id IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_4_not_null",
+    "check_clause": "driver_id IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_6_not_null",
+    "check_clause": "started_at IS NOT NULL"
+  },
+  {
+    "table_name": "trips",
+    "constraint_name": "31903_81963_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "31903_81988_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "31903_81988_2_not_null",
+    "check_clause": "trip_id IS NOT NULL"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "31903_81988_3_not_null",
+    "check_clause": "stop_id IS NOT NULL"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "31903_81988_4_not_null",
+    "check_clause": "stop_order IS NOT NULL"
+  },
+  {
+    "table_name": "trip_stop_status",
+    "constraint_name": "31903_81988_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "sections",
+    "constraint_name": "31903_47069_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "sections",
+    "constraint_name": "31903_47069_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "staff_designations",
+    "constraint_name": "31903_46829_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_designations",
+    "constraint_name": "31903_46829_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "staff_statuses",
+    "constraint_name": "31903_47173_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_statuses",
+    "constraint_name": "31903_47173_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "staff_statuses",
+    "constraint_name": "31903_47173_3_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "31903_47135_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "31903_47135_2_not_null",
+    "check_clause": "student_enrollment_id IS NOT NULL"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "31903_47135_3_not_null",
+    "check_clause": "attendance_date IS NOT NULL"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "31903_47135_4_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "daily_attendance",
+    "constraint_name": "31903_47135_7_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_2_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_3_not_null",
+    "check_clause": "class_id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_4_not_null",
+    "check_clause": "fee_type_id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_5_not_null",
+    "check_clause": "amount IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "fee_structures",
+    "constraint_name": "31903_47229_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "31903_47358_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "31903_47358_2_not_null",
+    "check_clause": "class_section_id IS NOT NULL"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "31903_47358_3_not_null",
+    "check_clause": "subject_id IS NOT NULL"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "31903_47358_5_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "class_subjects",
+    "constraint_name": "31903_47358_6_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "subjects",
+    "constraint_name": "31903_47347_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "subjects",
+    "constraint_name": "31903_47347_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "subjects",
+    "constraint_name": "31903_47347_5_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_3_not_null",
+    "check_clause": "room_id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_4_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_6_not_null",
+    "check_clause": "allocated_at IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_allocations",
+    "constraint_name": "31903_47746_8_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "lms_courses",
+    "constraint_name": "31903_47793_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "lms_courses",
+    "constraint_name": "31903_47793_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "lms_courses",
+    "constraint_name": "31903_47793_7_not_null",
+    "check_clause": "is_published IS NOT NULL"
+  },
+  {
+    "table_name": "lms_courses",
+    "constraint_name": "31903_47793_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "lms_courses",
+    "constraint_name": "31903_47793_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_2_not_null",
+    "check_clause": "class_section_id IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_4_not_null",
+    "check_clause": "entry_date IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_6_not_null",
+    "check_clause": "content IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_9_not_null",
+    "check_clause": "created_by IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_10_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "diary_entries",
+    "constraint_name": "31903_47553_11_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_2_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_4_not_null",
+    "check_clause": "event_type IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_5_not_null",
+    "check_clause": "start_date IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_10_not_null",
+    "check_clause": "is_all_day IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_11_not_null",
+    "check_clause": "is_public IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_14_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "events",
+    "constraint_name": "31903_47772_15_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_3_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_5_not_null",
+    "check_clause": "is_enabled IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "feature_flags",
+    "constraint_name": "31903_82021_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_2_not_null",
+    "check_clause": "person_id IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_3_not_null",
+    "check_clause": "contact_type IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_4_not_null",
+    "check_clause": "contact_value IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_5_not_null",
+    "check_clause": "is_primary IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_6_not_null",
+    "check_clause": "is_emergency IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_7_not_null",
+    "check_clause": "is_verified IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "person_contacts",
+    "constraint_name": "31903_46861_10_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "receipt_items",
+    "constraint_name": "31903_47331_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "receipt_items",
+    "constraint_name": "31903_47331_2_not_null",
+    "check_clause": "receipt_id IS NOT NULL"
+  },
+  {
+    "table_name": "receipt_items",
+    "constraint_name": "31903_47331_3_not_null",
+    "check_clause": "fee_transaction_id IS NOT NULL"
+  },
+  {
+    "table_name": "receipt_items",
+    "constraint_name": "31903_47331_4_not_null",
+    "check_clause": "amount IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_2_not_null",
+    "check_clause": "exam_subject_id IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_3_not_null",
+    "check_clause": "student_enrollment_id IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_5_not_null",
+    "check_clause": "is_absent IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "marks",
+    "constraint_name": "31903_47430_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "schema_meta",
+    "constraint_name": "31903_64903_1_not_null",
+    "check_clause": "key IS NOT NULL"
+  },
+  {
+    "table_name": "countries",
+    "constraint_name": "31903_46787_1_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "countries",
+    "constraint_name": "31903_46787_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "31903_49451_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "31903_49451_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "31903_49451_3_not_null",
+    "check_clause": "module_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_money_science_progress",
+    "constraint_name": "31903_49451_4_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "31903_49487_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "31903_49487_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "31903_49487_3_not_null",
+    "check_clause": "project_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "31903_49487_4_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "student_science_projects",
+    "constraint_name": "31903_49487_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "student_categories",
+    "constraint_name": "31903_46801_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_categories",
+    "constraint_name": "31903_46801_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "constraint_name": "31903_47710_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "constraint_name": "31903_47710_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "constraint_name": "31903_47710_7_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_blocks",
+    "constraint_name": "31903_47710_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "blood_groups",
+    "constraint_name": "31903_46815_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "blood_groups",
+    "constraint_name": "31903_46815_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "student_statuses",
+    "constraint_name": "31903_46955_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_statuses",
+    "constraint_name": "31903_46955_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "student_statuses",
+    "constraint_name": "31903_46955_3_not_null",
+    "check_clause": "is_terminal IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_2_not_null",
+    "check_clause": "staff_id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_3_not_null",
+    "check_clause": "base_salary IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_6_not_null",
+    "check_clause": "net_salary IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_9_not_null",
+    "check_clause": "payroll_month IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_10_not_null",
+    "check_clause": "payroll_year IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_13_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "staff_payroll",
+    "constraint_name": "31903_52037_14_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "religions",
+    "constraint_name": "31903_46808_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "religions",
+    "constraint_name": "31903_46808_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_3_not_null",
+    "check_clause": "fee_structure_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_4_not_null",
+    "check_clause": "amount_due IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_5_not_null",
+    "check_clause": "amount_paid IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_6_not_null",
+    "check_clause": "discount IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_11_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "student_fees",
+    "constraint_name": "31903_47257_12_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_2_not_null",
+    "check_clause": "student_fee_id IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_3_not_null",
+    "check_clause": "amount IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_4_not_null",
+    "check_clause": "payment_method IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_5_not_null",
+    "check_clause": "transaction_ref IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_6_not_null",
+    "check_clause": "paid_at IS NOT NULL"
+  },
+  {
+    "table_name": "fee_transactions",
+    "constraint_name": "31903_47285_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_2_not_null",
+    "check_clause": "exam_id IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_3_not_null",
+    "check_clause": "subject_id IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_4_not_null",
+    "check_clause": "class_id IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_6_not_null",
+    "check_clause": "max_marks IS NOT NULL"
+  },
+  {
+    "table_name": "exam_subjects",
+    "constraint_name": "31903_47397_7_not_null",
+    "check_clause": "passing_marks IS NOT NULL"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "31903_47423_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "31903_47423_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "31903_47423_3_not_null",
+    "check_clause": "min_percentage IS NOT NULL"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "31903_47423_4_not_null",
+    "check_clause": "max_percentage IS NOT NULL"
+  },
+  {
+    "table_name": "grading_scales",
+    "constraint_name": "31903_47423_5_not_null",
+    "check_clause": "grade IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_3_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_4_not_null",
+    "check_clause": "description IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_6_not_null",
+    "check_clause": "priority IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_8_not_null",
+    "check_clause": "raised_by IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_14_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "complaints",
+    "constraint_name": "31903_47462_15_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "31903_47581_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "31903_47581_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "31903_47581_3_not_null",
+    "check_clause": "start_time IS NOT NULL"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "31903_47581_4_not_null",
+    "check_clause": "end_time IS NOT NULL"
+  },
+  {
+    "table_name": "periods",
+    "constraint_name": "31903_47581_5_not_null",
+    "check_clause": "sort_order IS NOT NULL"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "31903_47622_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "31903_47622_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "31903_47622_9_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "31903_47622_10_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "transport_routes",
+    "constraint_name": "31903_47622_11_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_3_not_null",
+    "check_clause": "route_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_5_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_6_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "student_transport",
+    "constraint_name": "31903_47667_7_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "31903_52432_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "31903_52432_2_not_null",
+    "check_clause": "rule_code IS NOT NULL"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "31903_52432_3_not_null",
+    "check_clause": "rule_name IS NOT NULL"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "31903_52432_6_not_null",
+    "check_clause": "default_value IS NOT NULL"
+  },
+  {
+    "table_name": "financial_policy_rules",
+    "constraint_name": "31903_52432_7_not_null",
+    "check_clause": "current_value IS NOT NULL"
+  },
+  {
+    "table_name": "audit_logs",
+    "constraint_name": "31903_48063_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "audit_logs",
+    "constraint_name": "31903_48063_3_not_null",
+    "check_clause": "action IS NOT NULL"
+  },
+  {
+    "table_name": "audit_logs",
+    "constraint_name": "31903_48063_4_not_null",
+    "check_clause": "entity IS NOT NULL"
+  },
+  {
+    "table_name": "audit_logs",
+    "constraint_name": "31903_48063_10_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "notification_batches",
+    "constraint_name": "31903_60161_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_batches",
+    "constraint_name": "31903_60161_3_not_null",
+    "check_clause": "type IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_2_not_null",
+    "check_clause": "class_section_id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_5_not_null",
+    "check_clause": "period_id IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_6_not_null",
+    "check_clause": "day_of_week IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "timetable_entries",
+    "constraint_name": "31903_47589_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "genders",
+    "constraint_name": "31903_46794_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "genders",
+    "constraint_name": "31903_46794_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "notification_config",
+    "constraint_name": "31903_60153_1_not_null",
+    "check_clause": "key IS NOT NULL"
+  },
+  {
+    "table_name": "role_permissions",
+    "constraint_name": "31903_46899_1_not_null",
+    "check_clause": "role_id IS NOT NULL"
+  },
+  {
+    "table_name": "role_permissions",
+    "constraint_name": "31903_46899_2_not_null",
+    "check_clause": "permission_id IS NOT NULL"
+  },
+  {
+    "table_name": "permissions",
+    "constraint_name": "31903_46891_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "permissions",
+    "constraint_name": "31903_46891_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "permissions",
+    "constraint_name": "31903_46891_3_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "31903_47636_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "31903_47636_2_not_null",
+    "check_clause": "bus_no IS NOT NULL"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "31903_47636_4_not_null",
+    "check_clause": "capacity IS NOT NULL"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "31903_47636_8_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "buses",
+    "constraint_name": "31903_47636_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "31903_47730_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "31903_47730_2_not_null",
+    "check_clause": "block_id IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "31903_47730_3_not_null",
+    "check_clause": "room_no IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "31903_47730_5_not_null",
+    "check_clause": "capacity IS NOT NULL"
+  },
+  {
+    "table_name": "hostel_rooms",
+    "constraint_name": "31903_47730_8_not_null",
+    "check_clause": "is_available IS NOT NULL"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "31903_47697_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "31903_47697_2_not_null",
+    "check_clause": "bus_id IS NOT NULL"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "31903_47697_3_not_null",
+    "check_clause": "latitude IS NOT NULL"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "31903_47697_4_not_null",
+    "check_clause": "longitude IS NOT NULL"
+  },
+  {
+    "table_name": "bus_locations",
+    "constraint_name": "31903_47697_7_not_null",
+    "check_clause": "recorded_at IS NOT NULL"
+  },
+  {
+    "table_name": "classes",
+    "constraint_name": "31903_47061_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "classes",
+    "constraint_name": "31903_47061_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "31903_80641_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "31903_80641_2_not_null",
+    "check_clause": "notification_id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "31903_80641_3_not_null",
+    "check_clause": "channel IS NOT NULL"
+  },
+  {
+    "table_name": "notification_deliveries",
+    "constraint_name": "31903_80641_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "31903_47077_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "31903_47077_2_not_null",
+    "check_clause": "class_id IS NOT NULL"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "31903_47077_3_not_null",
+    "check_clause": "section_id IS NOT NULL"
+  },
+  {
+    "table_name": "class_sections",
+    "constraint_name": "31903_47077_4_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_preferences",
+    "constraint_name": "31903_80575_1_not_null",
+    "check_clause": "user_id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_preferences",
+    "constraint_name": "31903_80575_2_not_null",
+    "check_clause": "event_type IS NOT NULL"
+  },
+  {
+    "table_name": "notification_preferences",
+    "constraint_name": "31903_80575_3_not_null",
+    "check_clause": "channel IS NOT NULL"
+  },
+  {
+    "table_name": "notification_audit_logs",
+    "constraint_name": "31903_80662_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_audit_logs",
+    "constraint_name": "31903_80662_4_not_null",
+    "check_clause": "action IS NOT NULL"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "31903_80563_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "31903_80563_2_not_null",
+    "check_clause": "event_type IS NOT NULL"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "31903_80563_3_not_null",
+    "check_clause": "title_template IS NOT NULL"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "31903_80563_4_not_null",
+    "check_clause": "body_template IS NOT NULL"
+  },
+  {
+    "table_name": "notification_templates",
+    "constraint_name": "31903_80563_5_not_null",
+    "check_clause": "default_channels IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_2_not_null",
+    "check_clause": "idempotency_key IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_3_not_null",
+    "check_clause": "event_type IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_5_not_null",
+    "check_clause": "target_user_id IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_6_not_null",
+    "check_clause": "payload IS NOT NULL"
+  },
+  {
+    "table_name": "notification_events",
+    "constraint_name": "31903_80592_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_2_not_null",
+    "check_clause": "event_id IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_3_not_null",
+    "check_clause": "user_id IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_4_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_5_not_null",
+    "check_clause": "body IS NOT NULL"
+  },
+  {
+    "table_name": "notifications",
+    "constraint_name": "31903_80619_7_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "constraint_name": "31903_88749_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "constraint_name": "31903_88749_2_not_null",
+    "check_clause": "ticket_no IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "constraint_name": "31903_88749_4_not_null",
+    "check_clause": "category IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaints",
+    "constraint_name": "31903_88749_5_not_null",
+    "check_clause": "description IS NOT NULL"
+  },
+  {
+    "table_name": "financial_audit_logs",
+    "constraint_name": "31903_52415_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "financial_audit_logs",
+    "constraint_name": "31903_52415_2_not_null",
+    "check_clause": "table_name IS NOT NULL"
+  },
+  {
+    "table_name": "financial_audit_logs",
+    "constraint_name": "31903_52415_3_not_null",
+    "check_clause": "record_id IS NOT NULL"
+  },
+  {
+    "table_name": "financial_audit_logs",
+    "constraint_name": "31903_52415_4_not_null",
+    "check_clause": "action_type IS NOT NULL"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "31903_60364_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "31903_60364_2_not_null",
+    "check_clause": "staff_id IS NOT NULL"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "31903_60364_3_not_null",
+    "check_clause": "attendance_date IS NOT NULL"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "31903_60364_4_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "staff_attendance",
+    "constraint_name": "31903_60364_7_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "31903_64836_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "31903_64836_3_not_null",
+    "check_clause": "fcm_token IS NOT NULL"
+  },
+  {
+    "table_name": "user_devices",
+    "constraint_name": "31903_64836_7_not_null",
+    "check_clause": "language_code IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaint_threads",
+    "constraint_name": "31903_88774_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaint_threads",
+    "constraint_name": "31903_88774_4_not_null",
+    "check_clause": "sender_role IS NOT NULL"
+  },
+  {
+    "table_name": "girl_safety_complaint_threads",
+    "constraint_name": "31903_88774_5_not_null",
+    "check_clause": "message IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_2_not_null",
+    "check_clause": "route_key IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_3_not_null",
+    "check_clause": "route_label IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_4_not_null",
+    "check_clause": "required_permissions IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_7_not_null",
+    "check_clause": "sort_order IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_8_not_null",
+    "check_clause": "is_active IS NOT NULL"
+  },
+  {
+    "table_name": "ui_route_permissions",
+    "constraint_name": "31903_82035_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "school_settings",
+    "constraint_name": "31903_82052_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "school_settings",
+    "constraint_name": "31903_82052_2_not_null",
+    "check_clause": "key IS NOT NULL"
+  },
+  {
+    "table_name": "school_settings",
+    "constraint_name": "31903_82052_4_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "user_settings",
+    "constraint_name": "31903_83206_1_not_null",
+    "check_clause": "user_id IS NOT NULL"
+  },
+  {
+    "table_name": "admin_notifications",
+    "constraint_name": "31903_92280_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "admin_notifications",
+    "constraint_name": "31903_92280_2_not_null",
+    "check_clause": "type IS NOT NULL"
+  },
+  {
+    "table_name": "admin_notifications",
+    "constraint_name": "31903_92280_3_not_null",
+    "check_clause": "message IS NOT NULL"
+  },
+  {
+    "table_name": "parents",
+    "constraint_name": "31903_47002_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "parents",
+    "constraint_name": "31903_47002_2_not_null",
+    "check_clause": "person_id IS NOT NULL"
+  },
+  {
+    "table_name": "parents",
+    "constraint_name": "31903_47002_4_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "parents",
+    "constraint_name": "31903_47002_5_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_3_not_null",
+    "check_clause": "parent_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_5_not_null",
+    "check_clause": "is_primary_contact IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_6_not_null",
+    "check_clause": "is_legal_guardian IS NOT NULL"
+  },
+  {
+    "table_name": "student_parents",
+    "constraint_name": "31903_47018_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_2_not_null",
+    "check_clause": "first_name IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_4_not_null",
+    "check_clause": "last_name IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_7_not_null",
+    "check_clause": "gender_id IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_10_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "persons",
+    "constraint_name": "31903_46837_11_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_2_not_null",
+    "check_clause": "person_id IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_3_not_null",
+    "check_clause": "account_status IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_4_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_6_not_null",
+    "check_clause": "failed_login_attempts IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_8_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "users",
+    "constraint_name": "31903_46914_10_not_null",
+    "check_clause": "theme IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_2_not_null",
+    "check_clause": "person_id IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_3_not_null",
+    "check_clause": "admission_no IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_4_not_null",
+    "check_clause": "admission_date IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_8_not_null",
+    "check_clause": "status_id IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "students",
+    "constraint_name": "31903_46963_10_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_2_not_null",
+    "check_clause": "person_id IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_3_not_null",
+    "check_clause": "staff_code IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_5_not_null",
+    "check_clause": "joining_date IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_6_not_null",
+    "check_clause": "status_id IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_8_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "staff",
+    "constraint_name": "31903_47180_9_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "relationship_types",
+    "constraint_name": "31903_46822_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "relationship_types",
+    "constraint_name": "31903_46822_2_not_null",
+    "check_clause": "name IS NOT NULL"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "31903_47050_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "31903_47050_2_not_null",
+    "check_clause": "code IS NOT NULL"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "31903_47050_3_not_null",
+    "check_clause": "start_date IS NOT NULL"
+  },
+  {
+    "table_name": "academic_years",
+    "constraint_name": "31903_47050_4_not_null",
+    "check_clause": "end_date IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_2_not_null",
+    "check_clause": "student_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_3_not_null",
+    "check_clause": "academic_year_id IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_5_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_6_not_null",
+    "check_clause": "start_date IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_9_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "student_enrollments",
+    "constraint_name": "31903_47100_10_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_2_not_null",
+    "check_clause": "course_id IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_3_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_5_not_null",
+    "check_clause": "material_type IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_9_not_null",
+    "check_clause": "sort_order IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_10_not_null",
+    "check_clause": "is_published IS NOT NULL"
+  },
+  {
+    "table_name": "lms_materials",
+    "constraint_name": "31903_47820_11_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_1_not_null",
+    "check_clause": "id IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_2_not_null",
+    "check_clause": "school_id IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_3_not_null",
+    "check_clause": "created_by IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_4_not_null",
+    "check_clause": "title IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_5_not_null",
+    "check_clause": "category IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_6_not_null",
+    "check_clause": "amount IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_7_not_null",
+    "check_clause": "expense_date IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_8_not_null",
+    "check_clause": "status IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_11_not_null",
+    "check_clause": "created_at IS NOT NULL"
+  },
+  {
+    "table_name": "expenses",
+    "constraint_name": "31903_51689_12_not_null",
+    "check_clause": "updated_at IS NOT NULL"
+  }
+]

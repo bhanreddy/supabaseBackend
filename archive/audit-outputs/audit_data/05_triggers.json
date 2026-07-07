@@ -1,0 +1,650 @@
+[
+  {
+    "trigger_name": "trg_leave_payroll",
+    "event_manipulation": "INSERT",
+    "event_object_table": "leave_applications",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_recalc_payroll_on_leave()"
+  },
+  {
+    "trigger_name": "trg_leave_payroll",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "leave_applications",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_recalc_payroll_on_leave()"
+  },
+  {
+    "trigger_name": "trg_leaves_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "leave_applications",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_notices_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "notices",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "audit_delete_receipts",
+    "event_manipulation": "DELETE",
+    "event_object_table": "receipts",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION log_financial_destruction()"
+  },
+  {
+    "trigger_name": "trg_exams_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "exams",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_protect_system_roles_delete",
+    "event_manipulation": "DELETE",
+    "event_object_table": "roles",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_system_role_change()"
+  },
+  {
+    "trigger_name": "trg_protect_system_roles_update",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "roles",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_system_role_change()"
+  },
+  {
+    "trigger_name": "trg_sync_class_teacher",
+    "event_manipulation": "INSERT",
+    "event_object_table": "timetable_slots",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION sync_class_teacher_from_timetable()"
+  },
+  {
+    "trigger_name": "trg_sync_class_teacher",
+    "event_manipulation": "DELETE",
+    "event_object_table": "timetable_slots",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION sync_class_teacher_from_timetable()"
+  },
+  {
+    "trigger_name": "trg_sync_class_teacher",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "timetable_slots",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION sync_class_teacher_from_timetable()"
+  },
+  {
+    "trigger_name": "trg_timetable_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "timetable_slots",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_timetable",
+    "event_manipulation": "INSERT",
+    "event_object_table": "timetable_slots",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_timetable_entry()"
+  },
+  {
+    "trigger_name": "trg_validate_timetable",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "timetable_slots",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_timetable_entry()"
+  },
+  {
+    "trigger_name": "trg_trips_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "trips",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_attendance_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "daily_attendance",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_attendance",
+    "event_manipulation": "INSERT",
+    "event_object_table": "daily_attendance",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_attendance_entry()"
+  },
+  {
+    "trigger_name": "trg_validate_attendance",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "daily_attendance",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_attendance_entry()"
+  },
+  {
+    "trigger_name": "trg_auto_assign_fees_structure",
+    "event_manipulation": "INSERT",
+    "event_object_table": "fee_structures",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION auto_assign_fees_on_structure_creation()"
+  },
+  {
+    "trigger_name": "trg_fee_structures_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "fee_structures",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_propagate_fee_updates",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "fee_structures",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION propagate_fee_structure_updates()"
+  },
+  {
+    "trigger_name": "trg_class_subjects_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "class_subjects",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_lms_courses_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "lms_courses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_lms_course",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "lms_courses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_lms_course_modify()"
+  },
+  {
+    "trigger_name": "trg_diary_entries_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "diary_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION set_updated_at()"
+  },
+  {
+    "trigger_name": "trg_diary_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "diary_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_diary",
+    "event_manipulation": "INSERT",
+    "event_object_table": "diary_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_diary_entry()"
+  },
+  {
+    "trigger_name": "trg_validate_diary",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "diary_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_diary_entry()"
+  },
+  {
+    "trigger_name": "trg_events_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "events",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_feature_flags_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "feature_flags",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_person_contacts_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "person_contacts",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_marks_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "marks",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_marks",
+    "event_manipulation": "INSERT",
+    "event_object_table": "marks",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_marks_entry()"
+  },
+  {
+    "trigger_name": "trg_validate_marks",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "marks",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_marks_entry()"
+  },
+  {
+    "trigger_name": "audit_delete_payroll",
+    "event_manipulation": "DELETE",
+    "event_object_table": "staff_payroll",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION log_financial_destruction()"
+  },
+  {
+    "trigger_name": "trg_staff_payroll_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "staff_payroll",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "audit_delete_student_fees",
+    "event_manipulation": "DELETE",
+    "event_object_table": "student_fees",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION log_financial_destruction()"
+  },
+  {
+    "trigger_name": "trg_auto_fee_status",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_fees",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_fee_status()"
+  },
+  {
+    "trigger_name": "trg_guard_fee_update",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_fees",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_direct_fee_update()"
+  },
+  {
+    "trigger_name": "trg_student_fees_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_fees",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "enforce_fee_cash_limit",
+    "event_manipulation": "INSERT",
+    "event_object_table": "fee_transactions",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_check_fee_cash_limit()"
+  },
+  {
+    "trigger_name": "trg_auto_receipt",
+    "event_manipulation": "INSERT",
+    "event_object_table": "fee_transactions",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION auto_generate_receipt()"
+  },
+  {
+    "trigger_name": "trg_guard_fee_txn",
+    "event_manipulation": "DELETE",
+    "event_object_table": "fee_transactions",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_fee_transaction_mutation()"
+  },
+  {
+    "trigger_name": "trg_guard_fee_txn",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "fee_transactions",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_fee_transaction_mutation()"
+  },
+  {
+    "trigger_name": "trg_update_paid_on_transaction",
+    "event_manipulation": "INSERT",
+    "event_object_table": "fee_transactions",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_fee_paid_amount()"
+  },
+  {
+    "trigger_name": "trg_complaints_ticket",
+    "event_manipulation": "INSERT",
+    "event_object_table": "complaints",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION generate_ticket_no()"
+  },
+  {
+    "trigger_name": "trg_complaints_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "complaints",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_prevent_complaint_delete",
+    "event_manipulation": "DELETE",
+    "event_object_table": "complaints",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION prevent_complaint_delete()"
+  },
+  {
+    "trigger_name": "trg_transport_routes_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "transport_routes",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_timetable_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "timetable_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION set_updated_at()"
+  },
+  {
+    "trigger_name": "trg_validate_timetable",
+    "event_manipulation": "INSERT",
+    "event_object_table": "timetable_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_timetable_entry()"
+  },
+  {
+    "trigger_name": "trg_validate_timetable",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "timetable_entries",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_timetable_entry()"
+  },
+  {
+    "trigger_name": "trg_staff_attendance_payroll",
+    "event_manipulation": "INSERT",
+    "event_object_table": "staff_attendance",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_recalc_payroll_on_attendance()"
+  },
+  {
+    "trigger_name": "trg_staff_attendance_payroll",
+    "event_manipulation": "DELETE",
+    "event_object_table": "staff_attendance",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_recalc_payroll_on_attendance()"
+  },
+  {
+    "trigger_name": "trg_staff_attendance_payroll",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "staff_attendance",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_recalc_payroll_on_attendance()"
+  },
+  {
+    "trigger_name": "trg_staff_attendance_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "staff_attendance",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_user_settings_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "user_settings",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_user_settings_updated_at()"
+  },
+  {
+    "trigger_name": "trg_parents_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "parents",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_student_parents_active",
+    "event_manipulation": "INSERT",
+    "event_object_table": "student_parents",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_student_parent()"
+  },
+  {
+    "trigger_name": "trg_student_parents_active",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_parents",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_student_parent()"
+  },
+  {
+    "trigger_name": "trg_persons_display_name",
+    "event_manipulation": "INSERT",
+    "event_object_table": "persons",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_person_display_name()"
+  },
+  {
+    "trigger_name": "trg_persons_display_name",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "persons",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_person_display_name()"
+  },
+  {
+    "trigger_name": "trg_persons_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "persons",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_user_active_person",
+    "event_manipulation": "INSERT",
+    "event_object_table": "users",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_person_ref()"
+  },
+  {
+    "trigger_name": "trg_user_active_person",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "users",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_person_ref()"
+  },
+  {
+    "trigger_name": "trg_users_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "users",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_students_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "students",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_staff_active_person",
+    "event_manipulation": "INSERT",
+    "event_object_table": "staff",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_person_staff()"
+  },
+  {
+    "trigger_name": "trg_staff_active_person",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "staff",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_person_staff()"
+  },
+  {
+    "trigger_name": "trg_staff_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "staff",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_auto_assign_fees_enrollment",
+    "event_manipulation": "INSERT",
+    "event_object_table": "student_enrollments",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION auto_assign_fees_on_enrollment()"
+  },
+  {
+    "trigger_name": "trg_auto_assign_fees_enrollment",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_enrollments",
+    "action_timing": "AFTER",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION auto_assign_fees_on_enrollment()"
+  },
+  {
+    "trigger_name": "trg_enroll_active_student",
+    "event_manipulation": "INSERT",
+    "event_object_table": "student_enrollments",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_student_enrollment()"
+  },
+  {
+    "trigger_name": "trg_enroll_active_student",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_enrollments",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION ensure_active_student_enrollment()"
+  },
+  {
+    "trigger_name": "trg_student_enrollments_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_enrollments",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  },
+  {
+    "trigger_name": "trg_validate_enrollment",
+    "event_manipulation": "INSERT",
+    "event_object_table": "student_enrollments",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_enrollment_year()"
+  },
+  {
+    "trigger_name": "trg_validate_enrollment",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "student_enrollments",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION validate_enrollment_year()"
+  },
+  {
+    "trigger_name": "audit_delete_expenses",
+    "event_manipulation": "DELETE",
+    "event_object_table": "expenses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION log_financial_destruction()"
+  },
+  {
+    "trigger_name": "enforce_expense_policy",
+    "event_manipulation": "INSERT",
+    "event_object_table": "expenses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_check_expense_policy()"
+  },
+  {
+    "trigger_name": "enforce_expense_policy",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "expenses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION trg_check_expense_policy()"
+  },
+  {
+    "trigger_name": "trg_expenses_updated",
+    "event_manipulation": "UPDATE",
+    "event_object_table": "expenses",
+    "action_timing": "BEFORE",
+    "action_orientation": "ROW",
+    "action_statement": "EXECUTE FUNCTION update_timestamp()"
+  }
+]

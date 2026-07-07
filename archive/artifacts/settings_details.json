@@ -1,0 +1,46 @@
+{
+  "columns": [
+    {
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid"
+    },
+    {
+      "column_name": "key",
+      "data_type": "character varying",
+      "udt_name": "varchar"
+    },
+    {
+      "column_name": "value",
+      "data_type": "text",
+      "udt_name": "text"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz"
+    }
+  ],
+  "constraints": [
+    {
+      "conname": "school_settings_key_key",
+      "contype": "u",
+      "pg_get_constraintdef": "UNIQUE (key)"
+    },
+    {
+      "conname": "school_settings_pkey",
+      "contype": "p",
+      "pg_get_constraintdef": "PRIMARY KEY (id)"
+    }
+  ],
+  "indexes": [
+    {
+      "indexname": "school_settings_pkey",
+      "indexdef": "CREATE UNIQUE INDEX school_settings_pkey ON public.school_settings USING btree (id)"
+    },
+    {
+      "indexname": "school_settings_key_key",
+      "indexdef": "CREATE UNIQUE INDEX school_settings_key_key ON public.school_settings USING btree (key)"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "sequence_name": "admin_notifications_id_seq",
+    "start_value": "1",
+    "increment": "1",
+    "minimum_value": "1",
+    "maximum_value": "2147483647"
+  },
+  {
+    "sequence_name": "receipt_no_seq",
+    "start_value": "1001",
+    "increment": "1",
+    "minimum_value": "1",
+    "maximum_value": "9223372036854775807"
+  },
+  {
+    "sequence_name": "complaint_ticket_seq",
+    "start_value": "1",
+    "increment": "1",
+    "minimum_value": "1",
+    "maximum_value": "9223372036854775807"
+  }
+]

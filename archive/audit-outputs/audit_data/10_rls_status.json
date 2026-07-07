@@ -1,0 +1,378 @@
+[
+  {
+    "tablename": "leave_applications",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "transport_stops",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "driver_devices",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "driver_heartbeat",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "bus_trip_history",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_logs",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notices",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "money_science_modules",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "access_requests",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "temp_access_grants",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "science_projects",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "user_roles",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "life_values_modules",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "fee_types",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "receipts",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "exams",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "discipline_records",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "roles",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "timetable_slots",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_life_values_progress",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "events",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "staff_designations",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "staff_statuses",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "daily_attendance",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "sections",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "trips",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "fee_structures",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "class_subjects",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "subjects",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "hostel_allocations",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "lms_courses",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "diary_entries",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "trip_stop_status",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "countries",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "person_contacts",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "receipt_items",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "schema_meta",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "marks",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "feature_flags",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_money_science_progress",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_science_projects",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_categories",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "fee_transactions",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "transport_routes",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "hostel_blocks",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "blood_groups",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_statuses",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_transport",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_fees",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "complaints",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "staff_payroll",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "religions",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "exam_subjects",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "periods",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "audit_logs",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "grading_scales",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "financial_policy_rules",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "buses",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_batches",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_config",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "timetable_entries",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "genders",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "role_permissions",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "permissions",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "hostel_rooms",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "bus_locations",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "classes",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "class_sections",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_preferences",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "financial_audit_logs",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_templates",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_events",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notifications",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_deliveries",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "notification_audit_logs",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "user_devices",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "girl_safety_complaints",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "girl_safety_complaint_threads",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "ui_route_permissions",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "school_settings",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "staff_attendance",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "user_settings",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "admin_notifications",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "persons",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "staff",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "parents",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_parents",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "users",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "students",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "relationship_types",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "student_enrollments",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "lms_materials",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "expenses",
+    "rowsecurity": true
+  },
+  {
+    "tablename": "academic_years",
+    "rowsecurity": true
+  }
+]

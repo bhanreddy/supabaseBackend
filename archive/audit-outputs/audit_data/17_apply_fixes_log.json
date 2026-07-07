@@ -1,0 +1,363 @@
+{
+  "applied": [
+    {
+      "label": "grading_scales.created_at",
+      "sql": "ALTER TABLE grading_scales ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "grading_scales.deleted_at",
+      "sql": "ALTER TABLE grading_scales ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "leave_applications.reason_te",
+      "sql": "ALTER TABLE leave_applications ADD COLUMN IF NOT EXISTS reason_te TEXT;"
+    },
+    {
+      "label": "leave_applications.review_remarks_te",
+      "sql": "ALTER TABLE leave_applications ADD COLUMN IF NOT EXISTS review_remarks_te TEXT;"
+    },
+    {
+      "label": "transport_stops.deleted_at",
+      "sql": "ALTER TABLE transport_stops ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_preferences.deleted_at",
+      "sql": "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_batches.deleted_at",
+      "sql": "ALTER TABLE notification_batches ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_templates.deleted_at",
+      "sql": "ALTER TABLE notification_templates ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_config.deleted_at",
+      "sql": "ALTER TABLE notification_config ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_events.deleted_at",
+      "sql": "ALTER TABLE notification_events ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notifications.deleted_at",
+      "sql": "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_deliveries.deleted_at",
+      "sql": "ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "academic_years.created_at",
+      "sql": "ALTER TABLE academic_years ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "timetable_slots.day_of_week",
+      "sql": "ALTER TABLE timetable_slots ADD COLUMN IF NOT EXISTS day_of_week day_of_week_enum;"
+    },
+    {
+      "label": "sections.created_at",
+      "sql": "ALTER TABLE sections ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "events.title_te",
+      "sql": "ALTER TABLE events ADD COLUMN IF NOT EXISTS title_te TEXT;"
+    },
+    {
+      "label": "events.description_te",
+      "sql": "ALTER TABLE events ADD COLUMN IF NOT EXISTS description_te TEXT;"
+    },
+    {
+      "label": "events.deleted_at",
+      "sql": "ALTER TABLE events ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_logs.batch_id",
+      "sql": "ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS batch_id UUID;"
+    },
+    {
+      "label": "notification_logs.tokens_targeted",
+      "sql": "ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS tokens_targeted INTEGER;"
+    },
+    {
+      "label": "notification_logs.tokens_sent",
+      "sql": "ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS tokens_sent INTEGER;"
+    },
+    {
+      "label": "notification_logs.tokens_failed",
+      "sql": "ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS tokens_failed INTEGER;"
+    },
+    {
+      "label": "notification_logs.deleted_at",
+      "sql": "ALTER TABLE notification_logs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "money_science_modules.content_body",
+      "sql": "ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS content_body TEXT;"
+    },
+    {
+      "label": "money_science_modules.thumbnail_url",
+      "sql": "ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;"
+    },
+    {
+      "label": "money_science_modules.estimated_duration",
+      "sql": "ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS estimated_duration INTEGER;"
+    },
+    {
+      "label": "money_science_modules.difficulty_level",
+      "sql": "ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS difficulty_level VARCHAR(20);"
+    },
+    {
+      "label": "money_science_modules.tags",
+      "sql": "ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS tags TEXT[];"
+    },
+    {
+      "label": "science_projects.materials_required",
+      "sql": "ALTER TABLE science_projects ADD COLUMN IF NOT EXISTS materials_required TEXT[];"
+    },
+    {
+      "label": "science_projects.safety_instructions",
+      "sql": "ALTER TABLE science_projects ADD COLUMN IF NOT EXISTS safety_instructions TEXT;"
+    },
+    {
+      "label": "science_projects.thumbnail_url",
+      "sql": "ALTER TABLE science_projects ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;"
+    },
+    {
+      "label": "user_roles.created_at",
+      "sql": "ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "user_roles.deleted_at",
+      "sql": "ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "marks.remarks_te",
+      "sql": "ALTER TABLE marks ADD COLUMN IF NOT EXISTS remarks_te TEXT;"
+    },
+    {
+      "label": "life_values_modules.content_body",
+      "sql": "ALTER TABLE life_values_modules ADD COLUMN IF NOT EXISTS content_body TEXT;"
+    },
+    {
+      "label": "life_values_modules.banner_image_url",
+      "sql": "ALTER TABLE life_values_modules ADD COLUMN IF NOT EXISTS banner_image_url TEXT;"
+    },
+    {
+      "label": "life_values_modules.quote_author",
+      "sql": "ALTER TABLE life_values_modules ADD COLUMN IF NOT EXISTS quote_author VARCHAR(100);"
+    },
+    {
+      "label": "life_values_modules.highlight_quote",
+      "sql": "ALTER TABLE life_values_modules ADD COLUMN IF NOT EXISTS highlight_quote TEXT;"
+    },
+    {
+      "label": "discipline_records.evidence_urls",
+      "sql": "ALTER TABLE discipline_records ADD COLUMN IF NOT EXISTS evidence_urls TEXT[];"
+    },
+    {
+      "label": "roles.created_at",
+      "sql": "ALTER TABLE roles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "roles.deleted_at",
+      "sql": "ALTER TABLE roles ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "role_permissions.created_at",
+      "sql": "ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "role_permissions.deleted_at",
+      "sql": "ALTER TABLE role_permissions ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "permissions.created_at",
+      "sql": "ALTER TABLE permissions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "permissions.deleted_at",
+      "sql": "ALTER TABLE permissions ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "buses.deleted_at",
+      "sql": "ALTER TABLE buses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "hostel_rooms.deleted_at",
+      "sql": "ALTER TABLE hostel_rooms ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "bus_locations.deleted_at",
+      "sql": "ALTER TABLE bus_locations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "classes.created_at",
+      "sql": "ALTER TABLE classes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "class_sections.created_at",
+      "sql": "ALTER TABLE class_sections ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "class_sections.deleted_at",
+      "sql": "ALTER TABLE class_sections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;"
+    },
+    {
+      "label": "notification_preferences — ENABLE RLS",
+      "sql": "ALTER TABLE notification_preferences ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "notification_templates — ENABLE RLS",
+      "sql": "ALTER TABLE notification_templates ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "notification_events — ENABLE RLS",
+      "sql": "ALTER TABLE notification_events ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "notifications — ENABLE RLS",
+      "sql": "ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "notification_deliveries — ENABLE RLS",
+      "sql": "ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "notification_audit_logs — ENABLE RLS",
+      "sql": "ALTER TABLE notification_audit_logs ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "user_settings — ENABLE RLS",
+      "sql": "ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "girl_safety_complaints — ENABLE RLS",
+      "sql": "ALTER TABLE girl_safety_complaints ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "girl_safety_complaint_threads — ENABLE RLS",
+      "sql": "ALTER TABLE girl_safety_complaint_threads ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "driver_devices — ENABLE RLS",
+      "sql": "ALTER TABLE driver_devices ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "driver_heartbeat — ENABLE RLS",
+      "sql": "ALTER TABLE driver_heartbeat ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "bus_trip_history — ENABLE RLS",
+      "sql": "ALTER TABLE bus_trip_history ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "feature_flags — ENABLE RLS",
+      "sql": "ALTER TABLE feature_flags ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "ui_route_permissions — ENABLE RLS",
+      "sql": "ALTER TABLE ui_route_permissions ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "school_settings — ENABLE RLS",
+      "sql": "ALTER TABLE school_settings ENABLE ROW LEVEL SECURITY;"
+    },
+    {
+      "label": "admin_notifications",
+      "sql": "CREATE TABLE IF NOT EXISTS public.admin_notifications (\n    id          SERIAL PRIMARY KEY,\n    type"
+    },
+    {
+      "label": "notification_preferences — service_role policy",
+      "sql": "CREATE POLICY \"notification_preferences_service_role_all\"\n      ON public.notification_preferences\n "
+    },
+    {
+      "label": "notification_templates — service_role policy",
+      "sql": "CREATE POLICY \"notification_templates_service_role_all\"\n      ON public.notification_templates\n     "
+    },
+    {
+      "label": "notification_events — service_role policy",
+      "sql": "CREATE POLICY \"notification_events_service_role_all\"\n      ON public.notification_events\n      FOR A"
+    },
+    {
+      "label": "notifications — service_role policy",
+      "sql": "CREATE POLICY \"notifications_service_role_all\"\n      ON public.notifications\n      FOR ALL\n      TO "
+    },
+    {
+      "label": "notification_deliveries — service_role policy",
+      "sql": "CREATE POLICY \"notification_deliveries_service_role_all\"\n      ON public.notification_deliveries\n   "
+    },
+    {
+      "label": "notification_audit_logs — service_role policy",
+      "sql": "CREATE POLICY \"notification_audit_logs_service_role_all\"\n      ON public.notification_audit_logs\n   "
+    },
+    {
+      "label": "user_settings — service_role policy",
+      "sql": "CREATE POLICY \"user_settings_service_role_all\"\n      ON public.user_settings\n      FOR ALL\n      TO "
+    },
+    {
+      "label": "girl_safety_complaints — service_role policy",
+      "sql": "CREATE POLICY \"girl_safety_complaints_service_role_all\"\n      ON public.girl_safety_complaints\n     "
+    },
+    {
+      "label": "girl_safety_complaint_threads — service_role policy",
+      "sql": "CREATE POLICY \"girl_safety_complaint_threads_service_role_all\"\n      ON public.girl_safety_complaint"
+    },
+    {
+      "label": "driver_devices — service_role policy",
+      "sql": "CREATE POLICY \"driver_devices_service_role_all\"\n      ON public.driver_devices\n      FOR ALL\n      T"
+    },
+    {
+      "label": "driver_heartbeat — service_role policy",
+      "sql": "CREATE POLICY \"driver_heartbeat_service_role_all\"\n      ON public.driver_heartbeat\n      FOR ALL\n   "
+    },
+    {
+      "label": "bus_trip_history — service_role policy",
+      "sql": "CREATE POLICY \"bus_trip_history_service_role_all\"\n      ON public.bus_trip_history\n      FOR ALL\n   "
+    },
+    {
+      "label": "feature_flags — service_role policy",
+      "sql": "CREATE POLICY \"feature_flags_service_role_all\"\n      ON public.feature_flags\n      FOR ALL\n      TO "
+    },
+    {
+      "label": "ui_route_permissions — service_role policy",
+      "sql": "CREATE POLICY \"ui_route_permissions_service_role_all\"\n      ON public.ui_route_permissions\n      FOR"
+    },
+    {
+      "label": "school_settings — service_role policy",
+      "sql": "CREATE POLICY \"school_settings_service_role_all\"\n      ON public.school_settings\n      FOR ALL\n     "
+    },
+    {
+      "label": "admin_notifications — ENABLE RLS",
+      "sql": "ALTER TABLE public.admin_notifications ENABLE ROW LEVEL SECURITY"
+    },
+    {
+      "label": "admin_notifications — service_role policy",
+      "sql": "CREATE POLICY \"admin_notifications_service_role_all\"\n    ON public.admin_notifications FOR ALL\n    T"
+    }
+  ],
+  "skipped": [],
+  "errors": [
+    {
+      "label": "active_students — ENABLE RLS",
+      "sql": "ALTER TABLE active_students ENABLE ROW LEVEL SECURITY;",
+      "error": "ALTER action ENABLE ROW SECURITY cannot be performed on relation \"active_students\""
+    },
+    {
+      "label": "active_persons — ENABLE RLS",
+      "sql": "ALTER TABLE active_persons ENABLE ROW LEVEL SECURITY;",
+      "error": "ALTER action ENABLE ROW SECURITY cannot be performed on relation \"active_persons\""
+    },
+    {
+      "label": "debug_class_teachers — ENABLE RLS",
+      "sql": "ALTER TABLE debug_class_teachers ENABLE ROW LEVEL SECURITY;",
+      "error": "ALTER action ENABLE ROW SECURITY cannot be performed on relation \"debug_class_teachers\""
+    },
+    {
+      "label": "debug_role_permissions — ENABLE RLS",
+      "sql": "ALTER TABLE debug_role_permissions ENABLE ROW LEVEL SECURITY;",
+      "error": "ALTER action ENABLE ROW SECURITY cannot be performed on relation \"debug_role_permissions\""
+    }
+  ]
+}

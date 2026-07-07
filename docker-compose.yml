@@ -1,0 +1,92 @@
+# ========================================================================
+# Production Docker Compose for SupabaseBackend API
+# 
+# Usage:
+#   - Start stack: docker compose up -d
+#   - View logs: docker compose logs -f (all) or docker compose logs -f api
+#   - Scale API: docker compose up -d --scale api=3
+#   - Stop cleanly: docker compose down
+#   - Nuke everything: docker compose down -v --rmi all
+# ========================================================================
+
+networks:
+  public_net:
+    driver: bridge
+    name: supabase_backend_public
+
+services:
+  # ----------------------------------------------------------------------
+  # API Service: Node.js Backend handling business logic
+  # ----------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: supabase-backend:prod
+    container_name: supabase-backend-api
+    
+    # PRODUCTION RULE: restart: unless-stopped (prevents infinite loop if intentionally stopped)
+    restart: unless-stopped
+    
+    # PRODUCTION RULE: Custom bridge network (no default network)
+    networks:
+      - public_net
+
+    # External access: Expose port to host so external Load Balancer/Proxy can hit it
+    # Uses configurable PORT from .env, falling back to 3001
+    ports:
+      - "${PORT:-3001}:3000"
+
+    # Secrets and Config: Pulls from .env file securely, no inline hardcoded secrets
+    env_file:
+      - .env
+
+    # PRODUCTION RULE: Explicit healthcheck
+    # We use Node.js to check the endpoint without needing curl/wget installed
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:3000/api/v1/health?school_id=healthcheck', (r) => { if (r.statusCode !== 200) process.exit(1); process.exit(0); }).on('error', () => process.exit(1));"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # PRODUCTION RULE: Resource Limits
+    # Prevents Node.js from OOM-killing the host server if there's a memory leak
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'      # Max 50% of 1 CPU core
+          memory: 512M      # Hard limit memory
+        reservations:
+          cpus: '0.10'      # Guaranteed minimum CPU
+          memory: 256M      # Guaranteed minimum memory
+
+    # PRODUCTION RULE: Logging configuration
+    # Prevents unbounded container logs from filling disk space
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # PRODUCTION RULE: Graceful shutdown
+    # Gives in-flight Express requests time to finish before sending SIGKILL
+    stop_grace_period: 30s
+
+    # PRODUCTION RULE: Security hardening
+    # Drop unnecessary Linux capabilities and restrict new privileges
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # PRODUCTION RULE: Labels for tooling/identification
+    labels:
+      - "project=supabase-backend"
+      - "service=api"
+      - "environment=production"
+      - "maintainer=backend-team"

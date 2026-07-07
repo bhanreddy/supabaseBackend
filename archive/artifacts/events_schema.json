@@ -1,0 +1,97 @@
+[
+  {
+    "column_name": "id",
+    "data_type": "uuid",
+    "udt_name": "uuid"
+  },
+  {
+    "column_name": "title",
+    "data_type": "character varying",
+    "udt_name": "varchar"
+  },
+  {
+    "column_name": "description",
+    "data_type": "text",
+    "udt_name": "text"
+  },
+  {
+    "column_name": "event_type",
+    "data_type": "USER-DEFINED",
+    "udt_name": "event_type_enum"
+  },
+  {
+    "column_name": "start_date",
+    "data_type": "date",
+    "udt_name": "date"
+  },
+  {
+    "column_name": "end_date",
+    "data_type": "date",
+    "udt_name": "date"
+  },
+  {
+    "column_name": "start_time",
+    "data_type": "time without time zone",
+    "udt_name": "time"
+  },
+  {
+    "column_name": "end_time",
+    "data_type": "time without time zone",
+    "udt_name": "time"
+  },
+  {
+    "column_name": "location",
+    "data_type": "character varying",
+    "udt_name": "varchar"
+  },
+  {
+    "column_name": "is_all_day",
+    "data_type": "boolean",
+    "udt_name": "bool"
+  },
+  {
+    "column_name": "is_public",
+    "data_type": "boolean",
+    "udt_name": "bool"
+  },
+  {
+    "column_name": "target_audience",
+    "data_type": "USER-DEFINED",
+    "udt_name": "notice_audience_enum"
+  },
+  {
+    "column_name": "created_by",
+    "data_type": "uuid",
+    "udt_name": "uuid"
+  },
+  {
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "udt_name": "timestamptz"
+  },
+  {
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "udt_name": "timestamptz"
+  },
+  {
+    "column_name": "school_id",
+    "data_type": "uuid",
+    "udt_name": "uuid"
+  },
+  {
+    "column_name": "title_te",
+    "data_type": "text",
+    "udt_name": "text"
+  },
+  {
+    "column_name": "description_te",
+    "data_type": "text",
+    "udt_name": "text"
+  },
+  {
+    "column_name": "deleted_at",
+    "data_type": "timestamp with time zone",
+    "udt_name": "timestamptz"
+  }
+]

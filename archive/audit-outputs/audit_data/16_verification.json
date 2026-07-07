@@ -1,0 +1,702 @@
+{
+  "passed": 103,
+  "failed": 14,
+  "results": [
+    {
+      "type": "TABLE",
+      "object": "schema_meta",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "countries",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "genders",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_categories",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "religions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "blood_groups",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "relationship_types",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "staff_designations",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "persons",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "person_contacts",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "roles",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "permissions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "role_permissions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "users",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "user_settings",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "user_roles",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_statuses",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "students",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "parents",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_parents",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "academic_years",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "classes",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "sections",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "class_sections",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_enrollments",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "daily_attendance",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "staff_statuses",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "staff",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "staff_attendance",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "fee_types",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "fee_structures",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_fees",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "fee_transactions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "receipts",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "receipt_items",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "subjects",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "class_subjects",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "exams",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "exam_subjects",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "grading_scales",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "marks",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "complaints",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notices",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "leave_applications",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "diary_entries",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "periods",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "transport_routes",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "buses",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "transport_stops",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_transport",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "bus_locations",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "trips",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "trip_stop_status",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "hostel_blocks",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "hostel_rooms",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "hostel_allocations",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "events",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "lms_courses",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "lms_materials",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "user_devices",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_config",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_logs",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_batches",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "timetable_slots",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "discipline_records",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "money_science_modules",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_money_science_progress",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "science_projects",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_science_projects",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "life_values_modules",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "student_life_values_progress",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "expenses",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "staff_payroll",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "financial_audit_logs",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "financial_policy_rules",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "audit_logs",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "user_devices",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_templates",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_preferences",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_events",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notifications",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_deliveries",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "notification_audit_logs",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "driver_devices",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "driver_heartbeat",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "bus_trip_history",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "girl_safety_complaints",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "girl_safety_complaint_threads",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "school_settings",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "admin_notifications",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "access_requests",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "temp_access_grants",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "active_persons",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "active_students",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "bus_trip_history",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "debug_class_teachers",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "debug_role_permissions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "driver_devices",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "driver_heartbeat",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "feature_flags",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "timetable_entries",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "TABLE",
+      "object": "ui_route_permissions",
+      "status": "PASS",
+      "detail": "Exists in live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_staff_attendance_date_past",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_refund_must_be_negative",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_homework_due_date",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_bus_capacity",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_event_dates",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_notification_batches_type",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_discount_not_exceed_due",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_event_dates",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_discount_not_exceed_due",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_staff_attendance_date_past",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_refund_must_be_negative",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_homework_due_date",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_bus_capacity",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    },
+    {
+      "type": "CONSTRAINT",
+      "object": "chk_notification_batches_type",
+      "status": "FAIL",
+      "detail": "Constraint not applied to live DB"
+    }
+  ]
+}

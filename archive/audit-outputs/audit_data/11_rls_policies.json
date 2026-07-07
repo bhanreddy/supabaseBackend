@@ -1,0 +1,1172 @@
+[
+  {
+    "tablename": "leave_applications",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "transport_stops",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "driver_devices",
+    "policyname": "driver_devices_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "driver_heartbeat",
+    "policyname": "driver_heartbeat_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "bus_trip_history",
+    "policyname": "bus_trip_history_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "notification_logs",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "notices",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "notices",
+    "policyname": "Manage Notices",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(auth_has_role(ARRAY['admin'::text]) OR (EXISTS ( SELECT 1\n   FROM ((user_roles ur\n     JOIN role_permissions rp ON ((ur.role_id = rp.role_id)))\n     JOIN permissions p ON ((rp.permission_id = p.id)))\n  WHERE ((ur.user_id = auth.uid()) AND (((p.code)::text = 'notices.create'::text) OR ((p.code)::text = 'notices.manage'::text))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "notices",
+    "policyname": "View Notices",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "((created_by = auth.uid()) OR ((audience = 'all'::notice_audience_enum) AND (auth.role() = 'authenticated'::text)) OR ((audience = 'staff'::notice_audience_enum) AND auth_has_role(ARRAY['admin'::text, 'teacher'::text, 'staff'::text, 'accounts'::text])) OR ((audience = 'students'::notice_audience_enum) AND auth_has_role(ARRAY['admin'::text, 'student'::text])) OR ((audience = 'parents'::notice_audience_enum) AND auth_has_role(ARRAY['admin'::text, 'parent'::text])) OR ((audience = 'class'::notice_audience_enum) AND (target_class_id IS NOT NULL)))",
+    "with_check": null
+  },
+  {
+    "tablename": "money_science_modules",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "access_requests",
+    "policyname": "Admins can update requests",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "UPDATE",
+    "qual": "is_admin()",
+    "with_check": null
+  },
+  {
+    "tablename": "access_requests",
+    "policyname": "Admins can view all requests",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "is_admin()",
+    "with_check": null
+  },
+  {
+    "tablename": "access_requests",
+    "policyname": "Users can insert their own requests",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "(auth.uid() = requested_by)"
+  },
+  {
+    "tablename": "access_requests",
+    "policyname": "Users can view their own requests",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth.uid() = requested_by)",
+    "with_check": null
+  },
+  {
+    "tablename": "temp_access_grants",
+    "policyname": "Admins can insert grants",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "is_admin()"
+  },
+  {
+    "tablename": "temp_access_grants",
+    "policyname": "Admins can update grants",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "UPDATE",
+    "qual": "is_admin()",
+    "with_check": null
+  },
+  {
+    "tablename": "temp_access_grants",
+    "policyname": "Admins can view all grants",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "is_admin()",
+    "with_check": null
+  },
+  {
+    "tablename": "temp_access_grants",
+    "policyname": "Users can view their own grants",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth.uid() = requested_by)",
+    "with_check": null
+  },
+  {
+    "tablename": "science_projects",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "user_roles",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "life_values_modules",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "life_values_modules",
+    "policyname": "Enable read access for all",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "true",
+    "with_check": null
+  },
+  {
+    "tablename": "fee_types",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "receipts",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "exams",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "discipline_records",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "roles",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "timetable_slots",
+    "policyname": "Admins full access",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(EXISTS ( SELECT 1\n   FROM users\n  WHERE ((users.id = auth.uid()) AND (EXISTS ( SELECT 1\n           FROM (user_roles ur\n             JOIN roles r ON ((ur.role_id = r.id)))\n          WHERE ((ur.user_id = users.id) AND ((r.code)::text = 'admin'::text)))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "timetable_slots",
+    "policyname": "Students view own class timetable",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(class_section_id IN ( SELECT student_enrollments.class_section_id\n   FROM student_enrollments\n  WHERE ((student_enrollments.student_id IN ( SELECT students.id\n           FROM students\n          WHERE (students.person_id = ( SELECT users.person_id\n                   FROM users\n                  WHERE (users.id = auth.uid()))))) AND (student_enrollments.status = 'active'::enrollment_status_enum))))",
+    "with_check": null
+  },
+  {
+    "tablename": "timetable_slots",
+    "policyname": "Teachers view own slots",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(teacher_id IN ( SELECT staff.id\n   FROM staff\n  WHERE (staff.person_id = ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid())))))",
+    "with_check": null
+  },
+  {
+    "tablename": "student_life_values_progress",
+    "policyname": "Allow all authenticated check",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "true",
+    "with_check": null
+  },
+  {
+    "tablename": "student_life_values_progress",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_life_values_progress",
+    "policyname": "Students can view own progress",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(student_id IN ( SELECT s.id\n   FROM ((students s\n     JOIN persons p ON ((s.person_id = p.id)))\n     JOIN users u ON ((u.person_id = p.id)))\n  WHERE (u.id = auth.uid())))",
+    "with_check": null
+  },
+  {
+    "tablename": "events",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "events",
+    "policyname": "View Events",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "((is_public = true) OR (created_by = auth.uid()) OR ((target_audience = 'all'::notice_audience_enum) AND (auth.role() = 'authenticated'::text)) OR ((target_audience = 'staff'::notice_audience_enum) AND auth_has_role(ARRAY['admin'::text, 'teacher'::text, 'staff'::text, 'accounts'::text])))",
+    "with_check": null
+  },
+  {
+    "tablename": "staff_designations",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "staff_statuses",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "daily_attendance",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "sections",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "trips",
+    "policyname": "Admins can manage trips",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = ANY ((ARRAY['admin'::character varying, 'driver'::character varying])::text[])))))",
+    "with_check": null
+  },
+  {
+    "tablename": "trips",
+    "policyname": "Drivers can view own trips",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(driver_id IN ( SELECT s.id\n   FROM (staff s\n     JOIN users u ON ((s.person_id = u.person_id)))\n  WHERE (u.id = auth.uid())))",
+    "with_check": null
+  },
+  {
+    "tablename": "fee_structures",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "class_subjects",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "subjects",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "hostel_allocations",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "lms_courses",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "diary_entries",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "trip_stop_status",
+    "policyname": "Authenticated can view trip stops",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "SELECT",
+    "qual": "true",
+    "with_check": null
+  },
+  {
+    "tablename": "countries",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "person_contacts",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "receipt_items",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "schema_meta",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "marks",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "feature_flags",
+    "policyname": "feature_flags_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "student_money_science_progress",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_science_projects",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_categories",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "fee_transactions",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "transport_routes",
+    "policyname": "Authenticated users can read routes",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": null
+  },
+  {
+    "tablename": "transport_routes",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "hostel_blocks",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "blood_groups",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_statuses",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_transport",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_fees",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "complaints",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "staff_payroll",
+    "policyname": "Admins and Accounts can manage payroll",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = ANY ((ARRAY['admin'::character varying, 'accounts'::character varying])::text[])))))",
+    "with_check": null
+  },
+  {
+    "tablename": "staff_payroll",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "staff_payroll",
+    "policyname": "Staff can view own payroll",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(staff_id IN ( SELECT staff.id\n   FROM staff\n  WHERE (staff.person_id IN ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid())))))",
+    "with_check": null
+  },
+  {
+    "tablename": "religions",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "exam_subjects",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "periods",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "audit_logs",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "grading_scales",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "financial_policy_rules",
+    "policyname": "Admins can update financial policies",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "UPDATE",
+    "qual": "(EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = 'admin'::text))))",
+    "with_check": "(EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = 'admin'::text))))"
+  },
+  {
+    "tablename": "financial_policy_rules",
+    "policyname": "Authenticated users can read financial policies",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "SELECT",
+    "qual": "true",
+    "with_check": null
+  },
+  {
+    "tablename": "financial_policy_rules",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "buses",
+    "policyname": "Authenticated users can read buses",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": null
+  },
+  {
+    "tablename": "buses",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "notification_batches",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "notification_config",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "timetable_entries",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "timetable_entries",
+    "policyname": "Timetable Manage",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(auth_has_role(ARRAY['admin'::text]) OR (EXISTS ( SELECT 1\n   FROM ((user_roles ur\n     JOIN role_permissions rp ON ((ur.role_id = rp.role_id)))\n     JOIN permissions p ON ((rp.permission_id = p.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((p.code)::text = 'timetable.manage'::text)))))",
+    "with_check": null
+  },
+  {
+    "tablename": "timetable_entries",
+    "policyname": "Timetable View",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth_has_role(ARRAY['admin'::text, 'accounts'::text]) OR (auth_has_role(ARRAY['teacher'::text, 'staff'::text]) AND (teacher_id IN ( SELECT staff.id\n   FROM staff\n  WHERE (staff.person_id = ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid())))))) OR (auth_has_role(ARRAY['student'::text]) AND (class_section_id IN ( SELECT se.class_section_id\n   FROM (student_enrollments se\n     JOIN students s ON ((se.student_id = s.id)))\n  WHERE ((s.person_id = ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid()))) AND (se.status = 'active'::enrollment_status_enum))))) OR (auth_has_role(ARRAY['parent'::text]) AND (class_section_id IN ( SELECT se.class_section_id\n   FROM (((student_enrollments se\n     JOIN students s ON ((se.student_id = s.id)))\n     JOIN student_parents sp ON ((s.id = sp.student_id)))\n     JOIN parents p ON ((sp.parent_id = p.id)))\n  WHERE ((p.person_id = ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid()))) AND (se.status = 'active'::enrollment_status_enum))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "genders",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "role_permissions",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "permissions",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "hostel_rooms",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "bus_locations",
+    "policyname": "Authenticated users can insert bus locations",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "bus_locations",
+    "policyname": "Authenticated users can read bus locations",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": null
+  },
+  {
+    "tablename": "bus_locations",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "classes",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "class_sections",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "notification_preferences",
+    "policyname": "notification_preferences_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "financial_audit_logs",
+    "policyname": "Admins can view financial audit logs",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "SELECT",
+    "qual": "(EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = 'admin'::text))))",
+    "with_check": null
+  },
+  {
+    "tablename": "financial_audit_logs",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "financial_audit_logs",
+    "policyname": "System can insert audit logs",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "true"
+  },
+  {
+    "tablename": "notification_templates",
+    "policyname": "notification_templates_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "notification_events",
+    "policyname": "notification_events_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "notifications",
+    "policyname": "notifications_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "notification_deliveries",
+    "policyname": "notification_deliveries_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "notification_audit_logs",
+    "policyname": "notification_audit_logs_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "user_devices",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "user_devices",
+    "policyname": "Users can manage own devices",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(user_id = auth.uid())",
+    "with_check": null
+  },
+  {
+    "tablename": "girl_safety_complaints",
+    "policyname": "girl_safety_complaints_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "girl_safety_complaint_threads",
+    "policyname": "girl_safety_complaint_threads_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "ui_route_permissions",
+    "policyname": "ui_route_permissions_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "school_settings",
+    "policyname": "school_settings_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "staff_attendance",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "staff_attendance",
+    "policyname": "Manage staff attendance",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "auth_has_role(ARRAY['admin'::text, 'principal'::text, 'accounts'::text])",
+    "with_check": null
+  },
+  {
+    "tablename": "staff_attendance",
+    "policyname": "View staff attendance",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "(auth_has_role(ARRAY['admin'::text, 'principal'::text, 'accounts'::text]) OR (staff_id IN ( SELECT staff.id\n   FROM staff\n  WHERE (staff.person_id = ( SELECT users.person_id\n           FROM users\n          WHERE (users.id = auth.uid()))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "user_settings",
+    "policyname": "user_settings_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "admin_notifications",
+    "policyname": "admin_notifications_service_role_all",
+    "permissive": "PERMISSIVE",
+    "roles": "{service_role}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "persons",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "persons",
+    "policyname": "Users can read own person",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "((id IN ( SELECT users.person_id\n   FROM users\n  WHERE (users.id = auth.uid()))) OR (auth.role() = 'service_role'::text) OR (auth.role() = 'anon'::text))",
+    "with_check": null
+  },
+  {
+    "tablename": "staff",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "staff",
+    "policyname": "Users can read own staff record",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "((person_id IN ( SELECT users.person_id\n   FROM users\n  WHERE (users.id = auth.uid()))) OR (auth.role() = 'service_role'::text) OR (auth.role() = 'anon'::text))",
+    "with_check": null
+  },
+  {
+    "tablename": "parents",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_parents",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "users",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "students",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "relationship_types",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "student_enrollments",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "lms_materials",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "expenses",
+    "policyname": "Create expenses",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "((auth.role() = 'authenticated'::text) AND (created_by = auth.uid()))"
+  },
+  {
+    "tablename": "expenses",
+    "policyname": "Delete expenses",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "DELETE",
+    "qual": "(((created_by = auth.uid()) AND (status = 'pending'::text)) OR (EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = ANY ((ARRAY['admin'::character varying, 'principal'::character varying, 'accounts'::character varying])::text[]))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "expenses",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  },
+  {
+    "tablename": "expenses",
+    "policyname": "Update expenses",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "UPDATE",
+    "qual": "(((created_by = auth.uid()) AND (status = 'pending'::text)) OR (EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = ANY ((ARRAY['admin'::character varying, 'principal'::character varying, 'accounts'::character varying])::text[]))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "expenses",
+    "policyname": "View own school expenses",
+    "permissive": "PERMISSIVE",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "qual": "((created_by = auth.uid()) OR (EXISTS ( SELECT 1\n   FROM (user_roles ur\n     JOIN roles r ON ((ur.role_id = r.id)))\n  WHERE ((ur.user_id = auth.uid()) AND ((r.code)::text = ANY ((ARRAY['admin'::character varying, 'principal'::character varying, 'accounts'::character varying])::text[]))))))",
+    "with_check": null
+  },
+  {
+    "tablename": "academic_years",
+    "policyname": "Enable all for authenticated",
+    "permissive": "PERMISSIVE",
+    "roles": "{authenticated}",
+    "cmd": "ALL",
+    "qual": "(auth.role() = 'authenticated'::text)",
+    "with_check": "(auth.role() = 'authenticated'::text)"
+  }
+]

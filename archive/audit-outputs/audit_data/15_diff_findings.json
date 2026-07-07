@@ -1,0 +1,1829 @@
+[
+  {
+    "severity": "CRITICAL",
+    "category": "TABLE",
+    "object": "fee_installments",
+    "issue": "Table exists in live DB with no definition in schema.sql",
+    "schema_state": "Missing",
+    "live_state": "Exists",
+    "recommended_fix": "-- TODO: Add table definition for \"fee_installments\" to schema.sql"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "leave_applications.leave_type",
+    "issue": "Column type mismatch",
+    "schema_state": "leave_type_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE leave_applications ALTER COLUMN leave_type TYPE leave_type_enum USING leave_type::leave_type_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "leave_applications.status",
+    "issue": "Column type mismatch",
+    "schema_state": "leave_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE leave_applications ALTER COLUMN status TYPE leave_status_enum USING status::leave_status_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "timetable_entries.day_of_week",
+    "issue": "Column type mismatch",
+    "schema_state": "USER",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE timetable_entries ALTER COLUMN day_of_week TYPE USER USING day_of_week::USER;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "bus_locations.is_mocked",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "boolean",
+    "recommended_fix": "-- Document: ALTER TABLE bus_locations ADD COLUMN IF NOT EXISTS is_mocked boolean;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "bus_locations.is_suspicious",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "boolean",
+    "recommended_fix": "-- Document: ALTER TABLE bus_locations ADD COLUMN IF NOT EXISTS is_suspicious boolean;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "classes.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE classes ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notification_preferences.channel",
+    "issue": "Column type mismatch",
+    "schema_state": "notification_channel",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notification_preferences ALTER COLUMN channel TYPE notification_channel USING channel::notification_channel;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notification_templates.default_channels",
+    "issue": "Column type mismatch",
+    "schema_state": "notification_channel[]",
+    "live_state": "ARRAY",
+    "recommended_fix": "ALTER TABLE notification_templates ALTER COLUMN default_channels TYPE notification_channel[] USING default_channels::notification_channel[];"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notification_events.status",
+    "issue": "Column type mismatch",
+    "schema_state": "event_status",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notification_events ALTER COLUMN status TYPE event_status USING status::event_status;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notifications.status",
+    "issue": "Column type mismatch",
+    "schema_state": "notification_status",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notifications ALTER COLUMN status TYPE notification_status USING status::notification_status;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notification_deliveries.channel",
+    "issue": "Column type mismatch",
+    "schema_state": "notification_channel",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notification_deliveries ALTER COLUMN channel TYPE notification_channel USING channel::notification_channel;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notification_deliveries.status",
+    "issue": "Column type mismatch",
+    "schema_state": "notification_status",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notification_deliveries ALTER COLUMN status TYPE notification_status USING status::notification_status;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "school_settings.id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "staff_attendance.status",
+    "issue": "Column type mismatch",
+    "schema_state": "attendance_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE staff_attendance ALTER COLUMN status TYPE attendance_status_enum USING status::attendance_status_enum;"
+  },
+  {
+    "severity": "TODO",
+    "category": "TABLE",
+    "object": "admin_notifications",
+    "issue": "schema_parsed._uncertain = true for this table",
+    "schema_state": "Uncertain parsing",
+    "live_state": "Exists",
+    "recommended_fix": "SELECT * FROM information_schema.columns WHERE table_name='admin_notifications';"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "integer",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS id integer;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.user_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS user_id uuid;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.created_at",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "timestamp with time zone",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS created_at timestamp with time zone;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.type",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "character varying",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS type character varying;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.message",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "text",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS message text;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "admin_notifications.ip_address",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "character varying",
+    "recommended_fix": "-- Document: ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS ip_address character varying;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "staff.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE staff ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "users.account_status",
+    "issue": "Column type mismatch",
+    "schema_state": "account_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE users ALTER COLUMN account_status TYPE account_status_enum USING account_status::account_status_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "users.deleted_at",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "timestamp with time zone",
+    "recommended_fix": "-- Document: ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at timestamp with time zone;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "users.theme",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "text",
+    "recommended_fix": "-- Document: ALTER TABLE users ADD COLUMN IF NOT EXISTS theme text;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "students.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE students ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "student_enrollments.status",
+    "issue": "Column type mismatch",
+    "schema_state": "enrollment_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE student_enrollments ALTER COLUMN status TYPE enrollment_status_enum USING status::enrollment_status_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "lms_materials.material_type",
+    "issue": "Column type mismatch",
+    "schema_state": "material_type_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE lms_materials ALTER COLUMN material_type TYPE material_type_enum USING material_type::material_type_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "expenses.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE expenses ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "transport_stops.pickup_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE transport_stops ALTER COLUMN pickup_time TYPE TIME USING pickup_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "transport_stops.drop_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE transport_stops ALTER COLUMN drop_time TYPE TIME USING drop_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "bus_trip_history.latitude",
+    "issue": "Column type mismatch",
+    "schema_state": "double",
+    "live_state": "double precision",
+    "recommended_fix": "ALTER TABLE bus_trip_history ALTER COLUMN latitude TYPE double USING latitude::double;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "bus_trip_history.longitude",
+    "issue": "Column type mismatch",
+    "schema_state": "double",
+    "live_state": "double precision",
+    "recommended_fix": "ALTER TABLE bus_trip_history ALTER COLUMN longitude TYPE double USING longitude::double;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "bus_trip_history.speed",
+    "issue": "Column type mismatch",
+    "schema_state": "double",
+    "live_state": "double precision",
+    "recommended_fix": "ALTER TABLE bus_trip_history ALTER COLUMN speed TYPE double USING speed::double;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notices.audience",
+    "issue": "Column type mismatch",
+    "schema_state": "notice_audience_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notices ALTER COLUMN audience TYPE notice_audience_enum USING audience::notice_audience_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "notices.priority",
+    "issue": "Column type mismatch",
+    "schema_state": "complaint_priority_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE notices ALTER COLUMN priority TYPE complaint_priority_enum USING priority::complaint_priority_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "notices.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE notices ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "money_science_modules.content_url",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "text",
+    "recommended_fix": "-- Document: ALTER TABLE money_science_modules ADD COLUMN IF NOT EXISTS content_url text;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "money_science_modules.tags",
+    "issue": "Column type mismatch",
+    "schema_state": "TEXT[]",
+    "live_state": "ARRAY",
+    "recommended_fix": "ALTER TABLE money_science_modules ALTER COLUMN tags TYPE TEXT[] USING tags::TEXT[];"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "science_projects.materials_required",
+    "issue": "Column type mismatch",
+    "schema_state": "TEXT[]",
+    "live_state": "ARRAY",
+    "recommended_fix": "ALTER TABLE science_projects ALTER COLUMN materials_required TYPE TEXT[] USING materials_required::TEXT[];"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "exams.status",
+    "issue": "Column type mismatch",
+    "schema_state": "exam_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE exams ALTER COLUMN status TYPE exam_status_enum USING status::exam_status_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "discipline_records.evidence_urls",
+    "issue": "Column type mismatch",
+    "schema_state": "TEXT[]",
+    "live_state": "ARRAY",
+    "recommended_fix": "ALTER TABLE discipline_records ALTER COLUMN evidence_urls TYPE TEXT[] USING evidence_urls::TEXT[];"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "timetable_slots.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE timetable_slots ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "timetable_slots.start_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE timetable_slots ALTER COLUMN start_time TYPE TIME USING start_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "timetable_slots.end_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE timetable_slots ALTER COLUMN end_time TYPE TIME USING end_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "timetable_slots.day_of_week",
+    "issue": "Column type mismatch",
+    "schema_state": "day_of_week_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE timetable_slots ALTER COLUMN day_of_week TYPE day_of_week_enum USING day_of_week::day_of_week_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "events.event_type",
+    "issue": "Column type mismatch",
+    "schema_state": "event_type_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE events ALTER COLUMN event_type TYPE event_type_enum USING event_type::event_type_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "events.start_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE events ALTER COLUMN start_time TYPE TIME USING start_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "events.end_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE events ALTER COLUMN end_time TYPE TIME USING end_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "events.target_audience",
+    "issue": "Column type mismatch",
+    "schema_state": "notice_audience_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE events ALTER COLUMN target_audience TYPE notice_audience_enum USING target_audience::notice_audience_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "events.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE events ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "daily_attendance.status",
+    "issue": "Column type mismatch",
+    "schema_state": "attendance_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE daily_attendance ALTER COLUMN status TYPE attendance_status_enum USING status::attendance_status_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "daily_attendance.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE daily_attendance ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "TODO",
+    "category": "TABLE",
+    "object": "trips",
+    "issue": "schema_parsed._uncertain = true for this table",
+    "schema_state": "Uncertain parsing",
+    "live_state": "Exists",
+    "recommended_fix": "SELECT * FROM information_schema.columns WHERE table_name='trips';"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "trips.status",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "character varying",
+    "recommended_fix": "-- Document: ALTER TABLE trips ADD COLUMN IF NOT EXISTS status character varying;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "lms_courses.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE lms_courses ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "TODO",
+    "category": "TABLE",
+    "object": "trip_stop_status",
+    "issue": "schema_parsed._uncertain = true for this table",
+    "schema_state": "Uncertain parsing",
+    "live_state": "Exists",
+    "recommended_fix": "SELECT * FROM information_schema.columns WHERE table_name='trip_stop_status';"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "trip_stop_status.status",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "character varying",
+    "recommended_fix": "-- Document: ALTER TABLE trip_stop_status ADD COLUMN IF NOT EXISTS status character varying;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "active_students.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE active_students ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "person_contacts.contact_type",
+    "issue": "Column type mismatch",
+    "schema_state": "contact_type_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE person_contacts ALTER COLUMN contact_type TYPE contact_type_enum USING contact_type::contact_type_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "fee_transactions.payment_method",
+    "issue": "Column type mismatch",
+    "schema_state": "payment_method_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE fee_transactions ALTER COLUMN payment_method TYPE payment_method_enum USING payment_method::payment_method_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "student_fees.status",
+    "issue": "Column type mismatch",
+    "schema_state": "fee_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE student_fees ALTER COLUMN status TYPE fee_status_enum USING status::fee_status_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "student_fees.deleted_at",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "timestamp with time zone",
+    "recommended_fix": "-- Document: ALTER TABLE student_fees ADD COLUMN IF NOT EXISTS deleted_at timestamp with time zone;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "complaints.priority",
+    "issue": "Column type mismatch",
+    "schema_state": "complaint_priority_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE complaints ALTER COLUMN priority TYPE complaint_priority_enum USING priority::complaint_priority_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "complaints.status",
+    "issue": "Column type mismatch",
+    "schema_state": "complaint_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE complaints ALTER COLUMN status TYPE complaint_status_enum USING status::complaint_status_enum;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "COLUMN",
+    "object": "complaints.school_id",
+    "issue": "Column exists in live DB but not schema.sql (undocumented mutation)",
+    "schema_state": "Missing",
+    "live_state": "uuid",
+    "recommended_fix": "-- Document: ALTER TABLE complaints ADD COLUMN IF NOT EXISTS school_id uuid;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "staff_payroll.status",
+    "issue": "Column type mismatch",
+    "schema_state": "payroll_status_enum",
+    "live_state": "USER-DEFINED",
+    "recommended_fix": "ALTER TABLE staff_payroll ALTER COLUMN status TYPE payroll_status_enum USING status::payroll_status_enum;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "periods.start_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE periods ALTER COLUMN start_time TYPE TIME USING start_time::TIME;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "COLUMN",
+    "object": "periods.end_time",
+    "issue": "Column type mismatch",
+    "schema_state": "TIME",
+    "live_state": "time without time zone",
+    "recommended_fix": "ALTER TABLE periods ALTER COLUMN end_time TYPE TIME USING end_time::TIME;"
+  },
+  {
+    "severity": "HIGH",
+    "category": "RLS",
+    "object": "fee_installments",
+    "issue": "RLS is disabled — table is publicly accessible to any authenticated user",
+    "schema_state": "ENABLE ROW LEVEL SECURITY expected",
+    "live_state": "Disabled",
+    "recommended_fix": "ALTER TABLE fee_installments ENABLE ROW LEVEL SECURITY;"
+  },
+  {
+    "severity": "HIGH",
+    "category": "RLS",
+    "object": "active_students",
+    "issue": "RLS is disabled — table is publicly accessible to any authenticated user",
+    "schema_state": "ENABLE ROW LEVEL SECURITY expected",
+    "live_state": "Disabled",
+    "recommended_fix": "ALTER TABLE active_students ENABLE ROW LEVEL SECURITY;"
+  },
+  {
+    "severity": "HIGH",
+    "category": "RLS",
+    "object": "active_persons",
+    "issue": "RLS is disabled — table is publicly accessible to any authenticated user",
+    "schema_state": "ENABLE ROW LEVEL SECURITY expected",
+    "live_state": "Disabled",
+    "recommended_fix": "ALTER TABLE active_persons ENABLE ROW LEVEL SECURITY;"
+  },
+  {
+    "severity": "HIGH",
+    "category": "RLS",
+    "object": "debug_class_teachers",
+    "issue": "RLS is disabled — table is publicly accessible to any authenticated user",
+    "schema_state": "ENABLE ROW LEVEL SECURITY expected",
+    "live_state": "Disabled",
+    "recommended_fix": "ALTER TABLE debug_class_teachers ENABLE ROW LEVEL SECURITY;"
+  },
+  {
+    "severity": "HIGH",
+    "category": "RLS",
+    "object": "debug_role_permissions",
+    "issue": "RLS is disabled — table is publicly accessible to any authenticated user",
+    "schema_state": "ENABLE ROW LEVEL SECURITY expected",
+    "live_state": "Disabled",
+    "recommended_fix": "ALTER TABLE debug_role_permissions ENABLE ROW LEVEL SECURITY;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "CHECK_CONSTRAINT",
+    "object": "notification_deliveries.chk_retry_time",
+    "issue": "Constraint in schema is stricter than live DB (e.g. != 0 vs > 0)",
+    "schema_state": "(status = 'FAILED' AND next_retry_at IS NOT NULL) OR \r\n        (status != 'FAILED')",
+    "live_state": "(((status = 'FAILED'::notification_status) AND (next_retry_at IS NOT NULL)) OR (status <> 'FAILED'::notification_status))",
+    "recommended_fix": "ALTER TABLE notification_deliveries DROP CONSTRAINT chk_retry_time;\nALTER TABLE notification_deliveries ADD CONSTRAINT chk_retry_time CHECK ((status = 'FAILED' AND next_retry_at IS NOT NULL) OR \r\n        (status != 'FAILED'));"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "expenses",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (created_by) REFERENCES auth.users(id)",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%expenses%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "financial_audit_logs",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (performed_by) REFERENCES auth.users(id)",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%financial_audit_logs%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "financial_policy_rules",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (updated_by) REFERENCES auth.users(id)",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%financial_policy_rules%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "access_requests",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (requested_by) REFERENCES auth.users(id) ON DELETE CASCADE",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%access_requests%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "access_requests",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (reviewed_by) REFERENCES auth.users(id) ON DELETE SET NULL",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%access_requests%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "temp_access_grants",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (granted_by) REFERENCES auth.users(id) ON DELETE SET NULL",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%temp_access_grants%';"
+  },
+  {
+    "severity": "TODO",
+    "category": "FOREIGN_KEY",
+    "object": "temp_access_grants",
+    "issue": "schema_parsed._uncertain = true",
+    "schema_state": "FOREIGN KEY (requested_by) REFERENCES auth.users(id) ON DELETE CASCADE",
+    "live_state": "Unknown",
+    "recommended_fix": "SELECT * FROM information_schema.referential_constraints WHERE constraint_name LIKE '%temp_access_grants%';"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "uq_active_parent",
+    "issue": "Index exists in live DB but not in schema.sql",
+    "schema_state": "Missing",
+    "live_state": "CREATE UNIQUE INDEX uq_active_parent ON public.student_parents USING btree (student_id, parent_id)",
+    "recommended_fix": "-- Document in schema.sql:\nCREATE UNIQUE INDEX uq_active_parent ON public.student_parents USING btree (student_id, parent_id);"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "no_parent_date_overlap",
+    "issue": "Index exists in live DB but not in schema.sql",
+    "schema_state": "Missing",
+    "live_state": "CREATE INDEX no_parent_date_overlap ON public.student_parents USING gist (student_id, parent_id, daterange(valid_from, valid_to, '[]'::text))",
+    "recommended_fix": "-- Document in schema.sql:\nCREATE INDEX no_parent_date_overlap ON public.student_parents USING gist (student_id, parent_id, daterange(valid_from, valid_to, '[]'::text));"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "no_enrollment_overlap",
+    "issue": "Index exists in live DB but not in schema.sql",
+    "schema_state": "Missing",
+    "live_state": "CREATE INDEX no_enrollment_overlap ON public.student_enrollments USING gist (student_id, daterange(start_date, end_date, '[]'::text))",
+    "recommended_fix": "-- Document in schema.sql:\nCREATE INDEX no_enrollment_overlap ON public.student_enrollments USING gist (student_id, daterange(start_date, end_date, '[]'::text));"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "no_academic_year_overlap",
+    "issue": "Index exists in live DB but not in schema.sql",
+    "schema_state": "Missing",
+    "live_state": "CREATE INDEX no_academic_year_overlap ON public.academic_years USING gist (daterange(start_date, end_date, '[]'::text)) WHERE (deleted_at IS NULL)",
+    "recommended_fix": "-- Document in schema.sql:\nCREATE INDEX no_academic_year_overlap ON public.academic_years USING gist (daterange(start_date, end_date, '[]'::text)) WHERE (deleted_at IS NULL);"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_user_devices_fcm_token",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_user_devices_fcm_token ON user_devices(fcm_token);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_user_devices_fcm_token ON user_devices(fcm_token);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_user_devices_active",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, is_active);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, is_active);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_notification_logs_batch_id",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_notification_logs_batch_id ON notification_logs(batch_id);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_notification_logs_batch_id ON notification_logs(batch_id);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_temp_access_lookup",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_temp_access_lookup ON temp_access_grants(requested_by, department) WHERE is_active = true;",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_temp_access_lookup ON temp_access_grants(requested_by, department) WHERE is_active = true;;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_user_devices_fcm_token",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_user_devices_fcm_token ON user_devices(fcm_token);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_user_devices_fcm_token ON user_devices(fcm_token);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_user_devices_active",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, is_active);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, is_active);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_notification_logs_batch_id",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_notification_logs_batch_id ON notification_logs(batch_id);",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_notification_logs_batch_id ON notification_logs(batch_id);;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "INDEX",
+    "object": "idx_temp_access_lookup",
+    "issue": "Index in schema.sql missing from live DB",
+    "schema_state": "CREATE INDEX IF NOT EXISTS idx_temp_access_lookup ON temp_access_grants(requested_by, department) WHERE is_active = true;",
+    "live_state": "Missing",
+    "recommended_fix": "CREATE INDEX IF NOT EXISTS idx_temp_access_lookup ON temp_access_grants(requested_by, department) WHERE is_active = true;;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "update_timestamp",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=164",
+    "live_state": "live len=57",
+    "recommended_fix": "-- Review and re-deploy function update_timestamp"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "update_timestamp",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION update_timestamp() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "update_person_display_name",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=286",
+    "live_state": "live len=123",
+    "recommended_fix": "-- Review and re-deploy function update_person_display_name"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "update_person_display_name",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION update_person_display_name() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "ensure_active_person_ref",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=499",
+    "live_state": "live len=342",
+    "recommended_fix": "-- Review and re-deploy function ensure_active_person_ref"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "ensure_active_person_ref",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION ensure_active_person_ref() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "ensure_active_student_parent",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=526",
+    "live_state": "live len=351",
+    "recommended_fix": "-- Review and re-deploy function ensure_active_student_parent"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "ensure_active_student_parent",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION ensure_active_student_parent() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "recalculate_section_rolls",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=932",
+    "live_state": "live len=773",
+    "recommended_fix": "-- Review and re-deploy function recalculate_section_rolls"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "recalculate_section_rolls",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION recalculate_section_rolls() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_enrollment_year",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=435",
+    "live_state": "live len=263",
+    "recommended_fix": "-- Review and re-deploy function validate_enrollment_year"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_enrollment_year",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_enrollment_year() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "ensure_active_student_enrollment",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=375",
+    "live_state": "live len=193",
+    "recommended_fix": "-- Review and re-deploy function ensure_active_student_enrollment"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "ensure_active_student_enrollment",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION ensure_active_student_enrollment() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_attendance_entry",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=711",
+    "live_state": "live len=2125",
+    "recommended_fix": "-- Review and re-deploy function validate_attendance_entry"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_attendance_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_attendance_entry() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "ensure_active_person_staff",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=355",
+    "live_state": "live len=195",
+    "recommended_fix": "-- Review and re-deploy function ensure_active_person_staff"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "ensure_active_person_staff",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION ensure_active_person_staff() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "prevent_system_role_change",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=363",
+    "live_state": "live len=195",
+    "recommended_fix": "-- Review and re-deploy function prevent_system_role_change"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "prevent_system_role_change",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION prevent_system_role_change() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "propagate_fee_structure_updates",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=449",
+    "live_state": "live len=273",
+    "recommended_fix": "-- Review and re-deploy function propagate_fee_structure_updates"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "propagate_fee_structure_updates",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION propagate_fee_structure_updates() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "auto_assign_fees_on_structure_creation",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=724",
+    "live_state": "live len=536",
+    "recommended_fix": "-- Review and re-deploy function auto_assign_fees_on_structure_creation"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "auto_assign_fees_on_structure_creation",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION auto_assign_fees_on_structure_creation() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "auto_assign_fees_on_enrollment",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=880",
+    "live_state": "live len=694",
+    "recommended_fix": "-- Review and re-deploy function auto_assign_fees_on_enrollment"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "auto_assign_fees_on_enrollment",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION auto_assign_fees_on_enrollment() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "update_fee_status",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=469",
+    "live_state": "live len=315",
+    "recommended_fix": "-- Review and re-deploy function update_fee_status"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "update_fee_status",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION update_fee_status() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "update_fee_paid_amount",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=316",
+    "live_state": "live len=142",
+    "recommended_fix": "-- Review and re-deploy function update_fee_paid_amount"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "update_fee_paid_amount",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION update_fee_paid_amount() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "prevent_fee_transaction_mutation",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=276",
+    "live_state": "live len=105",
+    "recommended_fix": "-- Review and re-deploy function prevent_fee_transaction_mutation"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "prevent_fee_transaction_mutation",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION prevent_fee_transaction_mutation() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "auto_generate_receipt",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=864",
+    "live_state": "live len=705",
+    "recommended_fix": "-- Review and re-deploy function auto_generate_receipt"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "auto_generate_receipt",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION auto_generate_receipt() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_marks_entry",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=743",
+    "live_state": "live len=594",
+    "recommended_fix": "-- Review and re-deploy function validate_marks_entry"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_marks_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_marks_entry() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "generate_ticket_no",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=374",
+    "live_state": "live len=219",
+    "recommended_fix": "-- Review and re-deploy function generate_ticket_no"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "generate_ticket_no",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION generate_ticket_no() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "auth_has_role",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=362",
+    "live_state": "live len=189",
+    "recommended_fix": "-- Review and re-deploy function auth_has_role"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "auth_has_role",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION auth_has_role() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_diary_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_diary_entry() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_lms_course_modify",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_lms_course_modify() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "prevent_direct_fee_update",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=628",
+    "live_state": "live len=465",
+    "recommended_fix": "-- Review and re-deploy function prevent_direct_fee_update"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "prevent_direct_fee_update",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION prevent_direct_fee_update() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "promote_students_academic_year",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION promote_students_academic_year() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_timetable_entry",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=2044",
+    "live_state": "live len=1271",
+    "recommended_fix": "-- Review and re-deploy function validate_timetable_entry"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_timetable_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_timetable_entry() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "sync_class_teacher_from_timetable",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1397",
+    "live_state": "live len=569",
+    "recommended_fix": "-- Review and re-deploy function sync_class_teacher_from_timetable"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "sync_class_teacher_from_timetable",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION sync_class_teacher_from_timetable() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "ensure_student_enrollment",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION ensure_student_enrollment() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "generate_monthly_payroll",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=707",
+    "live_state": "live len=543",
+    "recommended_fix": "-- Review and re-deploy function generate_monthly_payroll"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "generate_monthly_payroll",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION generate_monthly_payroll() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "recalculate_staff_payroll",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION recalculate_staff_payroll() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "trg_recalc_payroll_on_attendance",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=590",
+    "live_state": "live len=408",
+    "recommended_fix": "-- Review and re-deploy function trg_recalc_payroll_on_attendance"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "trg_recalc_payroll_on_attendance",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION trg_recalc_payroll_on_attendance() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "trg_recalc_payroll_on_leave",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1050",
+    "live_state": "live len=882",
+    "recommended_fix": "-- Review and re-deploy function trg_recalc_payroll_on_leave"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "trg_recalc_payroll_on_leave",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION trg_recalc_payroll_on_leave() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "log_financial_destruction",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1278",
+    "live_state": "live len=1030",
+    "recommended_fix": "-- Review and re-deploy function log_financial_destruction"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "get_financial_policy_value",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=356",
+    "live_state": "live len=145",
+    "recommended_fix": "-- Review and re-deploy function get_financial_policy_value"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "enforce_financial_lock",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=751",
+    "live_state": "live len=542",
+    "recommended_fix": "-- Review and re-deploy function enforce_financial_lock"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "trg_check_expense_policy",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1117",
+    "live_state": "live len=929",
+    "recommended_fix": "-- Review and re-deploy function trg_check_expense_policy"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "trg_check_fee_cash_limit",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=408",
+    "live_state": "live len=212",
+    "recommended_fix": "-- Review and re-deploy function trg_check_fee_cash_limit"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "delete_record_with_reason",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1263",
+    "live_state": "live len=649",
+    "recommended_fix": "-- Review and re-deploy function delete_record_with_reason"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "safe_div",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=305",
+    "live_state": "live len=84",
+    "recommended_fix": "-- Review and re-deploy function safe_div"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "safe_div",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION safe_div() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "get_dashboard_insights",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=2180",
+    "live_state": "live len=1533",
+    "recommended_fix": "-- Review and re-deploy function get_dashboard_insights"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "debug_user_permissions",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=594",
+    "live_state": "live len=295",
+    "recommended_fix": "-- Review and re-deploy function debug_user_permissions"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "debug_teacher_profile",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=850",
+    "live_state": "live len=523",
+    "recommended_fix": "-- Review and re-deploy function debug_teacher_profile"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "perform_data_audit",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1578",
+    "live_state": "live len=1337",
+    "recommended_fix": "-- Review and re-deploy function perform_data_audit"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "run_integrity_check",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=1075",
+    "live_state": "live len=2216",
+    "recommended_fix": "-- Review and re-deploy function run_integrity_check"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "run_integrity_check",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION run_integrity_check() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "sync_class_teacher_from_timetable",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=786",
+    "live_state": "live len=569",
+    "recommended_fix": "-- Review and re-deploy function sync_class_teacher_from_timetable"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_timetable_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_timetable_entry() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_attendance_entry",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=677",
+    "live_state": "live len=2125",
+    "recommended_fix": "-- Review and re-deploy function validate_attendance_entry"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "validate_attendance_entry",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION validate_attendance_entry() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "is_admin",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=284",
+    "live_state": "live len=272",
+    "recommended_fix": "-- Review and re-deploy function is_admin"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "is_admin",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION is_admin() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "update_user_settings_updated_at",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=246",
+    "live_state": "live len=116",
+    "recommended_fix": "-- Review and re-deploy function update_user_settings_updated_at"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "update_user_settings_updated_at",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION update_user_settings_updated_at() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "is_principal",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=298",
+    "live_state": "live len=140",
+    "recommended_fix": "-- Review and re-deploy function is_principal"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "set_updated_at",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=199",
+    "live_state": "live len=57",
+    "recommended_fix": "-- Review and re-deploy function set_updated_at"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_transaction_immutability",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=806",
+    "live_state": "live len=651",
+    "recommended_fix": "-- Review and re-deploy function fn_transaction_immutability"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_prevent_immutable_changes",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=610",
+    "live_state": "live len=454",
+    "recommended_fix": "-- Review and re-deploy function fn_prevent_immutable_changes"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_prevent_overpayment",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=576",
+    "live_state": "live len=426",
+    "recommended_fix": "-- Review and re-deploy function fn_prevent_overpayment"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_check_academic_year_dates",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=361",
+    "live_state": "live len=205",
+    "recommended_fix": "-- Review and re-deploy function fn_check_academic_year_dates"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "is_management",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=233",
+    "live_state": "live len=74",
+    "recommended_fix": "-- Review and re-deploy function is_management"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_update_fee_balance",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=926",
+    "live_state": "live len=777",
+    "recommended_fix": "-- Review and re-deploy function fn_update_fee_balance"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "current_staff_id",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=310",
+    "live_state": "live len=151",
+    "recommended_fix": "-- Review and re-deploy function current_staff_id"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "is_accounts",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=297",
+    "live_state": "live len=140",
+    "recommended_fix": "-- Review and re-deploy function is_accounts"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_lower_email",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=261",
+    "live_state": "live len=119",
+    "recommended_fix": "-- Review and re-deploy function fn_lower_email"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "validate_attendance_date",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=618",
+    "live_state": "live len=466",
+    "recommended_fix": "-- Review and re-deploy function validate_attendance_date"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_verify_fee_integrity",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=635",
+    "live_state": "live len=484",
+    "recommended_fix": "-- Review and re-deploy function fn_verify_fee_integrity"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_check_no_future_attendance",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=346",
+    "live_state": "live len=189",
+    "recommended_fix": "-- Review and re-deploy function fn_check_no_future_attendance"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "prevent_complaint_delete",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=347",
+    "live_state": "live len=224",
+    "recommended_fix": "-- Review and re-deploy function prevent_complaint_delete"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "prevent_complaint_delete",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION prevent_complaint_delete() SET search_path = public;"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "FUNCTION",
+    "object": "enforce_class_teacher_source_of_truth",
+    "issue": "Function missing explicit SET search_path = 'public'",
+    "schema_state": "No search_path",
+    "live_state": "N/A",
+    "recommended_fix": "ALTER FUNCTION enforce_class_teacher_source_of_truth() SET search_path = public;"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_update_timestamp",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=208",
+    "live_state": "live len=61",
+    "recommended_fix": "-- Review and re-deploy function fn_update_timestamp"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "fn_check_invoice_amounts",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=842",
+    "live_state": "live len=690",
+    "recommended_fix": "-- Review and re-deploy function fn_check_invoice_amounts"
+  },
+  {
+    "severity": "CRITICAL",
+    "category": "FUNCTION",
+    "object": "is_staff",
+    "issue": "Function body significantly differs between schema.sql and live DB",
+    "schema_state": "schema len=2950",
+    "live_state": "live len=99",
+    "recommended_fix": "-- Review and re-deploy function is_staff"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "ENUM",
+    "object": "enrollment_status_enum",
+    "issue": "Enum values in live DB not in schema.sql: pending, failed",
+    "schema_state": "active, completed, withdrawn",
+    "live_state": "active, completed, withdrawn, pending, failed",
+    "recommended_fix": "-- Document extra enum values in schema.sql: pending, failed"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "ENUM",
+    "object": "day_of_week_enum",
+    "issue": "Enum values in live DB not in schema.sql: monday, tuesday, wednesday, thursday, friday, saturday, sunday",
+    "schema_state": "mon, tue, wed, thu, fri, sat, sun",
+    "live_state": "monday, tuesday, wednesday, thursday, friday, saturday, sunday, mon, tue, wed, thu, fri, sat, sun",
+    "recommended_fix": "-- Document extra enum values in schema.sql: monday, tuesday, wednesday, thursday, friday, saturday, sunday"
+  },
+  {
+    "severity": "MEDIUM",
+    "category": "ENUM",
+    "object": "day_of_week_enum",
+    "issue": "Enum values in live DB not in schema.sql: mon, tue, wed, thu, fri, sat, sun",
+    "schema_state": "monday, tuesday, wednesday, thursday, friday, saturday, sunday",
+    "live_state": "monday, tuesday, wednesday, thursday, friday, saturday, sunday, mon, tue, wed, thu, fri, sat, sun",
+    "recommended_fix": "-- Document extra enum values in schema.sql: mon, tue, wed, thu, fri, sat, sun"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "fee_installments",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT \r\n    id, student_id, amount_due, amount_paid, discount, \r\n    status, du",
+    "live_state": " SELECT id,\n    student_id,\n    amount_due,\n    amount_paid,\n    discount,\n    s",
+    "recommended_fix": "CREATE OR REPLACE VIEW fee_installments AS SELECT \r\n    id, student_id, amount_due, amount_paid, discount, \r\n    status, due_date, created_at, updated_at, deleted_at\r\nFROM student_fees;"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "active_students",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT * FROM students WHERE deleted_at IS NULL AND status_id = 1",
+    "live_state": " SELECT id,\n    person_id,\n    admission_no,\n    admission_date,\n    category_id",
+    "recommended_fix": "CREATE OR REPLACE VIEW active_students AS SELECT * FROM students WHERE deleted_at IS NULL AND status_id = 1;"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "active_persons",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT * FROM persons WHERE deleted_at IS NULL",
+    "live_state": " SELECT id,\n    first_name,\n    middle_name,\n    last_name,\n    display_name,\n  ",
+    "recommended_fix": "CREATE OR REPLACE VIEW active_persons AS SELECT * FROM persons WHERE deleted_at IS NULL;"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "debug_class_teachers",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT \r\n    c.name as class_name, \r\n    s.name as section_name, \r\n    p.display",
+    "live_state": " SELECT c.name AS class_name,\n    s.name AS section_name,\n    p.display_name AS ",
+    "recommended_fix": "CREATE OR REPLACE VIEW debug_class_teachers AS SELECT \r\n    c.name as class_name, \r\n    s.name as section_name, \r\n    p.display_name as teacher_name,\r\n    ay.code as academic_year\r\nFROM class_sections cs\r\nJOIN classes c ON cs.class_id = c.id\r\nJOIN sections s ON cs.section_id = s.id\r\nJOIN academic_years ay ON cs.academic_year_id = ay.id\r\nLEFT JOIN staff st ON cs.class_teacher_id = st.id\r\nLEFT JOIN persons p ON st.person_id = p.id;"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "debug_role_permissions",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT \r\n    r.code as role,\r\n    STRING_AGG(p.code, ', ') as permissions\r\nFROM ",
+    "live_state": " SELECT r.code AS role,\n    string_agg((p.code)::text, ', '::text) AS permission",
+    "recommended_fix": "CREATE OR REPLACE VIEW debug_role_permissions AS SELECT \r\n    r.code as role,\r\n    STRING_AGG(p.code, ', ') as permissions\r\nFROM roles r\r\nLEFT JOIN role_permissions rp ON r.id = rp.role_id\r\nLEFT JOIN permissions p ON rp.permission_id = p.id\r\nGROUP BY r.code;"
+  },
+  {
+    "severity": "LOW",
+    "category": "VIEW",
+    "object": "fee_installments",
+    "issue": "View definition differs (may be whitespace only)",
+    "schema_state": "SELECT \r\n    id, student_id, amount_due, amount_paid, discount, \r\n    status, du",
+    "live_state": " SELECT id,\n    student_id,\n    amount_due,\n    amount_paid,\n    discount,\n    s",
+    "recommended_fix": "CREATE OR REPLACE VIEW fee_installments AS SELECT \r\n    id, student_id, amount_due, amount_paid, discount, \r\n    status, due_date, created_at, updated_at, deleted_at\r\nFROM student_fees;"
+  }
+]

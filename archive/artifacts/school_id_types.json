@@ -1,0 +1,68 @@
+[
+  {
+    "table_name": "active_students",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "classes",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "complaints",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "daily_attendance",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "events",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "expenses",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "lms_courses",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "notices",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "staff",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "students",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "timetable_slots",
+    "column_name": "school_id",
+    "data_type": "integer",
+    "udt_name": "int4"
+  }
+]
