@@ -71,7 +71,9 @@ const config = {
         uploadTimeoutMs: Number(optional('PAPERFORGE_UPLOAD_TIMEOUT_MS', '120000')),
     },
     rateLimit: {
-        apiMax: Number(optional('RATE_LIMIT_API_MAX', isProduction ? '2000' : '1000')),
+        // Dev churns requests via hot-reload/multi-tab remounts against one
+        // per-user bucket — keep it high so local testing never trips the limiter.
+        apiMax: Number(optional('RATE_LIMIT_API_MAX', isProduction ? '2000' : '10000')),
         apiWindowMs: Number(optional('RATE_LIMIT_API_WINDOW_MS', String(15 * 60 * 1000))),
     },
 };
