@@ -23,6 +23,7 @@ import { auditLogger } from './middleware/audit.js';
 import { errorHandler } from './utils/asyncHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import sql from './db.js';
+import { startSupportNotificationOutboxWorker, stopSupportNotificationOutboxWorker } from './services/supportNotificationOutboxService.js';
 
 const app = express();
 const port = config.port;
@@ -31,7 +32,11 @@ const port = config.port;
 app.get('/api/v1/ping', (req, res) => res.json({ ok: true }));
 
 // Security Middleware
-app.set('trust proxy', 1);
+// Chain is: client → Cloudflare Worker (sets X-Forwarded-For = CF-Connecting-IP)
+// → Cloud Run (appends its caller IP). `true` takes the leftmost XFF entry (the
+// real client the Worker stamped) regardless of how many hops Cloud Run adds, so
+// req.ip / rate-limit IP keying / logs reflect the actual client.
+app.set('trust proxy', true);
 app.use(helmet({
     // Relax cross-origin policies so browser fetch (Expo Web) can reach the API
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -187,7 +192,6 @@ import logRouter from './routes/logRoutes.js';
 import schoolSettingsRouter from './routes/schoolSettingsRoutes.js';
 import schoolRouter from './routes/schoolRoutes.js';
 import settingsUpiRouter from './routes/settingsUpiRoutes.js';
-import girlSafetyRouter from './routes/girlSafetyRoutes.js';
 import referenceRouter from './routes/referenceRoutes.js';
 import dcgdRouter from './routes/dcgdRoutes.js';
 import contentRouter from './routes/contentRoutes.js';
@@ -197,6 +201,7 @@ import appRouter from './routes/appRoutes.js';
 import paperforgeRouter from './routes/paperforge.routes.js';
 import paymentRouter from './routes/paymentRoutes.js';
 import meRouter from './routes/meRoutes.js';
+import messagesRouter from './routes/messagesRoutes.js';
 import { requireFeature } from './middleware/requireFeature.js';
 
 // Health check endpoint (requires school_id per multi-tenant contract)
@@ -244,7 +249,7 @@ app.get('/', (req, res) => {
             events: '/api/v1/events',
             lms: '/api/v1/lms',
             health: '/api/v1/health',
-            girlSafety: '/api/v1/girl-safety'
+            messages: '/api/v1/messages'
         }
     });
 });
@@ -296,11 +301,11 @@ app.use('/api/v1/dcgd', requireFeature('menu.dcgd'), dcgdRouter);
 app.use('/api/v1/content', contentRouter);
 app.use('/api/v1/settings', settingsUpiRouter);
 app.use('/api/settings', settingsUpiRouter);
-app.use('/api/v1/girl-safety', requireFeature('menu.girl_safety'), girlSafetyRouter);
 app.use('/api/v1/reference', referenceRouter);
 app.use('/api/v1/app', appRouter);
 app.use('/api/v1/me', meRouter);
 app.use('/api/v1/paperforge', paperforgeRouter);
+app.use('/api/v1/messages', requireFeature('comm.messenger'), messagesRouter);
 // Payment Gateway (Phase 2) — credential-save path. school_id is JWT-derived
 // (paths are in middleware/schoolId.js -> JWT_SCHOOL_ID_PATHS).
 app.use('/api/v1/admin/payments', paymentRouter);
@@ -371,6 +376,7 @@ const c = {
 };
 
 const server = app.listen(port);
+startSupportNotificationOutboxWorker();
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
@@ -477,6 +483,7 @@ server.on('close', () => {
 async function shutdown(signal) {
     try {
         logger.info({ signal }, 'Shutdown initiated');
+        stopSupportNotificationOutboxWorker();
         server.close(() => logger.info('HTTP server closed'));
         await sql.end({ timeout: 5 });
         process.exit(0);

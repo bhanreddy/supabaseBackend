@@ -611,7 +611,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().split('T')[0];
   const students = await sql`
     SELECT 
-      s.id as student_id, s.admission_no,
+      s.id as student_id, s.admission_no, se.roll_number,
       p.display_name as student_name, p.photo_url,
       se.id as enrollment_id,
       da.id as attendance_id, da.status, da.morning_status, da.afternoon_status, da.marked_at
@@ -626,7 +626,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
       AND se.status = 'active'
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
-    ORDER BY p.display_name
+    ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
   const [classInfo] = await sql`

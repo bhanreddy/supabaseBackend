@@ -94,3 +94,13 @@ export const apiLimiter = rateLimit({
     message: { error: 'Too many requests, please try again later.' },
     skip: shouldSkipApiRateLimit,
 });
+
+// 30 message sends per minute per user (messenger)
+export const messageSendLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    keyGenerator: jwtOrIpKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Message rate limit exceeded. Try again in a minute.' },
+});

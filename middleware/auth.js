@@ -46,17 +46,49 @@ function isPayrollBackendRequest(req) {
 // Caches verified token → user data to avoid repeated Supabase API calls.
 // TTL: 5 minutes. Evicted on expiry or when cache grows too large.
 const tokenCache = new Map();
-const TOKEN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const TOKEN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes — normal fresh-cache window
+// Stale-fallback window: a previously-verified token may be reused for up to
+// 60 min, but ONLY when Supabase Auth is throttling/unreachable (never on the
+// happy path). Bounded by the token's own `exp`, so it can't extend a session.
+const TOKEN_CACHE_GRACE_TTL = 60 * 60 * 1000; // 60 minutes
 const TOKEN_CACHE_MAX_SIZE = 500;
 
 function getCachedUser(token) {
   const entry = tokenCache.get(token);
   if (!entry) return null;
   if (Date.now() - entry.timestamp > TOKEN_CACHE_TTL) {
+    // Past the fresh window: don't serve on the happy path, but KEEP the entry
+    // so it can act as a stale fallback if Supabase Auth is throttled below.
+    return null;
+  }
+  return entry.user;
+}
+
+// Stale fallback — returns a previously-verified user for THIS exact token even
+// after the fresh TTL, as long as it's within the grace window. Used only when
+// Supabase Auth rate-limits/errors, to avoid mass 401s during login surges.
+function getStaleCachedUser(token) {
+  const entry = tokenCache.get(token);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > TOKEN_CACHE_GRACE_TTL) {
     tokenCache.delete(token);
     return null;
   }
   return entry.user;
+}
+
+// Reads the JWT `exp` claim WITHOUT verifying the signature (same base64url
+// decode the rate-limiter uses). Guarantees the stale fallback never serves a
+// token past its own expiry, so no session is ever extended.
+function tokenNotYetExpired(token) {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(token.split('.')[1], 'base64url').toString('utf8')
+    );
+    return typeof payload?.exp === 'number' && payload.exp * 1000 > Date.now();
+  } catch {
+    return false;
+  }
 }
 
 function setCachedUser(token, user) {
@@ -110,11 +142,26 @@ export const identifyUser = async (req, res, next) => {
         authErr.message?.includes('Connect Timeout') ||
         authErr.cause?.code === 'UND_ERR_CONNECT_TIMEOUT';
 
+      // Supabase Auth (GoTrue) throttled us (429) or hit a transient server
+      // error (5xx). This is an INFRA problem, not a bad token — during a login
+      // surge, dozens of getUser() calls can trip Supabase's auth rate limit.
+      // Never downgrade a VALID session to 401 because of it.
+      const authStatus = Number(authErr.status) || 0;
+      const isAuthServiceOverloaded =
+        authStatus === 429 || (authStatus >= 500 && authStatus <= 599);
+
       const isTokenExpired = authErr.status === 401 && authErr.message?.includes('token expired');
 
-      if (isNetworkError) {
-
-        // Return 503 Service Unavailable instead of silently setting user=null
+      if (isNetworkError || isAuthServiceOverloaded) {
+        // Best effort: if we verified THIS exact token recently and it hasn't
+        // expired, keep the user flowing — invisible to returning users mid-surge.
+        const stale = getStaleCachedUser(token);
+        if (stale && tokenNotYetExpired(token)) {
+          req.user = stale;
+          return next();
+        }
+        // Otherwise ask the client to retry. The mobile client already silently
+        // retries 503 twice, so no error popup unless the outage is sustained.
         return res.status(503).json({ error: 'Auth service temporarily unavailable. Please retry.' });
       }
 

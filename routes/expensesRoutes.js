@@ -81,7 +81,7 @@ router.post('/', requirePermission('expenses.create'), asyncHandler(async (req, 
       ${amount},
       ${expense_date},
       ${category || 'general'},
-      'pending',
+      ${req.body.status === 'paid' ? 'paid' : 'pending'},
       ${userId}
     )
     RETURNING *
@@ -168,7 +168,7 @@ router.post('/bulk', requirePermission('expenses.create'), asyncHandler(async (r
           ${amt},
           ${expense_date},
           ${category?.trim() || 'Other'},
-          'pending',
+          ${item.status === 'paid' ? 'paid' : 'pending'},
           ${userId}
         )
         RETURNING *

@@ -27,11 +27,18 @@ async function isPlatformKillSwitchActive() {
   const now = Date.now();
   if (now < _killSwitchCache.expiresAt) return _killSwitchCache.value;
 
-  const config = await sql`SELECT value FROM notification_config WHERE key = 'kill_switch'`;
-  const active = config.length > 0 && config[0].value?.global === true;
-
-  _killSwitchCache = { value: active, expiresAt: now + 30_000 };
-  return active;
+  try {
+    const config = await sql`SELECT value FROM notification_config WHERE key = 'kill_switch'`;
+    const active = config.length > 0 && config[0].value?.global === true;
+    _killSwitchCache = { value: active, expiresAt: now + 30_000 };
+    return active;
+  } catch (error) {
+    // A temporary config-table outage must not take down the notifications page.
+    // Keep the last known value briefly and let the actual operation report its own result.
+    console.error('[Admin Notifications] Kill-switch lookup failed; using cached value', error);
+    _killSwitchCache.expiresAt = now + 5_000;
+    return _killSwitchCache.value;
+  }
 }
 
 // ── GET /classes/targets ───────────────────────────────────────────────────────
@@ -76,7 +83,16 @@ router.post(
       return res.status(503).json({ error: 'Notifications are globally paused via Kill Switch.' });
     }
 
-    const classIds = Array.isArray(class_ids) ? class_ids.filter(Boolean) : [];
+    const classIds = Array.isArray(class_ids)
+      ? [...new Set(class_ids.filter((id) => typeof id === 'string' && id.trim()))]
+      : [];
+    const sectionIds = Array.isArray(section_ids)
+      ? [...new Set(section_ids.filter((id) => typeof id === 'string' && id.trim()))]
+      : [];
+
+    if (classIds.length > 100 || sectionIds.length > 100) {
+      return res.status(400).json({ error: 'A maximum of 100 classes or sections is allowed' });
+    }
 
     if (classIds.length > 0) {
       const ownedClasses = await sql`
@@ -95,7 +111,7 @@ router.post(
       adminId,
       channelType: type,
       classIds,
-      sectionIds: Array.isArray(section_ids) ? section_ids : [],
+      sectionIds,
     });
 
     return sendSuccess(res, req.schoolId, result);

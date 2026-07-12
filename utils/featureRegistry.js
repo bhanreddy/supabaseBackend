@@ -22,7 +22,6 @@ export const FEATURE_REGISTRY = [
   { key: 'menu.ai_doubt_assist',  label: 'AI Doubt Assist', group: 'drawer',       default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'menu.insurance',        label: 'Insurance',       group: 'drawer',        default_enabled: true, data_bearing: false, toggleable: true },
   { key: 'menu.money_science',    label: 'Money Science',   group: 'drawer',        default_enabled: true, data_bearing: false, toggleable: true },
-  { key: 'menu.girl_safety',      label: 'Girl Safety',     group: 'drawer',        default_enabled: true, data_bearing: false, toggleable: true },
   // quick_actions
   { key: 'quick.announcements',   label: 'Announcements',   group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.complaints',      label: 'Complaints',      group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },

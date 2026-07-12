@@ -51,6 +51,20 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
               FROM staff st_t
               JOIN persons p_t ON st_t.person_id = p_t.id
               WHERE st_t.id = cs.class_teacher_id
+            ),
+            'class_teacher_id', cs.class_teacher_id,
+            'class_teacher_photo_url', (
+              SELECT p_t.photo_url
+              FROM staff st_t
+              JOIN persons p_t ON st_t.person_id = p_t.id
+              WHERE st_t.id = cs.class_teacher_id
+            ),
+            'class_teacher_user_id', (
+              SELECT u.id
+              FROM staff st_t
+              JOIN users u ON u.person_id = st_t.person_id
+              WHERE st_t.id = cs.class_teacher_id
+              LIMIT 1
             )
           )
           FROM student_enrollments se

@@ -2,6 +2,8 @@ import sql from '../db.js';
 import { sendNotificationToUsersWithReport } from './notificationService.js';
 
 const DISPATCH_CHUNK_SIZE = 50;
+const TARGET_COUNT_CONCURRENCY = 4;
+const DB_WRITE_RETRIES = 3;
 
 const BROADCAST_TRIGGER_TYPES = new Set([
   'FEE_REMINDER',
@@ -15,7 +17,9 @@ const BROADCAST_TRIGGER_TYPES = new Set([
 
 function assertBroadcastType(channelType) {
   if (!BROADCAST_TRIGGER_TYPES.has(channelType)) {
-    throw new Error(`Unsupported broadcast channel type: ${channelType}`);
+    const error = new Error(`Unsupported broadcast channel type: ${channelType}`);
+    error.status = 400;
+    throw error;
   }
 }
 
@@ -68,6 +72,39 @@ function buildPayload(channelType, extra = {}) {
   return { message: `System notification check for ${channelType}.`, date: today };
 }
 
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function isTransientDatabaseError(error) {
+  return ['40001', '40P01', '53300', '57P01', '08000', '08003', '08006', 'ETIMEDOUT', 'ECONNRESET']
+    .includes(error?.code);
+}
+
+async function withDatabaseRetry(operation, label) {
+  let lastError;
+  for (let attempt = 1; attempt <= DB_WRITE_RETRIES; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDatabaseError(error) || attempt === DB_WRITE_RETRIES) break;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 150));
+    }
+  }
+  console.error(`[Broadcast Dispatch] ${label} failed`, lastError);
+  throw lastError;
+}
+
 /**
  * Class list with type-aware recipient counts (distinct active student + parent users).
  */
@@ -82,20 +119,19 @@ export async function getClassTargets(schoolId, channelType) {
     ORDER BY c.name ASC
   `;
 
-  const targets = [];
-  for (const cls of classes) {
+  const targets = await mapWithConcurrency(classes, TARGET_COUNT_CONCURRENCY, async (cls) => {
     const recipients = await resolveRecipients(schoolId, {
       classIds: [cls.id],
       sectionIds: [],
       channelType,
     });
-    targets.push({
+    return {
       class_id: cls.id,
       class_name: cls.name,
       class_code: cls.code,
       recipient_count: recipients.length,
-    });
-  }
+    };
+  });
 
   const allRecipients = await resolveRecipients(schoolId, {
     classIds: [],
@@ -234,18 +270,27 @@ export async function resolveRecipients(schoolId, { classIds = [], sectionIds = 
 async function persistRecipientRows(schoolId, batchId, recipientRows) {
   if (!recipientRows.length) return;
 
-  for (const row of recipientRows) {
-    await sql`
-      INSERT INTO notification_dispatch_recipients
-        (school_id, batch_id, user_id, fcm_token, status, error_code)
-      VALUES
-        (${schoolId}, ${batchId}, ${row.user_id}, ${row.fcm_token}, ${row.status}, ${row.error_code})
-    `;
+  for (let i = 0; i < recipientRows.length; i += 100) {
+    const rows = recipientRows.slice(i, i + 100).map((row) => ({
+      school_id: schoolId,
+      batch_id: batchId,
+      user_id: row.user_id,
+      fcm_token: row.fcm_token,
+      status: row.status,
+      error_code: row.error_code,
+    }));
+    await withDatabaseRetry(
+      () => sql`INSERT INTO notification_dispatch_recipients ${sql(
+        rows,
+        'school_id', 'batch_id', 'user_id', 'fcm_token', 'status', 'error_code'
+      )}`,
+      'recipient audit insert'
+    );
   }
 }
 
 async function finalizeBatch(batchId, schoolId, summary, status = 'completed') {
-  await sql`
+  await withDatabaseRetry(() => sql`
     UPDATE notification_batches
     SET status = ${status},
         sent_count = ${summary.sentCount},
@@ -255,11 +300,11 @@ async function finalizeBatch(batchId, schoolId, summary, status = 'completed') {
         updated_at = now()
     WHERE id = ${batchId}
       AND school_id = ${schoolId}
-  `;
+  `, 'batch finalization');
 }
 
 async function updateBatchProgress(batchId, schoolId, summary, status = 'processing') {
-  await sql`
+  await withDatabaseRetry(() => sql`
     UPDATE notification_batches
     SET status = ${status},
         sent_count = ${summary.sentCount},
@@ -269,7 +314,7 @@ async function updateBatchProgress(batchId, schoolId, summary, status = 'process
         updated_at = now()
     WHERE id = ${batchId}
       AND school_id = ${schoolId}
-  `;
+  `, 'batch progress update');
 }
 
 async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, batchId) {
@@ -282,7 +327,7 @@ async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, b
 
   for (let i = 0; i < recipients.length; i += DISPATCH_CHUNK_SIZE) {
     const chunk = recipients.slice(i, i + DISPATCH_CHUNK_SIZE);
-    const chunkReports = await Promise.all(
+    const chunkReports = await Promise.allSettled(
       chunk.map(async (recipient) => {
         const amt = parseFloat(recipient.balance || 0).toLocaleString('en-IN', {
           minimumFractionDigits: 2,
@@ -300,7 +345,19 @@ async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, b
     );
 
     const chunkRows = [];
-    for (const report of chunkReports) {
+    for (let index = 0; index < chunkReports.length; index += 1) {
+      const outcome = chunkReports[index];
+      if (outcome.status === 'rejected') {
+        summary.failureCount += 1;
+        chunkRows.push({
+          user_id: chunk[index].id,
+          fcm_token: null,
+          status: 'failed',
+          error_code: 'recipient_dispatch_error',
+        });
+        continue;
+      }
+      const report = outcome.value;
       summary.sentCount += report.successCount;
       summary.failureCount += report.failureCount;
       summary.noTokenCount += report.noTokenCount;
@@ -374,12 +431,12 @@ async function runDispatch(batchId, schoolId, adminId, channelType, recipients) 
     };
   } catch (err) {
     console.error('[Broadcast Dispatch] runDispatch error:', err);
-    await sql`
+    await withDatabaseRetry(() => sql`
       UPDATE notification_batches
       SET status = 'failed', updated_at = now()
       WHERE id = ${batchId}
         AND school_id = ${schoolId}
-    `;
+    `, 'failed batch finalization');
     throw err;
   }
 }
@@ -477,6 +534,18 @@ export async function dispatchBroadcast({
 }
 
 export async function getBroadcastStatus(batchId, schoolId) {
+  // A process crash can otherwise leave an in-memory dispatch marked as
+  // processing forever. Progress updates refresh updated_at after each chunk.
+  await sql`
+    UPDATE notification_batches
+    SET status = 'failed', updated_at = now()
+    WHERE id = ${batchId}
+      AND school_id = ${schoolId}
+      AND type = 'BROADCAST'
+      AND status = 'processing'
+      AND updated_at < now() - interval '10 minutes'
+  `;
+
   const [batch] = await sql`
     SELECT
       id,
@@ -546,7 +615,7 @@ export async function getBroadcastStatus(batchId, schoolId) {
  */
 export async function retryBroadcast(batchId, schoolId, adminId) {
   const [sourceBatch] = await sql`
-    SELECT id, channel_type, filters
+    SELECT id, channel_type, filters, status
     FROM notification_batches
     WHERE id = ${batchId}
       AND school_id = ${schoolId}

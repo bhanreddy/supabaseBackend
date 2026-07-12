@@ -141,8 +141,6 @@ BEGIN
   PERFORM pg_temp.zap(v_run,v_school,'defaulter_dues',                 'school_id=17 AND student_id IN (SELECT id FROM _stu)',                                                                                                      v_actor);
 
   -- welfare / discipline / certificates / hostel
-  PERFORM pg_temp.zap(v_run,v_school,'girl_safety_complaint_threads',  'school_id=17 AND complaint_id IN (SELECT id FROM public.girl_safety_complaints WHERE student_id IN (SELECT id FROM _stu))',                              v_actor);
-  PERFORM pg_temp.zap(v_run,v_school,'girl_safety_complaints',         'school_id=17 AND student_id IN (SELECT id FROM _stu)',                                                                                                      v_actor);
   PERFORM pg_temp.zap(v_run,v_school,'discipline_records',             'school_id=17 AND student_id IN (SELECT id FROM _stu)',                                                                                                      v_actor);
   PERFORM pg_temp.zap(v_run,v_school,'hostel_allocations',             'school_id=17 AND student_id IN (SELECT id FROM _stu)',                                                                                                      v_actor);
   PERFORM pg_temp.zap(v_run,v_school,'issued_certificates',            'school_id=17 AND student_id IN (SELECT id FROM _stu)',                                                                                                      v_actor);

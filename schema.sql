@@ -504,56 +504,153 @@ CREATE OR REPLACE FUNCTION auto_assign_fees_on_enrollment()
 RETURNS TRIGGER
 SET search_path = public
 AS $$
-DECLARE v_class_id UUID;
-DECLARE v_section_id UUID;
-DECLARE v_fee_mode TEXT;
+DECLARE
+    v_class_id UUID;
+    v_section_id UUID;
+    v_old_class_id UUID;
+    v_old_section_id UUID;
+    v_fee_mode TEXT;
+    v_newly_active BOOLEAN;
+    v_transfer BOOLEAN;
 BEGIN
-    IF NEW.status = 'active' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'active') THEN
-        SELECT cs.class_id, cs.section_id INTO v_class_id, v_section_id FROM class_sections WHERE id = NEW.class_section_id;
-        SELECT s.fee_mode INTO v_fee_mode FROM schools s WHERE s.id = NEW.school_id;
+    v_newly_active := NEW.status = 'active'
+        AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'active');
+    v_transfer := TG_OP = 'UPDATE'
+        AND NEW.status = 'active'
+        AND OLD.status = 'active'
+        AND NEW.deleted_at IS NULL
+        AND NEW.class_section_id IS DISTINCT FROM OLD.class_section_id
+        AND NEW.academic_year_id IS NOT DISTINCT FROM OLD.academic_year_id;
 
-        IF v_fee_mode = 'per_section' THEN
-            INSERT INTO student_fees (school_id, student_id, fee_structure_id, amount_due, amount_paid, status, due_date)
-            SELECT NEW.school_id, NEW.student_id, fs.id, fs.amount, 0, 'pending', fs.due_date
-            FROM fee_structures fs
-            WHERE fs.school_id = NEW.school_id
-              AND fs.class_id = v_class_id
-              AND fs.academic_year_id = NEW.academic_year_id
-              AND fs.section_id = v_section_id
-              AND fs.deleted_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM student_fees sf WHERE sf.student_id = NEW.student_id AND sf.fee_structure_id = fs.id AND sf.deleted_at IS NULL)
-              AND NOT EXISTS (
-                SELECT 1 FROM student_fees sf2
-                JOIN fee_structures fs2 ON sf2.fee_structure_id = fs2.id
-                WHERE sf2.student_id = NEW.student_id
-                  AND sf2.deleted_at IS NULL
-                  AND fs2.deleted_at IS NULL
-                  AND fs2.fee_type_id = fs.fee_type_id
-                  AND fs2.academic_year_id = fs.academic_year_id
-                  AND fs2.class_id = fs.class_id
-              );
-        ELSE
-            INSERT INTO student_fees (school_id, student_id, fee_structure_id, amount_due, amount_paid, status, due_date)
-            SELECT NEW.school_id, NEW.student_id, fs.id, fs.amount, 0, 'pending', fs.due_date
-            FROM fee_structures fs
-            WHERE fs.school_id = NEW.school_id
-              AND fs.class_id = v_class_id
-              AND fs.academic_year_id = NEW.academic_year_id
-              AND fs.section_id IS NULL
-              AND fs.deleted_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM student_fees sf WHERE sf.student_id = NEW.student_id AND sf.fee_structure_id = fs.id AND sf.deleted_at IS NULL)
-              AND NOT EXISTS (
-                SELECT 1 FROM student_fees sf2
-                JOIN fee_structures fs2 ON sf2.fee_structure_id = fs2.id
-                WHERE sf2.student_id = NEW.student_id
-                  AND sf2.deleted_at IS NULL
-                  AND fs2.deleted_at IS NULL
-                  AND fs2.fee_type_id = fs.fee_type_id
-                  AND fs2.academic_year_id = fs.academic_year_id
-                  AND fs2.class_id = fs.class_id
-              );
-        END IF;
+    IF NOT (v_newly_active OR v_transfer) THEN
+        RETURN NEW;
     END IF;
+
+    SELECT cs.class_id, cs.section_id INTO v_class_id, v_section_id
+    FROM class_sections cs WHERE cs.id = NEW.class_section_id;
+
+    SELECT COALESCE(s.fee_mode, 'per_class') INTO v_fee_mode
+    FROM schools s WHERE s.id = NEW.school_id;
+
+    IF v_transfer THEN
+        SELECT cs.class_id, cs.section_id INTO v_old_class_id, v_old_section_id
+        FROM class_sections cs WHERE cs.id = OLD.class_section_id;
+
+        -- In per_class mode a section move within the same class does not
+        -- change the fee location — nothing to do.
+        IF v_fee_mode <> 'per_section' AND v_old_class_id IS NOT DISTINCT FROM v_class_id THEN
+            RETURN NEW;
+        END IF;
+
+        -- (a) untouched fees at the old location are dropped
+        UPDATE student_fees sf
+        SET deleted_at = NOW(), updated_at = NOW()
+        FROM fee_structures src
+        WHERE sf.fee_structure_id = src.id
+          AND sf.student_id = NEW.student_id
+          AND sf.school_id = NEW.school_id
+          AND sf.deleted_at IS NULL
+          AND sf.amount_paid = 0
+          AND sf.discount = 0
+          AND src.school_id = NEW.school_id
+          AND src.academic_year_id = NEW.academic_year_id
+          AND src.class_id = v_old_class_id
+          AND ((v_fee_mode = 'per_section' AND src.section_id = v_old_section_id)
+            OR (v_fee_mode <> 'per_section' AND src.section_id IS NULL));
+
+        -- (b) paid/discounted fees move with the student: re-point to the
+        -- same fee type at the new location (one keeper per target to
+        -- respect the assignment unique index)
+        UPDATE student_fees sf
+        SET fee_structure_id = k.tgt_id,
+            amount_due = GREATEST(k.tgt_amount, sf.amount_paid + sf.discount),
+            due_date = k.tgt_due_date,
+            updated_at = NOW()
+        FROM (
+            SELECT DISTINCT ON (tgt.id)
+                sf2.id AS fee_id,
+                tgt.id AS tgt_id,
+                tgt.amount AS tgt_amount,
+                tgt.due_date AS tgt_due_date
+            FROM student_fees sf2
+            JOIN fee_structures src ON sf2.fee_structure_id = src.id
+            JOIN fee_structures tgt
+              ON tgt.school_id = src.school_id
+             AND tgt.academic_year_id = src.academic_year_id
+             AND tgt.fee_type_id = src.fee_type_id
+             AND tgt.class_id = v_class_id
+             AND ((v_fee_mode = 'per_section' AND tgt.section_id = v_section_id)
+               OR (v_fee_mode <> 'per_section' AND tgt.section_id IS NULL))
+             AND tgt.deleted_at IS NULL
+             AND tgt.id <> src.id
+            WHERE sf2.student_id = NEW.student_id
+              AND sf2.school_id = NEW.school_id
+              AND sf2.deleted_at IS NULL
+              AND src.school_id = NEW.school_id
+              AND src.academic_year_id = NEW.academic_year_id
+              AND src.class_id = v_old_class_id
+              AND ((v_fee_mode = 'per_section' AND src.section_id = v_old_section_id)
+                OR (v_fee_mode <> 'per_section' AND src.section_id IS NULL))
+              AND NOT EXISTS (
+                SELECT 1 FROM student_fees sfx
+                WHERE sfx.student_id = NEW.student_id
+                  AND sfx.fee_structure_id = tgt.id
+                  AND sfx.deleted_at IS NULL
+              )
+            ORDER BY tgt.id, sf2.amount_paid DESC, sf2.created_at
+        ) k
+        WHERE sf.id = k.fee_id;
+    END IF;
+
+    -- Assign structures at the (new) location the student doesn't have yet
+    IF v_fee_mode = 'per_section' THEN
+        INSERT INTO student_fees (school_id, student_id, fee_structure_id, amount_due, amount_paid, status, due_date)
+        SELECT NEW.school_id, NEW.student_id, fs.id, fs.amount, 0, 'pending', fs.due_date
+        FROM fee_structures fs
+        WHERE fs.school_id = NEW.school_id
+          AND fs.class_id = v_class_id
+          AND fs.academic_year_id = NEW.academic_year_id
+          AND fs.section_id = v_section_id
+          AND fs.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM student_fees sf
+            WHERE sf.student_id = NEW.student_id AND sf.fee_structure_id = fs.id AND sf.deleted_at IS NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM student_fees sf2
+            JOIN fee_structures fs2 ON sf2.fee_structure_id = fs2.id
+            WHERE sf2.student_id = NEW.student_id
+              AND sf2.deleted_at IS NULL
+              AND fs2.deleted_at IS NULL
+              AND fs2.fee_type_id = fs.fee_type_id
+              AND fs2.academic_year_id = fs.academic_year_id
+              AND fs2.class_id = fs.class_id
+          );
+    ELSE
+        INSERT INTO student_fees (school_id, student_id, fee_structure_id, amount_due, amount_paid, status, due_date)
+        SELECT NEW.school_id, NEW.student_id, fs.id, fs.amount, 0, 'pending', fs.due_date
+        FROM fee_structures fs
+        WHERE fs.school_id = NEW.school_id
+          AND fs.class_id = v_class_id
+          AND fs.academic_year_id = NEW.academic_year_id
+          AND fs.section_id IS NULL
+          AND fs.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM student_fees sf
+            WHERE sf.student_id = NEW.student_id AND sf.fee_structure_id = fs.id AND sf.deleted_at IS NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM student_fees sf2
+            JOIN fee_structures fs2 ON sf2.fee_structure_id = fs2.id
+            WHERE sf2.student_id = NEW.student_id
+              AND sf2.deleted_at IS NULL
+              AND fs2.deleted_at IS NULL
+              AND fs2.fee_type_id = fs.fee_type_id
+              AND fs2.academic_year_id = fs.academic_year_id
+              AND fs2.class_id = fs.class_id
+          );
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -595,6 +692,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Group-aware auto-receipt. When NEW.receipt_group is NULL (every single-fee
+-- collection) this behaves as one-receipt-per-transaction. When set, all
+-- transactions sharing the group roll into ONE receipt (combined multi-fee-type
+-- collection — see migrations/20260708_combined_fee_receipt.sql).
 CREATE OR REPLACE FUNCTION auto_generate_receipt()
 RETURNS TRIGGER
 SET search_path = public
@@ -605,6 +706,29 @@ DECLARE
     v_receipt_no TEXT;
 BEGIN
     SELECT student_id INTO v_student_id FROM student_fees WHERE id = NEW.student_fee_id;
+
+    IF NEW.receipt_group IS NOT NULL THEN
+        SELECT id INTO v_receipt_id
+        FROM receipts
+        WHERE school_id = NEW.school_id
+          AND receipt_group = NEW.receipt_group;
+
+        IF v_receipt_id IS NULL THEN
+            v_receipt_no := 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');
+            INSERT INTO receipts (school_id, receipt_no, student_id, total_amount, issued_at, issued_by, remarks, receipt_group)
+            VALUES (NEW.school_id, v_receipt_no, v_student_id, NEW.amount, NEW.paid_at, NEW.received_by, COALESCE(NEW.remarks, 'System Generated'), NEW.receipt_group)
+            RETURNING id INTO v_receipt_id;
+        ELSE
+            UPDATE receipts
+            SET total_amount = total_amount + NEW.amount
+            WHERE id = v_receipt_id;
+        END IF;
+
+        INSERT INTO receipt_items (school_id, receipt_id, fee_transaction_id, amount)
+        VALUES (NEW.school_id, v_receipt_id, NEW.id, NEW.amount);
+
+        RETURN NEW;
+    END IF;
 
     v_receipt_no := 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');
 
@@ -3617,6 +3741,9 @@ CREATE TABLE IF NOT EXISTS fee_transactions (
     received_by UUID REFERENCES users(id) ON DELETE SET NULL,
     remarks TEXT,
     refund_of UUID REFERENCES fee_transactions(id) ON DELETE RESTRICT,
+    -- Non-null when this transaction is part of a combined multi-fee-type
+    -- collection; siblings sharing this UUID roll into one receipt.
+    receipt_group UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Payments are strictly positive; refunds (refund_of set) are strictly negative.
     CONSTRAINT chk_transaction_amount CHECK ((refund_of IS NULL AND amount > 0) OR (refund_of IS NOT NULL AND amount < 0)),
@@ -3692,11 +3819,17 @@ CREATE TABLE IF NOT EXISTS receipts (
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     issued_by UUID REFERENCES users(id),
     remarks TEXT,
+    -- Groups the sibling transactions of a combined multi-fee-type collection
+    -- into this single receipt.
+    receipt_group UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (school_id, receipt_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_receipts_school_id ON receipts(school_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_group_unique
+  ON receipts (school_id, receipt_group)
+  WHERE receipt_group IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS receipt_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -5860,41 +5993,7 @@ CREATE INDEX IF NOT EXISTS idx_timetable_slots_section_day
   WHERE deleted_at IS NULL;
 
 
--- ========================================== 
--- 29. GIRL SAFETY
--- ========================================== 
-CREATE TABLE IF NOT EXISTS girl_safety_complaints (
-    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    ticket_no VARCHAR(20) NOT NULL,
-    student_id UUID REFERENCES students(id) ON DELETE SET NULL,
-    category VARCHAR(50) NOT NULL,
-    description TEXT NOT NULL,
-    description_te TEXT,
-    incident_date TIMESTAMPTZ,
-    attachments JSONB DEFAULT '[]'::jsonb,
-    is_anonymous BOOLEAN DEFAULT false,
-    status VARCHAR(20) DEFAULT 'pending',
-    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    resolved_at TIMESTAMPTZ,
-    UNIQUE (school_id, ticket_no)
-);
-
-CREATE TABLE IF NOT EXISTS girl_safety_complaint_threads (
-    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    complaint_id UUID REFERENCES girl_safety_complaints(id) ON DELETE CASCADE,
-    sender_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    sender_role VARCHAR(20) NOT NULL,
-    message TEXT NOT NULL,
-    message_te TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-
--- ========================================== 
+-- ==========================================
 -- 30. SCHOOL SETTINGS & CONFIG
 -- ========================================== 
 CREATE TABLE IF NOT EXISTS school_settings (
@@ -6215,8 +6314,6 @@ ALTER TABLE IF EXISTS notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS notification_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS notification_audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS user_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS girl_safety_complaints ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS girl_safety_complaint_threads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS driver_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS driver_heartbeat ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS bus_trip_history ENABLE ROW LEVEL SECURITY;
@@ -6553,7 +6650,6 @@ DECLARE tables_needing_policies TEXT[] := ARRAY[
   'notification_templates', 'notification_preferences',
   'notification_events', 'notifications', 'notification_deliveries',
   'notification_audit_logs',
-  'girl_safety_complaints', 'girl_safety_complaint_threads',
   'school_settings', 'feature_flags', 'ui_route_permissions',
   'driver_devices', 'driver_heartbeat', 'bus_trip_history',
   'admin_notifications',
@@ -7174,3 +7270,100 @@ WHERE NOT EXISTS (
 );
 
 COMMIT;
+-- ============================================================================
+-- 20260710_messenger_tables.sql
+-- In-app 1:1 messenger: parent↔admin, admin↔teacher, teacher↔parent
+-- ============================================================================
+
+-- 1. Conversations — one row per 1:1 thread
+CREATE TABLE IF NOT EXISTS message_conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    pair_type TEXT NOT NULL CHECK (pair_type IN ('parent_admin', 'admin_teacher', 'teacher_parent')),
+    participant_low_user_id UUID NOT NULL REFERENCES users(id),
+    participant_high_user_id UUID NOT NULL REFERENCES users(id),
+    student_id UUID NULL REFERENCES students(id),
+    subject TEXT NULL,
+    last_message_at TIMESTAMPTZ NULL,
+    last_message_preview TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ NULL
+    -- Unique constraint handled via index below to support COALESCE expression
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS unq_message_conversations_pair
+    ON message_conversations (
+        school_id, 
+        participant_low_user_id, 
+        participant_high_user_id, 
+        COALESCE(student_id, '00000000-0000-0000-0000-000000000000')
+    );
+
+-- 2. Participants — 2 rows per conversation (read state + mute per user)
+CREATE TABLE IF NOT EXISTS message_participants (
+    conversation_id UUID NOT NULL REFERENCES message_conversations(id) ON DELETE CASCADE,
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id),
+    last_read_at TIMESTAMPTZ NULL,
+    muted BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (conversation_id, user_id)
+);
+
+-- 3. Messages — individual messages in a thread
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES message_conversations(id) ON DELETE CASCADE,
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    sender_user_id UUID NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 4000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    edited_at TIMESTAMPTZ NULL,
+    deleted_at TIMESTAMPTZ NULL
+);
+
+-- ============================================================================
+-- Indexes (keyset pagination + unread must be fast)
+-- ============================================================================
+
+-- Thread messages: keyset pagination by (created_at DESC, id DESC)
+CREATE INDEX IF NOT EXISTS idx_messages_conv_created
+    ON messages (conversation_id, created_at DESC, id DESC);
+
+-- Conversation list for a user: find all conversations where user is participant_low
+CREATE INDEX IF NOT EXISTS idx_conv_low_user
+    ON message_conversations (school_id, participant_low_user_id, last_message_at DESC NULLS LAST);
+
+-- Conversation list for a user: find all conversations where user is participant_high
+CREATE INDEX IF NOT EXISTS idx_conv_high_user
+    ON message_conversations (school_id, participant_high_user_id, last_message_at DESC NULLS LAST);
+
+-- Fast participant lookup for access checks and unread count
+CREATE INDEX IF NOT EXISTS idx_participants_user
+    ON message_participants (user_id, school_id);
+
+-- ============================================================================
+-- Triggers
+-- ============================================================================
+
+-- Reuse existing update_timestamp() for updated_at on conversations
+CREATE TRIGGER trg_message_conversations_updated_at
+    BEFORE UPDATE ON message_conversations
+    FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Auto-update conversation preview on new message insert
+CREATE OR REPLACE FUNCTION update_conversation_on_message()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE message_conversations
+    SET last_message_at = NEW.created_at,
+        last_message_preview = LEFT(NEW.body, 100),
+        updated_at = now()
+    WHERE id = NEW.conversation_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_messages_update_conversation
+    AFTER INSERT ON messages
+    FOR EACH ROW EXECUTE FUNCTION update_conversation_on_message();

@@ -46,8 +46,6 @@ async function main() {
     defaulter_payments: sql`SELECT * FROM defaulter_payments WHERE school_id=${S} AND defaulter_due_id IN (SELECT id FROM defaulter_dues WHERE student_id IN ${sql(inStu)})`,
     receipts: sql`SELECT * FROM receipts WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,
     defaulter_dues: sql`SELECT * FROM defaulter_dues WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,
-    girl_safety_complaint_threads: sql`SELECT * FROM girl_safety_complaint_threads WHERE school_id=${S} AND complaint_id IN (SELECT id FROM girl_safety_complaints WHERE student_id IN ${sql(inStu)})`,
-    girl_safety_complaints: sql`SELECT * FROM girl_safety_complaints WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,
     discipline_records: sql`SELECT * FROM discipline_records WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,
     hostel_allocations: sql`SELECT * FROM hostel_allocations WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,
     issued_certificates: sql`SELECT * FROM issued_certificates WHERE school_id=${S} AND student_id IN ${sql(inStu)}`,

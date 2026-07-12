@@ -125,12 +125,23 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
           AND d.school_id = ${schoolId}
           AND d.entry_date = ${entry_date}
           AND EXISTS (
+            -- Match GET /teachers/me/classes: an assignment may live in
+            -- class_subjects OR timetable_slots. Checking only class_subjects
+            -- hid diary entries a teacher posted to a timetable-only class.
             SELECT 1 FROM class_subjects csub
             JOIN staff st ON csub.teacher_id = st.id
             JOIN users u ON st.person_id = u.person_id
             WHERE u.id = ${req.user.id}
               AND csub.class_section_id = d.class_section_id
               AND csub.subject_id = d.subject_id
+            UNION
+            SELECT 1 FROM timetable_slots ts
+            JOIN staff st ON ts.teacher_id = st.id
+            JOIN users u ON st.person_id = u.person_id
+            WHERE u.id = ${req.user.id}
+              AND ts.class_section_id = d.class_section_id
+              AND ts.subject_id = d.subject_id
+              AND ts.deleted_at IS NULL
           )
         ORDER BY d.created_at DESC
       `;
@@ -152,12 +163,23 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
           AND d.school_id = ${schoolId}
           AND d.entry_date BETWEEN ${from_date} AND ${to_date}
           AND EXISTS (
+            -- Match GET /teachers/me/classes: an assignment may live in
+            -- class_subjects OR timetable_slots. Checking only class_subjects
+            -- hid diary entries a teacher posted to a timetable-only class.
             SELECT 1 FROM class_subjects csub
             JOIN staff st ON csub.teacher_id = st.id
             JOIN users u ON st.person_id = u.person_id
             WHERE u.id = ${req.user.id}
               AND csub.class_section_id = d.class_section_id
               AND csub.subject_id = d.subject_id
+            UNION
+            SELECT 1 FROM timetable_slots ts
+            JOIN staff st ON ts.teacher_id = st.id
+            JOIN users u ON st.person_id = u.person_id
+            WHERE u.id = ${req.user.id}
+              AND ts.class_section_id = d.class_section_id
+              AND ts.subject_id = d.subject_id
+              AND ts.deleted_at IS NULL
           )
         ORDER BY d.entry_date DESC, d.created_at DESC
       `;
@@ -177,12 +199,23 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
         WHERE d.created_by = ${req.user.internal_id}
           AND d.school_id = ${schoolId}
           AND EXISTS (
+            -- Match GET /teachers/me/classes: an assignment may live in
+            -- class_subjects OR timetable_slots. Checking only class_subjects
+            -- hid diary entries a teacher posted to a timetable-only class.
             SELECT 1 FROM class_subjects csub
             JOIN staff st ON csub.teacher_id = st.id
             JOIN users u ON st.person_id = u.person_id
             WHERE u.id = ${req.user.id}
               AND csub.class_section_id = d.class_section_id
               AND csub.subject_id = d.subject_id
+            UNION
+            SELECT 1 FROM timetable_slots ts
+            JOIN staff st ON ts.teacher_id = st.id
+            JOIN users u ON st.person_id = u.person_id
+            WHERE u.id = ${req.user.id}
+              AND ts.class_section_id = d.class_section_id
+              AND ts.subject_id = d.subject_id
+              AND ts.deleted_at IS NULL
           )
         ORDER BY d.homework_due_date DESC NULLS LAST, d.created_at DESC
         LIMIT ${limit} OFFSET ${offset}

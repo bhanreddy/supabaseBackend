@@ -245,7 +245,19 @@ router.get('/routes/:id', requirePermission('transport.view'), asyncHandler(asyn
     bus = b;
   }
 
-  return sendSuccess(res, req.schoolId, { ...route, stops, bus });
+  const [activeDriver] = await sql`
+    SELECT dra.driver_id, p.display_name as driver_name, p.photo_url
+    FROM driver_route_assignments dra
+    JOIN staff s ON dra.driver_id = s.id
+    JOIN persons p ON s.person_id = p.id
+    WHERE dra.route_id = ${id}
+      AND dra.school_id = ${req.schoolId}
+      AND dra.is_active = true
+      AND dra.deleted_at IS NULL
+    LIMIT 1
+  `;
+
+  return sendSuccess(res, req.schoolId, { ...route, stops, bus, driver: activeDriver || null });
 }));
 
 /**
@@ -708,7 +720,44 @@ router.get('/driver/my-students', requireAuth, asyncHandler(async (req, res) => 
             'student_name', p.display_name,
             'admission_no', stu.admission_no,
             'class_name', c.name,
-            'section_name', sec.name
+            'section_name', sec.name,
+            'phone_contacts', COALESCE((
+              SELECT json_agg(contact ORDER BY contact.is_primary DESC, contact.contact_name, contact.phone)
+              FROM (
+                SELECT
+                  'Student'::text AS relationship,
+                  p.display_name AS contact_name,
+                  pc.contact_value AS phone,
+                  pc.is_primary
+                FROM person_contacts pc
+                WHERE pc.person_id = stu.person_id
+                  AND pc.school_id = ${req.schoolId}
+                  AND pc.contact_type = 'phone'
+                  AND pc.deleted_at IS NULL
+
+                UNION ALL
+
+                SELECT
+                  COALESCE(rt.name, 'Guardian') AS relationship,
+                  parent_person.display_name AS contact_name,
+                  parent_phone.contact_value AS phone,
+                  (sp.is_primary_contact OR parent_phone.is_primary) AS is_primary
+                FROM student_parents sp
+                JOIN parents parent ON parent.id = sp.parent_id
+                  AND parent.school_id = ${req.schoolId}
+                  AND parent.deleted_at IS NULL
+                JOIN persons parent_person ON parent_person.id = parent.person_id
+                LEFT JOIN relationship_types rt ON rt.id = sp.relationship_id
+                JOIN person_contacts parent_phone ON parent_phone.person_id = parent.person_id
+                  AND parent_phone.school_id = ${req.schoolId}
+                  AND parent_phone.contact_type = 'phone'
+                  AND parent_phone.deleted_at IS NULL
+                WHERE sp.student_id = stu.id
+                  AND sp.school_id = ${req.schoolId}
+                  AND sp.deleted_at IS NULL
+              ) contact
+              WHERE NULLIF(BTRIM(contact.phone), '') IS NOT NULL
+            ), '[]'::json)
           )
         ) FILTER (WHERE st.id IS NOT NULL), '[]') as students
       FROM transport_stops ts
@@ -1517,6 +1566,58 @@ router.post('/assign-student', requirePermission('transport.manage'), asyncHandl
   return sendSuccess(res, req.schoolId, assignment, 201);
 }));
 
+router.post('/assign-students-bulk', requirePermission('transport.manage'), asyncHandler(async (req, res) => {
+  const { student_ids, route_id, stop_id, academic_year_id } = req.body;
+  if (!Array.isArray(student_ids) || !student_ids.length || !route_id || !stop_id || !academic_year_id) {
+    return res.status(400).json({ error: 'student_ids (array), route_id, stop_id, academic_year_id are required' });
+  }
+
+  const [route] = await sql`
+    SELECT id, bus_id FROM transport_routes WHERE id = ${route_id} AND school_id = ${req.schoolId}
+  `;
+  if (!route) return res.status(404).json({ error: 'Route not found' });
+
+  const [stop] = await sql`
+    SELECT id FROM transport_stops
+    WHERE id = ${stop_id} AND route_id = ${route_id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+  `;
+  if (!stop) return res.status(404).json({ error: 'Stop not found on this route' });
+
+  const bus_id = route.bus_id || null;
+
+  const students = await sql`
+    SELECT id FROM students WHERE id IN ${sql(student_ids)} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+  `;
+  const validStudentIds = students.map(s => s.id);
+  if (!validStudentIds.length) {
+    return res.status(404).json({ error: 'No valid students found' });
+  }
+
+  const values = validStudentIds.map(student_id => ({
+    school_id: req.schoolId,
+    student_id,
+    route_id,
+    stop_id,
+    bus_id,
+    academic_year_id,
+    is_active: true
+  }));
+
+  const assignments = await sql`
+    INSERT INTO student_transport ${sql(values)}
+    ON CONFLICT (student_id, academic_year_id)
+    DO UPDATE SET
+      school_id = EXCLUDED.school_id,
+      route_id = EXCLUDED.route_id,
+      stop_id = EXCLUDED.stop_id,
+      bus_id = EXCLUDED.bus_id,
+      is_active = true
+    RETURNING *
+  `;
+
+  return sendSuccess(res, req.schoolId, { count: assignments.length }, 201);
+}));
+
 router.delete('/assign-student/:studentId', requirePermission('transport.manage'), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   const { academic_year_id } = req.query;
@@ -1621,7 +1722,7 @@ router.get('/driver/my-trip', requireAuth, asyncHandler(async (req, res) => {
   );
 
   let [trip] = await sql`
-    SELECT id, status, started_at, ended_at, trip_date, trip_direction
+    SELECT id, route_id, status, started_at, ended_at, trip_date, trip_direction
     FROM trips
     WHERE route_id = ${routeAssignment.route_id}
       AND driver_id = ${staffId}
@@ -1654,11 +1755,11 @@ router.get('/driver/my-trip', requireAuth, asyncHandler(async (req, res) => {
           ${tripDir},
           NULL
         )
-        RETURNING id, status, started_at, ended_at, trip_date, trip_direction
+        RETURNING id, route_id, status, started_at, ended_at, trip_date, trip_direction
       `;
     } catch (e) {
       [trip] = await sql`
-        SELECT id, status, started_at, ended_at, trip_date, trip_direction FROM trips
+        SELECT id, route_id, status, started_at, ended_at, trip_date, trip_direction FROM trips
         WHERE route_id = ${routeAssignment.route_id}
           AND driver_id = ${staffId}
           AND school_id = ${req.schoolId}
@@ -1713,6 +1814,7 @@ router.get('/driver/my-trip', requireAuth, asyncHandler(async (req, res) => {
   return sendSuccess(res, req.schoolId, {
     trip: {
       id: trip.id,
+      route_id: trip.route_id,
       status: uiStatus,
       raw_status: trip.status,
       started_at: trip.started_at,
@@ -2153,6 +2255,223 @@ router.get('/live-today', requirePermission('transport.view'), asyncHandler(asyn
   `;
 
   return sendSuccess(res, req.schoolId, rows);
+}));
+
+// ── Driver Bus Attendance Settings ──────────────────────────────────────────
+router.get('/driver/bus-attendance/settings', requireAuth, asyncHandler(async (req, res) => {
+  const [row] = await sql`
+    SELECT value FROM school_settings
+    WHERE school_id = ${req.schoolId} AND key = 'enable_driver_bus_attendance'
+    LIMIT 1
+  `;
+  return sendSuccess(res, req.schoolId, { enabled: row?.value === 'true' });
+}));
+
+// ── Driver Bus Attendance Stop Students ───────────────────────────────────────
+router.get('/driver/bus-attendance/stop/:stopId/students', requireAuth, asyncHandler(async (req, res) => {
+  const { stopId } = req.params;
+  const { trip_id, date } = req.query;
+  const attendanceDate = date || new Date().toISOString().split('T')[0];
+
+  const students = await sql`
+    SELECT
+      stu.id as student_id,
+      stu.admission_no,
+      p.display_name as student_name,
+      p.photo_url,
+      c.name as class_name,
+      sec.name as section_name,
+      ba.id as attendance_id,
+      ba.status as attendance_status,
+      ba.marked_at
+    FROM student_transport st
+    JOIN students stu ON st.student_id = stu.id AND stu.school_id = ${req.schoolId}
+    JOIN persons p ON stu.person_id = p.id
+    LEFT JOIN student_enrollments se ON se.student_id = stu.id AND se.status = 'active' AND se.deleted_at IS NULL
+    LEFT JOIN class_sections csec ON se.class_section_id = csec.id
+    LEFT JOIN classes c ON csec.class_id = c.id
+    LEFT JOIN sections sec ON csec.section_id = sec.id
+    LEFT JOIN bus_stop_attendance ba ON ba.student_id = stu.id 
+      AND ba.stop_id = ${stopId}
+      AND ba.school_id = ${req.schoolId}
+      AND ba.attendance_date = ${attendanceDate}
+      ${trip_id ? sql`AND ba.trip_id = ${trip_id}` : sql``}
+    WHERE st.stop_id = ${stopId}
+      AND st.school_id = ${req.schoolId}
+      AND st.is_active = true
+    ORDER BY p.display_name ASC
+  `;
+
+  return sendSuccess(res, req.schoolId, students);
+}));
+
+// ── Driver Bus Attendance Mark (Bulk) ─────────────────────────────────────────
+router.post('/driver/bus-attendance/mark', requireAuth, asyncHandler(async (req, res) => {
+  const { trip_id, stop_id, route_id, date, attendance } = req.body;
+  const attendanceDate = date || new Date().toISOString().split('T')[0];
+
+  if (!trip_id || !stop_id || !route_id || !attendance || !Array.isArray(attendance)) {
+    return res.status(400).json({ error: 'trip_id, stop_id, route_id, and attendance array are required' });
+  }
+
+  const staffId = await getStaffId(req.user);
+  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
+
+  const [trip] = await sql`
+    SELECT id, status FROM trips
+    WHERE id = ${trip_id} AND school_id = ${req.schoolId} AND driver_id = ${staffId}
+    LIMIT 1
+  `;
+  if (!trip) {
+    return res.status(404).json({ error: 'Trip not found or does not belong to you' });
+  }
+
+  const rows = (attendance || []).filter((r) => r?.student_id && r?.status);
+  
+  if (rows.length === 0) {
+    return res.status(400).json({ error: 'No valid attendance records provided' });
+  }
+
+  const studentIds = rows.map(r => String(r.student_id));
+  const statuses = rows.map(r => String(r.status));
+
+  const upserted = await sql`
+    INSERT INTO bus_stop_attendance (
+      school_id, trip_id, stop_id, route_id, driver_id, student_id, attendance_date, status, marked_at
+    )
+    SELECT
+      ${req.schoolId},
+      ${trip_id}::uuid,
+      ${stop_id}::uuid,
+      ${route_id}::uuid,
+      ${staffId}::uuid,
+      u.student_id::uuid,
+      ${attendanceDate}::date,
+      u.status,
+      NOW()
+    FROM unnest(
+      ${sql.array(studentIds)}::uuid[],
+      ${sql.array(statuses)}::text[]
+    ) AS u(student_id, status)
+    ON CONFLICT (school_id, trip_id, stop_id, student_id, attendance_date)
+    DO UPDATE SET
+      status = EXCLUDED.status,
+      marked_at = NOW(),
+      updated_at = NOW()
+    RETURNING id, student_id, status
+  `;
+
+  // Trigger parent notifications in background
+  const newlyPresent = upserted.filter(r => r.status === 'present');
+  if (newlyPresent.length > 0) {
+    const presentStudentIds = newlyPresent.map(r => r.student_id);
+
+    (async () => {
+      try {
+        const [stop] = await sql`
+          SELECT name FROM transport_stops
+          WHERE id = ${stop_id} AND school_id = ${req.schoolId}
+          LIMIT 1
+        `;
+
+        const parentNotifications = await sql`
+          SELECT 
+            u.id as user_id, 
+            sp.student_id,
+            p_student.display_name as student_name
+          FROM student_parents sp
+          JOIN parents p_parent ON sp.parent_id = p_parent.id AND p_parent.school_id = ${req.schoolId}
+          JOIN users u ON p_parent.person_id = u.person_id AND u.school_id = ${req.schoolId}
+          JOIN students s ON sp.student_id = s.id AND s.school_id = ${req.schoolId}
+          JOIN persons p_student ON s.person_id = p_student.id
+          WHERE sp.student_id = ANY(${sql.array(presentStudentIds)}::uuid[])
+            AND sp.school_id = ${req.schoolId}
+            AND u.account_status = 'active'
+        `;
+
+        for (const pn of parentNotifications) {
+          try {
+            await sendNotificationToUsers(
+              [pn.user_id],
+              'STUDENT_BUS_PRESENT',
+              {
+                studentName: pn.student_name,
+                stopName: stop?.name || 'stop'
+              }
+            );
+          } catch (err) {
+            console.warn('Failed to send STUDENT_BUS_PRESENT notification:', err);
+          }
+        }
+      } catch (err) {
+        console.error('Error sending bus attendance parent notifications:', err);
+      }
+    })();
+  }
+
+  return sendSuccess(res, req.schoolId, {
+    message: 'Attendance saved successfully',
+    count: upserted.length,
+    records: upserted
+  }, 201);
+}));
+
+// ── Driver Bus Attendance Summary ─────────────────────────────────────────────
+router.get('/driver/bus-attendance/summary', requireAuth, asyncHandler(async (req, res) => {
+  const { trip_id } = req.query;
+  if (!trip_id) {
+    return res.status(400).json({ error: 'trip_id is required' });
+  }
+
+  const summary = await sql`
+    SELECT
+      ts.id as stop_id,
+      ts.name as stop_name,
+      COUNT(ba.id) FILTER (WHERE ba.status = 'present') as present_count,
+      COUNT(ba.id) FILTER (WHERE ba.status = 'absent') as absent_count,
+      (
+        SELECT COUNT(*)
+        FROM student_transport st
+        WHERE st.stop_id = ts.id AND st.school_id = ${req.schoolId} AND st.is_active = true
+      ) as total_assigned
+    FROM trip_stop_status tss
+    JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${req.schoolId}
+    LEFT JOIN bus_stop_attendance ba ON ba.stop_id = ts.id AND ba.trip_id = ${trip_id} AND ba.school_id = ${req.schoolId}
+    WHERE tss.trip_id = ${trip_id} AND tss.school_id = ${req.schoolId}
+    GROUP BY ts.id, ts.name, tss.stop_order
+    ORDER BY tss.stop_order ASC
+  `;
+
+  return sendSuccess(res, req.schoolId, summary);
+}));
+
+// ── Student/Parent Bus Attendance History ─────────────────────────────────────
+router.get('/my-attendance', requireAuth, asyncHandler(async (req, res) => {
+  const schoolId = req.schoolId;
+  const studentId = await resolveStudentId(req);
+
+  if (!studentId) {
+    return res.status(404).json({ error: 'No student profile found' });
+  }
+
+  const history = await sql`
+    SELECT
+      ba.id,
+      ba.attendance_date,
+      ba.status,
+      ba.marked_at,
+      ts.name as stop_name,
+      tr.name as route_name
+    FROM bus_stop_attendance ba
+    JOIN transport_stops ts ON ba.stop_id = ts.id AND ts.school_id = ${schoolId}
+    JOIN transport_routes tr ON ba.route_id = tr.id AND tr.school_id = ${schoolId}
+    WHERE ba.student_id = ${studentId}
+      AND ba.school_id = ${schoolId}
+    ORDER BY ba.attendance_date DESC, ba.marked_at DESC
+    LIMIT 50
+  `;
+
+  return sendSuccess(res, schoolId, history);
 }));
 
 export default router;

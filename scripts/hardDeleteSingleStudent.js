@@ -439,36 +439,6 @@ async function runDeleteTransaction(tx, studentId) {
     `
   );
 
-  stats.girl_safety_complaint_threads = await del(
-    'girl_safety_complaint_threads',
-    `
-      WITH deleted AS (
-        DELETE FROM public.girl_safety_complaint_threads gsct
-        USING public.girl_safety_complaints gsc,
-              target_students ts
-        WHERE gsct.complaint_id = gsc.id
-          AND gsc.student_id = ts.id
-          AND gsct.school_id = ${SCHOOL_ID}
-        RETURNING gsct.id
-      )
-      SELECT count(*)::int AS count FROM deleted
-    `
-  );
-
-  stats.girl_safety_complaints = await del(
-    'girl_safety_complaints',
-    `
-      WITH deleted AS (
-        DELETE FROM public.girl_safety_complaints gsc
-        USING target_students ts
-        WHERE gsc.student_id = ts.id
-          AND gsc.school_id = ${SCHOOL_ID}
-        RETURNING gsc.id
-      )
-      SELECT count(*)::int AS count FROM deleted
-    `
-  );
-
   stats.discipline_records = await del(
     'discipline_records',
     `

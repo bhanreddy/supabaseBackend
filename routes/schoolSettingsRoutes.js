@@ -19,6 +19,7 @@ const SETTING_KEYS = [
   'school_recognition',
   'school_medium',
   'school_board',
+  'enable_driver_bus_attendance',
 ];
 
 function normalizeSettingValue(value) {
@@ -97,7 +98,8 @@ router.put(
     if (req.schoolId != null && String(req.schoolId) !== String(schoolId)) {
       return res.status(403).json({ error: 'School scope mismatch' });
     }
-    const updates = req.body; // { school_name: 'XYZ', school_address: '...' }
+    const updates = { ...req.body }; // { school_name: 'XYZ', school_address: '...' }
+    delete updates.school_id;
 
     if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
       return res.status(400).json({

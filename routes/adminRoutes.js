@@ -739,6 +739,9 @@ router.patch('/account-access/:userId', requireAuth, requireRole('admin', 'princ
  */
 router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
+    const { date } = req.query;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+
     const feeMode = await getSchoolFeeMode(schoolId);
     const structureModeFilter = activeStructureFilter(feeMode);
 
@@ -754,14 +757,14 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             SELECT COALESCE(SUM(ft.amount), 0) as total
             FROM fee_transactions ft
             JOIN student_fees sf ON ft.student_fee_id = sf.id
-            WHERE ft.paid_at::DATE = CURRENT_DATE
+            WHERE ft.paid_at::DATE = ${targetDate}::DATE
               AND sf.school_id = ${schoolId}
         `,
         sql`
             SELECT COALESCE(SUM(ft.amount), 0) as total
             FROM fee_transactions ft
             JOIN student_fees sf ON ft.student_fee_id = sf.id
-            WHERE date_trunc('month', ft.paid_at) = date_trunc('month', CURRENT_DATE)
+            WHERE date_trunc('month', ft.paid_at) = date_trunc('month', ${targetDate}::DATE)
               AND sf.school_id = ${schoolId}
         `,
         sql`
@@ -800,8 +803,9 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             JOIN students s ON sf.student_id = s.id
             JOIN persons p ON s.person_id = p.id
             WHERE s.school_id = ${schoolId}
+              AND t.paid_at::DATE = ${targetDate}::DATE
             ORDER BY t.paid_at DESC
-            LIMIT 10
+            LIMIT 1000
         `,
     ]);
 

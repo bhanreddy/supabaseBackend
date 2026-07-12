@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import sql from '../db.js';
 import { sendNotificationToUsers } from './notificationService.js';
 
@@ -15,6 +16,7 @@ export async function postTermFeePayment(tx, {
   remarks,
   user,
   schoolId,
+  receipt_group = null,
 }) {
   const parsedAmount = Number(amount);
   if (isNaN(parsedAmount) || parsedAmount <= 0) {
@@ -64,7 +66,7 @@ export async function postTermFeePayment(tx, {
   }
 
   const [transaction] = await tx`
-    INSERT INTO fee_transactions (student_fee_id, amount, payment_method, transaction_ref, received_by, remarks, school_id)
+    INSERT INTO fee_transactions (student_fee_id, amount, payment_method, transaction_ref, received_by, remarks, school_id, receipt_group)
     VALUES (
       ${student_fee_id},
       ${parsedAmount},
@@ -72,7 +74,8 @@ export async function postTermFeePayment(tx, {
       ${transaction_ref},
       ${user?.internal_id || null},
       ${remarks || null},
-      ${schoolId}
+      ${schoolId},
+      ${receipt_group || null}
     )
     RETURNING *
   `;
@@ -259,6 +262,109 @@ export async function executeTermFeePayment(params) {
   });
   const enriched = await enrichFeeTransaction(transaction, params.schoolId);
   return { transaction: enriched, fee };
+}
+
+/**
+ * Combined multi-fee-type collection: post one payment per selected fee type
+ * inside a single DB transaction, all tagged with a shared receipt_group so the
+ * auto_generate_receipt trigger rolls them into ONE receipt (one receipt_no,
+ * one report entry group, multiple line items).
+ *
+ * `items` is [{ student_fee_id, amount }]. Every item is validated and posted;
+ * if any item fails the whole batch rolls back (no partial receipts).
+ *
+ * Returns a single receipt-shaped object plus the per-fee line items, suitable
+ * for printing one combined receipt.
+ */
+export async function executeCombinedTermFeePayment({
+  items,
+  payment_method,
+  transaction_ref,
+  remarks,
+  user,
+  schoolId,
+}) {
+  if (!Array.isArray(items) || items.length === 0) {
+    const err = new Error('At least one fee item is required');
+    err.status = 400;
+    throw err;
+  }
+  if (!transaction_ref) {
+    const err = new Error('transaction_ref is required. Generate a UUID for the combined payment.');
+    err.status = 400;
+    throw err;
+  }
+  if (!payment_method || !VALID_METHODS.includes(payment_method)) {
+    const err = new Error(`payment_method must be one of: ${VALID_METHODS.join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const receiptGroup = randomUUID();
+
+  const postedTransactions = await sql.begin(async (tx) => {
+    const results = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const { transaction } = await postTermFeePayment(tx, {
+        student_fee_id: item.student_fee_id,
+        amount: item.amount,
+        payment_method,
+        // Unique per line so the idempotency index is satisfied while the whole
+        // batch remains traceable to one combined payment reference.
+        transaction_ref: `${transaction_ref}-${i + 1}`,
+        remarks,
+        user,
+        schoolId,
+        receipt_group: receiptGroup,
+      });
+      results.push(transaction);
+    }
+    return results;
+  });
+
+  // The trigger created one receipt for the whole group. Read it back.
+  const [receipt] = await sql`
+    SELECT id, receipt_no, student_id, total_amount, issued_at
+    FROM receipts
+    WHERE school_id = ${schoolId}
+      AND receipt_group = ${receiptGroup}
+  `;
+
+  // Per-fee line items for the combined receipt (fee type + amount paid).
+  const txnIds = postedTransactions.map((t) => t.id);
+  const lineItems = await sql`
+    SELECT t.id, t.amount, ft.name AS fee_type, ft.name_te AS fee_type_te, ay.code AS academic_year
+    FROM fee_transactions t
+    JOIN student_fees sf ON t.student_fee_id = sf.id AND sf.school_id = ${schoolId}
+    JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+    JOIN fee_types ft ON fs.fee_type_id = ft.id
+    LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
+    WHERE t.id = ANY(${txnIds})
+      AND t.school_id = ${schoolId}
+  `;
+
+  // Enrich the first posted transaction to reuse the student header + fresh
+  // fee_dues (post-payment balances) for receipt printing.
+  const header = await enrichFeeTransaction(postedTransactions[0], schoolId);
+
+  const combined = {
+    ...header,
+    receipt_no: receipt?.receipt_no ?? header.receipt_no,
+    amount: Number(receipt?.total_amount ?? lineItems.reduce((s, l) => s + Number(l.amount), 0)),
+    payment_method,
+    remarks: remarks || null,
+    receipt_group: receiptGroup,
+    line_items: lineItems.map((l) => ({
+      fee_type: l.fee_type,
+      fee_type_te: l.fee_type_te,
+      academic_year: l.academic_year,
+      amount: Number(l.amount),
+    })),
+    paid_fee_ids: postedTransactions.map((t) => t.student_fee_id),
+  };
+
+  return { receipt, transaction: combined, transactions: postedTransactions };
 }
 
 export function canBypassUnderpaymentApproval(user) {

@@ -19,6 +19,7 @@ import {
 } from '../services/feeModeService.js';
 import {
   executeTermFeePayment,
+  executeCombinedTermFeePayment,
   getStudentFeeBalance,
   canBypassUnderpaymentApproval,
   isPartialFeePaymentEnabled,
@@ -794,6 +795,115 @@ router.post('/collect', requirePermission('fees.collect'), asyncHandler(async (r
   return handleFeeCollection(req, res, 'Payment collected successfully');
 }));
 
+/**
+ * POST /fees/collect-multi
+ * Combined multi-fee-type collection — pay several fee types in one action and
+ * generate a SINGLE receipt (one receipt_no, multiple line items). Each fee type
+ * still posts its own ledger transaction (per-fee balances stay accurate); they
+ * are grouped into one receipt.
+ *
+ * Body: { student_id?, payment_method, transaction_ref, remarks?,
+ *         items: [{ student_fee_id, amount }] }
+ *
+ * Underpayment policy mirrors single collect: a line paid below its remaining
+ * balance is only allowed when the school enables partial payments or the user
+ * can bypass approval. There is no per-line approval-queue in combined mode —
+ * blocked lines are reported so the collector can adjust and retry.
+ */
+router.post('/collect-multi', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
+  const { items, payment_method, transaction_ref, remarks } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items must be a non-empty array of { student_fee_id, amount }' });
+  }
+  if (items.length > 20) {
+    return res.status(400).json({ error: 'Cannot collect more than 20 fee types in one receipt' });
+  }
+  const validMethods = ['cash', 'card', 'upi', 'bank_transfer', 'cheque', 'online'];
+  if (!payment_method || !validMethods.includes(payment_method)) {
+    return res.status(400).json({ error: `payment_method must be one of: ${validMethods.join(', ')}` });
+  }
+  if (!transaction_ref) {
+    return res.status(400).json({ error: 'transaction_ref is required. Generate a UUID for the combined payment.' });
+  }
+
+  // Normalise + validate each line up front (fail before posting anything).
+  const normalized = [];
+  const seen = new Set();
+  for (const raw of items) {
+    const studentFeeId = raw?.student_fee_id;
+    const amount = Number(raw?.amount);
+    if (!studentFeeId) {
+      return res.status(400).json({ error: 'Each item requires a student_fee_id' });
+    }
+    if (seen.has(studentFeeId)) {
+      return res.status(400).json({ error: 'Duplicate fee type in the same combined payment' });
+    }
+    seen.add(studentFeeId);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Each item amount must be a positive number' });
+    }
+    normalized.push({ student_fee_id: studentFeeId, amount });
+  }
+
+  try {
+    const canBypassApproval = canBypassUnderpaymentApproval(req.user);
+    const partialEnabled = await isPartialFeePaymentEnabled(req.schoolId);
+    const balances = [];
+
+    for (const item of normalized) {
+      const feeBalance = await getStudentFeeBalance(item.student_fee_id, req.schoolId);
+      if (!feeBalance) {
+        return res.status(404).json({ error: `Student fee not found: ${item.student_fee_id}` });
+      }
+      balances.push({ ...feeBalance, requested: item.amount });
+      if (item.amount > feeBalance.remaining) {
+        return res.status(400).json({
+          error: `Amount ${item.amount} exceeds remaining balance of ${feeBalance.remaining} for ${feeBalance.fee_type || 'a fee'}`,
+        });
+      }
+    }
+
+    // All lines must belong to the same student — one receipt is per-student.
+    const studentIds = new Set(balances.map((b) => b.student_id));
+    if (studentIds.size > 1) {
+      return res.status(400).json({ error: 'All fee types in a combined receipt must belong to the same student' });
+    }
+
+    // Underpayment guard (no per-line approval queue in combined mode).
+    if (!partialEnabled && !canBypassApproval) {
+      const underpaid = balances.filter((b) => b.requested < b.remaining);
+      if (underpaid.length > 0) {
+        return res.status(400).json({
+          error: 'Partial fee payments are disabled for this school. Collect the full remaining balance for each selected fee type, or remove partial lines.',
+          code: 'PARTIAL_FEE_PAYMENT_DISABLED',
+          fee_types: underpaid.map((b) => b.fee_type).filter(Boolean),
+        });
+      }
+    }
+
+    const result = await executeCombinedTermFeePayment({
+      items: normalized,
+      payment_method,
+      transaction_ref,
+      remarks,
+      user: req.user,
+      schoolId: req.schoolId,
+    });
+
+    return sendSuccess(res, req.schoolId, {
+      message: 'Combined payment collected successfully',
+      receipt: result.receipt,
+      transaction: result.transaction,
+    }, 201);
+  } catch (error) {
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    throw error;
+  }
+}));
+
 router.post('/transactions', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
   return handleFeeCollection(req, res, 'Transaction recorded');
 }));
@@ -885,7 +995,7 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
   const selectedStatus = ['Paid', 'Partial', 'Pending'].includes(statusText) ? statusText : '';
   const admissionNoText = typeof admission_no === 'string' ? admission_no.trim() : '';
   const fatherNameText = typeof father_name === 'string' ? father_name.trim() : '';
-  const mobileText = typeof mobile === 'string' ? mobile.trim().replace(/\s+/g, '') : '';
+  const mobileText = typeof mobile === 'string' ? mobile.trim().replace(/\D/g, '') : '';
 
   const baseWhere = sql`s.deleted_at IS NULL AND s.school_id = ${req.schoolId}`;
   const classFilter = class_id ? sql`AND c.id = ${class_id}` : sql``;
@@ -910,19 +1020,28 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
       )`
     : sql``;
   const mobileFilter = mobileText
-    ? sql`AND EXISTS (
-        SELECT 1
-        FROM student_parents sp
-        JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
-        JOIN persons pp ON par.person_id = pp.id
-        JOIN person_contacts pc ON pc.person_id = pp.id
-          AND pc.contact_type = 'phone'
-          AND pc.school_id = ${req.schoolId}
-        WHERE sp.student_id = s.id
-          AND sp.school_id = ${req.schoolId}
-          AND sp.deleted_at IS NULL
-          AND pc.contact_value ILIKE ${'%' + mobileText + '%'}
-          AND (pc.is_primary = true OR sp.is_primary_contact = true)
+    ? sql`AND (
+        EXISTS (
+          SELECT 1
+          FROM person_contacts pc
+          WHERE pc.person_id = s.person_id
+            AND pc.contact_type = 'phone'
+            AND pc.school_id = ${req.schoolId}
+            AND pc.deleted_at IS NULL
+            AND regexp_replace(pc.contact_value, '[^0-9]', '', 'g') ILIKE ${'%' + mobileText + '%'}
+        ) OR EXISTS (
+          SELECT 1
+          FROM student_parents sp
+          JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+          JOIN person_contacts pc ON pc.person_id = par.person_id
+            AND pc.contact_type = 'phone'
+            AND pc.school_id = ${req.schoolId}
+            AND pc.deleted_at IS NULL
+          WHERE sp.student_id = s.id
+            AND sp.school_id = ${req.schoolId}
+            AND sp.deleted_at IS NULL
+            AND regexp_replace(pc.contact_value, '[^0-9]', '', 'g') ILIKE ${'%' + mobileText + '%'}
+        )
       )`
     : sql``;
   const extraFilters = sql`${admissionFilter} ${fatherNameFilter} ${mobileFilter}`;
@@ -952,6 +1071,7 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
         s.id as student_id,
         s.admission_no,
         p.display_name as student_name,
+        p.photo_url,
         c.name as class_name,
         g.name as student_gender,
         COALESCE(SUM(sf.amount_due), 0) as total_amount,
@@ -976,7 +1096,7 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
       ${classFilter}
       ${searchFilter}
       ${extraFilters}
-      GROUP BY s.id, s.admission_no, p.display_name, c.name, g.name
+      GROUP BY s.id, s.admission_no, p.display_name, p.photo_url, c.name, g.name
     ),
     counts AS (
       SELECT
@@ -996,7 +1116,7 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
     )
     SELECT
       counts.all_count, counts.paid_count, counts.partial_count, counts.pending_count,
-      page.student_id, page.admission_no, page.student_name, page.class_name,
+      page.student_id, page.admission_no, page.student_name, page.photo_url, page.class_name,
       page.student_gender, page.total_amount, page.paid_amount, page.due_amount,
       page.status,
       father_info.father_name, father_info.father_mobile

@@ -18,6 +18,7 @@ import {
   resolveStudentParamWithAccess,
 } from '../utils/studentPortal.js';
 import { normalizeOptionalString } from '../utils/normalizeOptionalString.js';
+import { hardDeleteStudent } from '../services/hardDeleteStudent.js';
 
 const router = express.Router();
 
@@ -315,7 +316,7 @@ router.get('/profile/me', requireAuth, async (req, res) => {
     const student = await sql`
       SELECT 
         s.id, s.admission_no, s.apar_number, s.admission_date,
-        p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id,
+        p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
         st.code as status,
         -- Fetch Primary Email
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
@@ -1116,6 +1117,49 @@ router.delete('/:id', requirePermission('students.delete'), async (req, res) => 
   }
 });
 
+/**
+ * POST /students/:id/hard-delete
+ * PERMANENT, irreversible wipe of a student and ALL data belonging to them
+ * (fees, receipts, marks, attendance, transport, parent links, login accounts…).
+ * Requires an explicit `{ confirm: true }` body so it can never fire by accident,
+ * and is gated by the same `students.delete` permission as soft delete.
+ */
+router.post('/:id/hard-delete', requirePermission('students.delete'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({
+        error: 'Hard delete must be explicitly confirmed',
+        details: 'Send { "confirm": true } to permanently delete this student.',
+      });
+    }
+
+    // Ownership check — include already soft-deleted rows so a soft-deleted
+    // student can still be fully purged. 404 keeps other tenants' ids opaque.
+    const [student] = await sql`
+      SELECT id FROM students WHERE id = ${id} AND school_id = ${req.schoolId}
+    `;
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const result = await hardDeleteStudent(req.schoolId, id);
+
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    sendSuccess(res, req.schoolId, {
+      message: 'Student and all associated data permanently deleted',
+      stats: result.stats,
+      authFailures: result.authFailures,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to permanently delete student', details: error.message });
+  }
+});
+
 // ============== SUB-ROUTES ==============
 
 /**
@@ -1450,6 +1494,8 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         JOIN fee_types ft ON fs.fee_type_id = ft.id
         WHERE sf.student_id = ${targetStudentId}
           AND sf.school_id = ${req.schoolId}
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
           AND fs.academic_year_id = ${academic_year_id}
         ORDER BY sf.due_date DESC
         LIMIT ${lim} OFFSET ${offset}
@@ -1465,6 +1511,8 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         JOIN fee_types ft ON fs.fee_type_id = ft.id
         WHERE sf.student_id = ${targetStudentId}
           AND sf.school_id = ${req.schoolId}
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
           AND fs.academic_year_id = ${academic_year_id}
         ORDER BY sf.due_date DESC
       `;
@@ -1481,6 +1529,8 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         JOIN academic_years ay ON fs.academic_year_id = ay.id
         WHERE sf.student_id = ${targetStudentId}
           AND sf.school_id = ${req.schoolId}
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
         ORDER BY sf.due_date DESC
         LIMIT ${lim} OFFSET ${offset}
       `
@@ -1495,6 +1545,8 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         JOIN academic_years ay ON fs.academic_year_id = ay.id
         WHERE sf.student_id = ${targetStudentId}
           AND sf.school_id = ${req.schoolId}
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
         ORDER BY sf.due_date DESC
         LIMIT 20
       `;
@@ -1530,6 +1582,8 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           JOIN fee_structures fs ON sf.fee_structure_id = fs.id
           WHERE sf.student_id = ${targetStudentId}
             AND sf.school_id = ${req.schoolId}
+            AND sf.deleted_at IS NULL
+            AND fs.deleted_at IS NULL
             AND fs.academic_year_id = ${academic_year_id}
         `;
       } else {
@@ -1538,6 +1592,7 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           FROM student_fees sf
           WHERE sf.student_id = ${targetStudentId}
             AND sf.school_id = ${req.schoolId}
+            AND sf.deleted_at IS NULL
         `;
       }
       const [countResult] = await countSql;

@@ -405,12 +405,25 @@ router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res
     });
   }
 
-  // Check if user creation is requested but password missing
-  if (role_code && !password) {
+  // Every staff record created from this route must have usable login credentials.
+  // Do not make this conditional on role_code; callers could otherwise bypass it.
+  const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const normalizedPhone = typeof phone === 'string' ? phone.trim() : '';
+  const phoneDigits = normalizedPhone.replace(/\D/g, '');
+  if (!normalizedEmail || !normalizedPhone || !password) {
     return res.status(400).json({
       error: 'VALIDATION_ERROR',
-      message: 'Password is required when creating a login user'
+      message: 'Missing required credentials: email, phone, password'
     });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'A valid email address is required' });
+  }
+  if (phoneDigits.length < 10 || phoneDigits.length > 15) {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Phone number must contain 10 to 15 digits' });
+  }
+  if (typeof password !== 'string' || password.length < 6) {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Password must be at least 6 characters' });
   }
 
   if (!(await assertAccountsCanCreateStaff(req, res))) {
@@ -420,9 +433,7 @@ router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res
   try {
     const schoolId = req.user.schoolId;
     req.schoolId = String(schoolId);
-    const canonicalEmail = email
-      ? await assertSchoolEmailAvailable(sql, schoolId, email)
-      : null;
+    const canonicalEmail = await assertSchoolEmailAvailable(sql, schoolId, normalizedEmail);
 
     const result = await sql.begin(async (sql) => {
       // 1. Create Person
@@ -444,9 +455,9 @@ router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res
         await sql`INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary) 
                     VALUES (${schoolId}, ${person.id}, 'email', ${canonicalEmail}, true)`;
       }
-      if (phone) {
-        await sql`INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary) 
-                    VALUES (${schoolId}, ${person.id}, 'phone', ${phone}, true)`;
+      if (normalizedPhone) {
+        await sql`INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary)
+                    VALUES (${schoolId}, ${person.id}, 'phone', ${normalizedPhone}, true)`;
       }
 
       // 4. Create User Login (Optional)

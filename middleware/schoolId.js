@@ -56,6 +56,8 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/fees\/transactions\/?$/i,
   /^\/api\/v1\/staff(\/.*)?$/i,
   /^\/staff(\/.*)?$/i,
+  // Messenger: school_id MUST come from JWT, never from client query/body.
+  /^\/api\/v1\/messages(\/.*)?$/i,
 ];
 
 const OPTIONAL_SCHOOL_ID_PATHS = [

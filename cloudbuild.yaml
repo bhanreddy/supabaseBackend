@@ -24,6 +24,9 @@ steps:
       - '--region=asia-south1'
       - '--platform=managed'
       - '--port=8080'
+      # Keep 1 instance warm so the in-memory token cache stays hot and cold
+      # starts don't trigger a storm of Supabase Auth getUser() calls on surges.
+      - '--min-instances=1'
       - '--set-secrets=DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_ANON_KEY=SUPABASE_ANON_KEY:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest'
       - '--set-env-vars=NODE_ENV=production,PORT=8080,RATE_LIMIT_API_MAX=2000,RATE_LIMIT_API_WINDOW_MS=900000'
 

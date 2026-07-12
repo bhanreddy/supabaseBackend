@@ -234,28 +234,6 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
 
-    // ===== GIRL SAFETY (General) =====
-    GIRL_SAFETY_RECEIVED: {
-        channelId: 'emergency',
-        sound: 'emergency.wav',
-        titleTemplate: '🆘 Safety Alert',
-        bodyTemplate: '🚨 {{message}}',
-        titleTemplate_te: '🆘 భద్రతా హెచ్చరిక',
-        bodyTemplate_te: '🚨 {{message_te}}',
-        deepLink: '/Screen/girl-safety',
-        requiredParams: ['message']
-    },
-    GIRL_SAFETY_UPDATE: {
-        channelId: 'emergency',
-        sound: 'emergency.wav',
-        titleTemplate: '🛡️ Safety Update',
-        bodyTemplate: '👧 {{message}}',
-        titleTemplate_te: '🛡️ భద్రతా నవీకరణ',
-        bodyTemplate_te: '👧 {{message_te}}',
-        deepLink: '/Screen/girl-safety',
-        requiredParams: ['message']
-    },
-
     // ===== TRANSPORT (General — bus checkpoints) =====
     BUS_STOP_REACHED: {
         channelId: 'voice_alert',
@@ -310,6 +288,29 @@ export const NotificationEventConfig = Object.freeze({
         bodyTemplate_te: '⚠️ నేటి పాఠశాల బస్ ప్రయాణం రద్దు చేయబడింది. దయచేసి మీ పిల్లలకు ప్రత్యామ్నాయ రవాణా ఏర్పాటు చేయండి.',
         deepLink: '/Screen/busTracker',
         requiredParams: []
+    },
+
+    STUDENT_BUS_PRESENT: {
+        channelId: 'notification_default',
+        sound: 'Bus_Present.wav',
+        titleTemplate: '🚌 Bus Boarding Update',
+        titleTemplate_te: '🚌 బస్ బోర్డింగ్ అప్‌డేట్',
+        bodyTemplate: '✅ {{studentName}} has boarded the bus at {{stopName}}.',
+        bodyTemplate_te: '✅ {{studentName}} {{stopName}} వద్ద బస్సు ఎక్కారు.',
+        deepLink: '/Screen/busTracker',
+        requiredParams: ['studentName', 'stopName']
+    },
+
+    // ===== MESSENGER =====
+    MESSAGE_RECEIVED: {
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
+        titleTemplate: '💬 New Message',
+        bodyTemplate: '📩 {{message}}',
+        titleTemplate_te: '💬 కొత్త సందేశం',
+        bodyTemplate_te: '📩 {{message_te}}',
+        deepLink: '/Screen/messages',
+        requiredParams: ['message']
     }
 
 });

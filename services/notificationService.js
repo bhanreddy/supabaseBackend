@@ -43,7 +43,10 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
   }
 
   // 3️⃣ Fetch Tokens with language preference
-  let userTokens = await fetchTokens(userIds);
+  // Keep the recipient identity with each token. The same physical device can
+  // be registered for several vaulted accounts, so a notification tap must be
+  // able to switch to the account it was actually sent to.
+  let userTokens = await fetchTokensWithUserId(userIds);
   if (!userTokens || userTokens.length === 0) return { successCount: 0, failureCount: 0 };
 
   // 4️⃣ Group tokens by language and render per-language templates
@@ -54,13 +57,16 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
   const langGroups = {};
   for (const device of userTokens) {
     const lang = device.language_code || 'en';
-    if (!langGroups[lang]) langGroups[lang] = [];
-    langGroups[lang].push(device.fcm_token);
+    const key = `${lang}:${device.user_id}`;
+    if (!langGroups[key]) {
+      langGroups[key] = { lang, userId: device.user_id, tokens: [] };
+    }
+    langGroups[key].tokens.push(device.fcm_token);
   }
 
   const batchPromises = [];
 
-  for (const [lang, tokens] of Object.entries(langGroups)) {
+  for (const { lang, userId, tokens } of Object.values(langGroups)) {
     // Render templates in this language
     let langRender;
     try {
@@ -75,10 +81,13 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
       batchPromises.push(sendBatch(tokenChunk, {
         title: langRender.title,
         body: langRender.body,
-        deepLink: langRender.deepLink,
+        // Allow the caller to override the config deep link per send (e.g. route a
+        // message notification to the recipient's own portal messenger).
+        deepLink: context?.deepLink || langRender.deepLink,
         soundFile,
         channelId: `${channelId}_custom`,
         type,
+        recipientUserId: userId,
         customSound: true
       }));
     }
@@ -86,7 +95,7 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
 
   // Count total tokens from langGroups
   const totalTokenCount = Object.values(langGroups)
-    .reduce((sum, tokens) => sum + tokens.length, 0);
+    .reduce((sum, group) => sum + group.tokens.length, 0);
 
   const results = await Promise.all(batchPromises);
   results.forEach((res) => {
@@ -227,7 +236,16 @@ function buildTokenResults(tokens, responses, fallbackErrorCode = null) {
   });
 }
 
-async function sendBatch(tokens, { title, body, deepLink, soundFile, channelId, type, customSound = true }) {
+async function sendBatch(tokens, {
+  title,
+  body,
+  deepLink,
+  soundFile,
+  channelId,
+  type,
+  recipientUserId = null,
+  customSound = true,
+}) {
   if (tokens.length === 0) return { success: 0, failure: 0, tokenResults: [] };
 
   // soundBase = filename without extension (required by Android's raw res lookup).
@@ -290,6 +308,10 @@ async function sendBatch(tokens, { title, body, deepLink, soundFile, channelId, 
       body: String(body || ''),
       channelId: String(channelId),
       sound: String(soundBase),
+      // FCM data values must be strings. This is the server-authoritative
+      // account identity that the client uses to select a vaulted session on
+      // notification tap; it is never trusted for API authorization.
+      recipientUserId: String(recipientUserId || ''),
       messageId: String(randomUUID())
     }
   };
@@ -421,6 +443,9 @@ async function fetchTokens(userIds) {
             FROM user_devices ud
             WHERE ud.user_id = ANY(${userIds})
             AND ud.is_active = TRUE
+            -- Skip long-unused tokens (dead devices / stale dev logins). Active users
+            -- refresh last_used_at on every app launch via /register upsert.
+            AND (ud.last_used_at IS NULL OR ud.last_used_at > now() - interval '60 days')
         `;
     return devices;
   } catch (err) {
@@ -429,7 +454,7 @@ async function fetchTokens(userIds) {
   }
 }
 
-async function fetchTokensWithUserId(userIds) {
+async function fetchTokensWithUserId(userIds, { throwOnError = false } = {}) {
   try {
     const devices = await sql`
       SELECT
@@ -439,9 +464,11 @@ async function fetchTokensWithUserId(userIds) {
       FROM user_devices ud
       WHERE ud.user_id = ANY(${userIds})
         AND ud.is_active = TRUE
+        AND (ud.last_used_at IS NULL OR ud.last_used_at > now() - interval '60 days')
     `;
     return devices;
   } catch (err) {
+    if (throwOnError) throw err;
     return [];
   }
 }
@@ -470,13 +497,13 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     await logNotificationSummary({ type, errorMessage: err.message });
     return {
       successCount: 0,
-      failureCount: 0,
+      failureCount: userIds.length,
       noTokenCount: 0,
       tokenResults: [],
       recipientRows: userIds.map((userId) => ({
         user_id: userId,
         fcm_token: null,
-        status: 'skipped',
+        status: 'failed',
         error_code: 'template_error',
       })),
     };
@@ -488,19 +515,20 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   if (await isKillSwitchActive(type)) {
     return {
       successCount: 0,
-      failureCount: 0,
+      failureCount: userIds.length,
       noTokenCount: 0,
       tokenResults: [],
       recipientRows: userIds.map((userId) => ({
         user_id: userId,
         fcm_token: null,
-        status: 'skipped',
+        status: 'failed',
         error_code: 'kill_switch',
       })),
     };
   }
 
-  const userDevices = await fetchTokensWithUserId(userIds);
+  // Tracked broadcasts must not misreport a database outage as "no app installed".
+  const userDevices = await fetchTokensWithUserId(userIds, { throwOnError: true });
   const usersWithTokens = new Set(userDevices.map((d) => d.user_id));
   const noTokenUserIds = userIds.filter((id) => !usersWithTokens.has(id));
 
@@ -534,8 +562,11 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   const langGroups = {};
   for (const device of userDevices) {
     const lang = device.language_code || 'en';
-    if (!langGroups[lang]) langGroups[lang] = [];
-    langGroups[lang].push(device);
+    const key = `${lang}:${device.user_id}`;
+    if (!langGroups[key]) {
+      langGroups[key] = { lang, userId: device.user_id, devices: [] };
+    }
+    langGroups[key].devices.push(device);
   }
 
   let totalSuccess = 0;
@@ -543,7 +574,7 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   const allTokenResults = [];
   const batchPromises = [];
 
-  for (const [lang, devices] of Object.entries(langGroups)) {
+  for (const { lang, userId, devices } of Object.values(langGroups)) {
     let langRender;
     try {
       langRender = NotificationTemplateService.render(type, params, lang);
@@ -563,6 +594,7 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
           soundFile,
           channelId: `${channelId}_custom`,
           type,
+          recipientUserId: userId,
           customSound: true,
         }).then((batchRes) => ({ deviceChunk, batchRes }))
       );
