@@ -129,22 +129,110 @@ router.get('/dashboard-stats', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 /**
+ * GET /admin/diary/options
+ * Return the current academic year's class-sections and the subjects actually
+ * assigned to each mapping. Admin diary writes use class_section_id directly;
+ * accepting unrelated class + section ids would create ambiguous targets.
+ */
+router.get('/diary/options', requirePermission('diary.manage'), asyncHandler(async (req, res) => {
+    const schoolId = req.schoolId;
+
+    const options = await sql`
+        WITH chosen_year AS (
+            SELECT ay.id
+            FROM academic_years ay
+            WHERE ay.school_id = ${schoolId}
+            ORDER BY
+                CASE WHEN CURRENT_DATE BETWEEN ay.start_date AND ay.end_date THEN 0 ELSE 1 END,
+                ay.start_date DESC
+            LIMIT 1
+        )
+        SELECT
+            cs.id AS class_section_id,
+            c.id AS class_id,
+            c.name AS class_name,
+            c.sort_order AS class_sort_order,
+            sec.id AS section_id,
+            sec.name AS section_name,
+            ay.id AS academic_year_id,
+            ay.code AS academic_year,
+            COALESCE(subject_rows.subjects, '[]'::jsonb) AS subjects
+        FROM class_sections cs
+        JOIN chosen_year cy ON cy.id = cs.academic_year_id
+        JOIN academic_years ay ON ay.id = cs.academic_year_id AND ay.school_id = ${schoolId}
+        JOIN classes c ON c.id = cs.class_id AND c.school_id = ${schoolId}
+        JOIN sections sec ON sec.id = cs.section_id AND sec.school_id = ${schoolId}
+        LEFT JOIN LATERAL (
+            SELECT jsonb_agg(
+                jsonb_build_object('id', assigned.id, 'name', assigned.name, 'name_te', assigned.name_te)
+                ORDER BY assigned.name
+            ) AS subjects
+            FROM (
+                SELECT DISTINCT s.id, s.name, s.name_te
+                FROM subjects s
+                WHERE s.school_id = ${schoolId}
+                  AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM class_subjects csub
+                        WHERE csub.class_section_id = cs.id
+                          AND csub.subject_id = s.id
+                          AND csub.school_id = ${schoolId}
+                          AND csub.deleted_at IS NULL
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM timetable_slots ts
+                        WHERE ts.class_section_id = cs.id
+                          AND ts.subject_id = s.id
+                          AND ts.school_id = ${schoolId}
+                          AND ts.deleted_at IS NULL
+                    )
+                  )
+            ) assigned
+        ) subject_rows ON true
+        WHERE cs.school_id = ${schoolId}
+          AND cs.deleted_at IS NULL
+          AND c.deleted_at IS NULL
+        ORDER BY c.sort_order NULLS LAST, c.name, sec.name
+    `;
+
+    return sendSuccess(res, schoolId, options);
+}));
+
+/**
  * GET /admin/diary/today
  * Get today's diary entries for admin viewing
  */
-router.get('/diary/today', requireAuth, asyncHandler(async (req, res) => {
+router.get('/diary/today', requirePermission('diary.manage'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
-    const { class_id, section_id } = req.query;
+    const { class_section_id, class_id, section_id, subject_id } = req.query;
 
     let query = sql`
         SELECT 
             de.id,
+            de.class_section_id,
             de.entry_date,
+            de.subject_id,
+            de.title,
+            de.title_te,
             de.content,
+            de.content_te,
+            de.homework_due_date,
+            de.attachments,
+            de.created_by,
             de.created_at,
+            de.updated_at,
+            c.id AS class_id,
+            c.name AS class_name,
+            sec.id AS section_id,
+            sec.name AS section_name,
             s.name as subject_name,
             creator.display_name as teacher_name
         FROM diary_entries de
+        JOIN class_sections cs ON de.class_section_id = cs.id AND cs.school_id = ${schoolId}
+        JOIN classes c ON cs.class_id = c.id AND c.school_id = ${schoolId}
+        JOIN sections sec ON cs.section_id = sec.id AND sec.school_id = ${schoolId}
         LEFT JOIN subjects s ON de.subject_id = s.id
         LEFT JOIN users u ON de.created_by = u.id
         LEFT JOIN persons creator ON u.person_id = creator.id
@@ -153,12 +241,12 @@ router.get('/diary/today', requireAuth, asyncHandler(async (req, res) => {
           AND de.deleted_at IS NULL
     `;
 
-    if (class_id && section_id) {
-        query = sql`${query} AND de.class_section_id = (
-            SELECT id FROM class_sections 
-            WHERE class_id = ${class_id} AND section_id = ${section_id} AND school_id = ${schoolId} LIMIT 1
-        )`;
-    }
+    if (class_section_id) query = sql`${query} AND de.class_section_id = ${class_section_id}`;
+    if (!class_section_id && class_id) query = sql`${query} AND cs.class_id = ${class_id}`;
+    if (!class_section_id && section_id) query = sql`${query} AND cs.section_id = ${section_id}`;
+    if (subject_id) query = sql`${query} AND de.subject_id = ${subject_id}`;
+
+    query = sql`${query} ORDER BY c.sort_order NULLS LAST, c.name, sec.name, de.created_at DESC`;
 
     const entries = await query;
     return sendSuccess(res, schoolId, entries);
@@ -168,7 +256,7 @@ router.get('/diary/today', requireAuth, asyncHandler(async (req, res) => {
  * GET /admin/diary/history
  * Get diary entries for a specific date
  */
-router.get('/diary/history', requireAuth, asyncHandler(async (req, res) => {
+router.get('/diary/history', requirePermission('diary.manage'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
     const { class_id, section_id, date } = req.query;
 
@@ -179,12 +267,28 @@ router.get('/diary/history', requireAuth, asyncHandler(async (req, res) => {
     let query = sql`
         SELECT 
             de.id,
+            de.class_section_id,
             de.entry_date,
+            de.subject_id,
+            de.title,
+            de.title_te,
             de.content,
+            de.content_te,
+            de.homework_due_date,
+            de.attachments,
+            de.created_by,
             de.created_at,
+            de.updated_at,
+            c.id AS class_id,
+            c.name AS class_name,
+            sec.id AS section_id,
+            sec.name AS section_name,
             s.name as subject_name,
             creator.display_name as teacher_name
         FROM diary_entries de
+        JOIN class_sections cs ON de.class_section_id = cs.id AND cs.school_id = ${schoolId}
+        JOIN classes c ON cs.class_id = c.id AND c.school_id = ${schoolId}
+        JOIN sections sec ON cs.section_id = sec.id AND sec.school_id = ${schoolId}
         LEFT JOIN subjects s ON de.subject_id = s.id
         LEFT JOIN users u ON de.created_by = u.id
         LEFT JOIN persons creator ON u.person_id = creator.id
@@ -193,12 +297,10 @@ router.get('/diary/history', requireAuth, asyncHandler(async (req, res) => {
           AND de.deleted_at IS NULL
     `;
 
-    if (class_id && section_id) {
-        query = sql`${query} AND de.class_section_id = (
-            SELECT id FROM class_sections 
-            WHERE class_id = ${class_id} AND section_id = ${section_id} AND school_id = ${schoolId} LIMIT 1
-        )`;
-    }
+    if (class_id) query = sql`${query} AND cs.class_id = ${class_id}`;
+    if (section_id) query = sql`${query} AND cs.section_id = ${section_id}`;
+
+    query = sql`${query} ORDER BY c.sort_order NULLS LAST, c.name, sec.name, de.created_at DESC`;
 
     const entries = await query;
     return sendSuccess(res, schoolId, entries);

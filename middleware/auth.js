@@ -167,7 +167,6 @@ export const identifyUser = async (req, res, next) => {
 
       // Fix #5: Student Session Auto-Refresh (Mobile-First)
       if (isTokenExpired) {
-        const isStudentOrUnknownYet = true; // We don't know the role yet, we MUST safely attempt refresh if token exists
         const refreshToken = req.headers['authorization-refresh'] || req.cookies?.refresh_token;
 
         if (refreshToken) {
@@ -177,17 +176,19 @@ export const identifyUser = async (req, res, next) => {
 
             user = refreshResult.data.user;
 
-            // 7-day weekly reset applies to staff roles only — students use Supabase refresh token lifetime (no forced weekly logout).
+            // Only the finance console has the short re-auth policy.  A driver
+            // must not be signed out in the middle of a live trip merely
+            // because an access token needed refresh.
             const [userLoginCheck] = await sql`
               SELECT u.last_login_at,
-                COALESCE(BOOL_OR(r.code = 'student'), false) AS is_student
+                COALESCE(BOOL_OR(r.code IN ('accountant', 'accounts')), false) AS is_accounts
               FROM users u
               LEFT JOIN user_roles ur ON ur.user_id = u.id
               LEFT JOIN roles r ON r.id = ur.role_id
               WHERE u.id = ${user.id}
               GROUP BY u.id, u.last_login_at
               LIMIT 1`;
-            if (userLoginCheck && userLoginCheck.last_login_at && !userLoginCheck.is_student) {
+            if (userLoginCheck && userLoginCheck.last_login_at && userLoginCheck.is_accounts) {
               const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
               const loginAge = Date.now() - new Date(userLoginCheck.last_login_at).getTime();
               if (loginAge >= SEVEN_DAYS_MS) {
@@ -195,9 +196,6 @@ export const identifyUser = async (req, res, next) => {
                 return res.status(401).json({ error: 'Weekly session reset. Please log in again.', code: 'WEEKLY_LOGOUT' });
               }
             }
-
-            // We will check role after we get dbUser. 
-            // If it's NOT a student, we will reject them later down.
 
             // Set the new token on the response so the mobile client can save it
             res.setHeader('X-Refreshed-Token', refreshResult.data.session.access_token);
@@ -268,12 +266,8 @@ export const identifyUser = async (req, res, next) => {
       return res.status(403).json({ error: 'Account is not active' });
     }
 
-    // Fix #5 Continuation: Reject auto-refresh for non-students
-    const isStudent = dbUser.roles && dbUser.roles.includes('student');
-    if (res.getHeader('X-Refreshed-Token') && !isStudent) {
-      // We auto-refreshed above, but they are NOT a student. Reject them.
-      return res.status(401).json({ error: 'Session expired. Please log in again.' });
-    }
+    // A refreshed token is valid for every active role. In particular, never
+    // turn a successful silent refresh into a logout for a driver mid-trip.
 
     // FIX #2: TIME-RESTRICTED ACCESS FOR ACCOUNTS ROLE
     // Decision order for accounts-role requests:
@@ -343,9 +337,13 @@ export const identifyUser = async (req, res, next) => {
       }
     }
 
-    // FIX #3: Weekly forced logout for non-students (staff/admin/etc.). Students: no server-side session cap.
+    // Only accountant/accounts sessions may be rotated weekly.  Transport
+    // drivers, teachers, parents, and admins must retain silent refresh so a
+    // transient auth renewal cannot stop an unattended trip.
     const isLoginRoute = req.originalUrl.includes('/validate-school-user') || req.originalUrl.includes('/login');
-    if (dbUser.last_login_at && !isLoginRoute && !isStudent) {
+    const isAccountsRole = (dbUser.roles || []).some((role) =>
+      role === 'accountant' || role === 'accounts');
+    if (dbUser.last_login_at && !isLoginRoute && isAccountsRole) {
       const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
       const loginAge = Date.now() - new Date(dbUser.last_login_at).getTime();
 
@@ -445,7 +443,7 @@ export const requirePermission = (permissionCode) => {
     }
 
     // Admin is treated as management and bypasses granular permission checks.
-    if (req.user.roles.includes('admin')) {
+    if (req.user.roles.includes('admin') || req.staffPortalAccess?.admin_user_id) {
       return next();
     }
 
@@ -465,7 +463,7 @@ export const requireAnyPermission = (permissionCodes) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Unauthorized: No user logged in' });
     }
-    if (req.user.roles.includes('admin')) {
+    if (req.user.roles.includes('admin') || req.staffPortalAccess?.admin_user_id) {
       return next();
     }
     const ok = permissionCodes.some((code) => req.user.permissions.includes(code));

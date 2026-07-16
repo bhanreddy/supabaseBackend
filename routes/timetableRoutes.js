@@ -562,9 +562,12 @@ router.get('/teacher-timetable', requireAuth, asyncHandler(async (req, res) => {
 
   let teacherStaffId;
   if (staff_id) {
+    if (req.staffPortalAccess && String(staff_id) !== String(req.staffPortalAccess.target_staff_id)) {
+      return res.status(403).json({ error: 'Staff portal target mismatch' });
+    }
     const isAdmin = req.user.roles.includes('admin');
     const canView = req.user.permissions.includes('staff.view');
-    if (!isAdmin && !canView) {
+    if (!isAdmin && !canView && !req.staffPortalAccess) {
       return res.status(403).json({ error: 'Forbidden: Missing permission staff.view' });
     }
     const [targetStaff] = await sql`SELECT id FROM staff WHERE id = ${staff_id} AND school_id = ${schoolId}`;

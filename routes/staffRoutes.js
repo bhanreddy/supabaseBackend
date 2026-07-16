@@ -367,6 +367,15 @@ router.get('/:id', requirePermission('staff.view'), asyncHandler(async (req, res
       sd.name as designation, sd.id as designation_id,
       ss.name as status, ss.id as status_id,
       u.id as user_id, u.account_status,
+      (SELECT pc.contact_value FROM person_contacts pc
+       WHERE pc.person_id = p.id AND pc.contact_type = 'email'
+         AND pc.is_primary = true AND pc.deleted_at IS NULL LIMIT 1) as email,
+      (SELECT pc.contact_value FROM person_contacts pc
+       WHERE pc.person_id = p.id AND pc.contact_type = 'phone'
+         AND pc.is_primary = true AND pc.deleted_at IS NULL LIMIT 1) as phone,
+      (SELECT pc.contact_value FROM person_contacts pc
+       WHERE pc.person_id = p.id AND pc.contact_type = 'address'
+         AND pc.is_primary = true AND pc.deleted_at IS NULL LIMIT 1) as address,
       (SELECT json_agg(json_build_object('type', pc.contact_type, 'value', pc.contact_value, 'is_primary', pc.is_primary))
        FROM person_contacts pc WHERE pc.person_id = p.id AND pc.deleted_at IS NULL) as contacts
     FROM staff st

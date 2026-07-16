@@ -15,6 +15,14 @@ const optional = (key, defaultValue = undefined) => {
     return value;
 };
 
+const boundedNumber = (key, value, low, high) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < low || parsed > high) {
+        throw new Error(`❌ ${key} must be a number between ${low} and ${high}`);
+    }
+    return parsed;
+};
+
 const parseCsv = (value) =>
     String(value)
         .split(',')
@@ -23,6 +31,25 @@ const parseCsv = (value) =>
 
 const nodeEnv = required('NODE_ENV', 'development');
 const isProduction = nodeEnv === 'production';
+
+/**
+ * pg-boss needs a SESSION-mode connection (LISTEN/NOTIFY, advisory locks,
+ * long-lived workers). The Supabase TRANSACTION pooler (port 6543) drops these,
+ * causing "Connection terminated unexpectedly". The session pooler is the same
+ * host on port 5432, so derive it when DATABASE_URL_DIRECT isn't set explicitly.
+ */
+const deriveSessionPoolerUrl = (url) => {
+    try {
+        const u = new URL(url);
+        if (u.hostname.includes('pooler.supabase.com') && u.port === '6543') {
+            u.port = '5432';
+            return u.toString();
+        }
+        return url;
+    } catch {
+        return url;
+    }
+};
 
 const config = {
     port: Number(required('PORT', 3000)),
@@ -76,6 +103,13 @@ const config = {
         apiMax: Number(optional('RATE_LIMIT_API_MAX', isProduction ? '2000' : '10000')),
         apiWindowMs: Number(optional('RATE_LIMIT_API_WINDOW_MS', String(15 * 60 * 1000))),
     },
+    transportJobs: {
+        enabled: optional('TRANSPORT_JOBS_ENABLED', 'true') !== 'false',
+        databaseUrl: optional('DATABASE_URL_DIRECT') || deriveSessionPoolerUrl(required('DATABASE_URL')),
+        historyRetentionDays: boundedNumber('TRANSPORT_HISTORY_RETENTION_DAYS', optional('TRANSPORT_HISTORY_RETENTION_DAYS', '60'), 30, 90),
+        cron: optional('TRANSPORT_MAINTENANCE_CRON', '30 2 * * *'),
+        timezone: optional('TRANSPORT_MAINTENANCE_TIMEZONE', 'Asia/Kolkata'),
+    },
 };
 
 Object.freeze(config);
@@ -84,6 +118,7 @@ Object.freeze(config.cors);
 Object.freeze(config.firebase);
 Object.freeze(config.auth);
 Object.freeze(config.rateLimit);
+Object.freeze(config.transportJobs);
 Object.freeze(config.paperforge);
 
 /**

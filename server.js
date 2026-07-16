@@ -9,7 +9,7 @@ import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
-import { aiLimiter, notifyLimiter, transportLocationLimiter, apiLimiter } from './middleware/rateLimiter.js';
+import { aiLimiter, authLimiter, notifyLimiter, transportLocationLimiter, apiLimiter } from './middleware/rateLimiter.js';
 import config from './config/env.js';
 import logger from './utils/logger.js';
 // Accept self-signed certificates in local development
@@ -18,18 +18,32 @@ if (!config.isProduction) {
 }
 import { identifyUser } from './middleware/auth.js';
 import { resolveActiveContext } from './middleware/activeContext.js';
+import { resolveStaffPortalAccess } from './middleware/staffPortalAccess.js';
 import { requireSchoolId } from './middleware/schoolId.js';
 import { auditLogger } from './middleware/audit.js';
 import { errorHandler } from './utils/asyncHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import sql from './db.js';
 import { startSupportNotificationOutboxWorker, stopSupportNotificationOutboxWorker } from './services/supportNotificationOutboxService.js';
+import { startTransportJobs, stopTransportJobs, isTransportJobsReady } from './services/transportJobService.js';
 
 const app = express();
 const port = config.port;
 
 // Lightweight liveness probe — exempt from all rate limiting and auth middleware
 app.get('/api/v1/ping', (req, res) => res.json({ ok: true }));
+app.get('/api/v1/healthz', (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
+app.get('/api/v1/readyz', async (_req, res) => {
+    try {
+        await sql`SELECT 1`;
+        if (!isTransportJobsReady()) {
+            return res.status(503).json({ ok: false, database: 'connected', transport_jobs: 'starting' });
+        }
+        return res.json({ ok: true, database: 'connected', transport_jobs: 'ready' });
+    } catch {
+        return res.status(503).json({ ok: false, database: 'unavailable' });
+    }
+});
 
 // Security Middleware
 // Chain is: client → Cloudflare Worker (sets X-Forwarded-For = CF-Connecting-IP)
@@ -48,6 +62,7 @@ app.disable('x-powered-by');
 // Stricter rate limits for high-cost paths (run before the global /api limiter)
 // Limiters are defined in middleware/rateLimiter.js with JWT-aware key generation.
 app.use('/api/v1/ai', aiLimiter);
+app.use('/api/v1/auth', authLimiter);
 app.use('/api/v1/admin/notifications', notifyLimiter);
 app.use((req, res, next) => {
     if (req.method === 'POST' && (
@@ -59,7 +74,7 @@ app.use((req, res, next) => {
     next();
 });
 app.use((req, res, next) => {
-    if (req.method === 'POST' && /^\/api\/v1\/transport\/buses\/[^/]+\/location\/?$/i.test(req.path)) {
+    if (req.method === 'POST' && /^\/api\/v1\/transport\/buses\/[^/]+\/locations?(?:\/batch)?\/?$/i.test(req.path)) {
         return transportLocationLimiter(req, res, next);
     }
     next();
@@ -139,6 +154,8 @@ app.use(cors({
         'x-device-id',
         'X-Active-Context',
         'x-active-context',
+        'X-Staff-Portal-Id',
+        'x-staff-portal-id',
     ],
     credentials: true,
 }));
@@ -151,6 +168,7 @@ app.use(express.json({ limit: config.bodyLimit }));
 // Auth & Audit Middleware (Global)
 app.use(identifyUser);
 app.use(resolveActiveContext);
+app.use(resolveStaffPortalAccess);
 app.use(requireSchoolId);
 app.use(auditLogger);
 
@@ -377,6 +395,9 @@ const c = {
 
 const server = app.listen(port);
 startSupportNotificationOutboxWorker();
+setImmediate(() => startTransportJobs().catch((error) => {
+    logger.error({ error }, 'Failed to start transport maintenance worker');
+}));
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
@@ -484,6 +505,7 @@ async function shutdown(signal) {
     try {
         logger.info({ signal }, 'Shutdown initiated');
         stopSupportNotificationOutboxWorker();
+        await stopTransportJobs();
         server.close(() => logger.info('HTTP server closed'));
         await sql.end({ timeout: 5 });
         process.exit(0);

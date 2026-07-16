@@ -5,9 +5,18 @@ import admin from '../config/firebase.js';
 import sql from '../db.js';
 import { NotificationEventConfig } from './notificationEventConfig.js';
 import { NotificationTemplateService } from './notificationTemplateService.js';
+import logger from '../utils/logger.js';
 
 // Constants
 const BATCH_SIZE = 500;
+const FCM_TIMEOUT_MS = 12_000;
+const FCM_MAX_RETRIES = 3;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const withFcmTimeout = (promise) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error('FCM dispatch timeout')), FCM_TIMEOUT_MS)),
+]);
 
 // Cache for Kill Switch (Fix 5)
 let killSwitchCache = null;
@@ -121,10 +130,10 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
 /**
  * Active transport student IDs assigned to a stop on a route (current academic year).
  */
-export async function getTransportStudentIdsAtStop(schoolId, routeId, stopId) {
+export async function getTransportStudentIdsAtStop(schoolId, routeId, stopId, db = sql) {
   if (!stopId) return [];
   try {
-    const rows = await sql`
+    const rows = await db`
       SELECT st.student_id
       FROM student_transport st
       WHERE st.stop_id = ${stopId}
@@ -134,14 +143,14 @@ export async function getTransportStudentIdsAtStop(schoolId, routeId, stopId) {
         AND st.academic_year_id = (
           SELECT id FROM academic_years
           WHERE school_id = ${schoolId}
-            AND CURRENT_DATE BETWEEN start_date AND end_date
+            AND (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN start_date AND end_date
             AND deleted_at IS NULL
           LIMIT 1
         )
     `;
     return rows.map((r) => r.student_id);
   } catch (err) {
-    console.error('[Transport Notify] student lookup error:', err);
+    logger.error({ err, event: 'transport_notification_student_lookup_failed', schoolId, routeId, stopId }, 'Transport notification recipient lookup failed');
     return [];
   }
 }
@@ -150,17 +159,17 @@ export async function getTransportStudentIdsAtStop(schoolId, routeId, stopId) {
  * Notify parents of transport-assigned students for a stop-sequence event.
  * Resolves student → parent → user_devices (school-scoped). Logs and skips missing tokens.
  */
-export async function sendTransportNotification(studentIds, eventKey, templateVars, schoolId) {
+export async function sendTransportNotification(studentIds, eventKey, templateVars, schoolId, db = sql) {
   if (!studentIds?.length) return;
   if (!NotificationEventConfig[eventKey]) {
-    console.error(`[Transport Notify] Unknown event key: ${eventKey}`);
+    logger.error({ event: 'transport_notification_unknown_event', eventKey, schoolId }, 'Unknown transport notification event');
     return;
   }
 
   try {
-    const parentLinks = await sql`
+    const parentLinks = await db`
       SELECT DISTINCT sp.student_id, u.id AS user_id
-      FROM unnest(${sql.array(studentIds)}::uuid[]) AS sid(student_id)
+      FROM unnest(${db.array(studentIds)}::uuid[]) AS sid(student_id)
       JOIN student_parents sp
         ON sp.student_id = sid.student_id
         AND sp.school_id = ${schoolId}
@@ -180,14 +189,14 @@ export async function sendTransportNotification(studentIds, eventKey, templateVa
 
     for (const studentId of studentIds) {
       if (!usersByStudent.has(studentId) || usersByStudent.get(studentId).size === 0) {
-        console.log(`[Transport Notify] No parent user for student ${studentId}, skipping`);
+        logger.info({ event: 'transport_notification_no_parent', schoolId, eventKey }, 'Transport notification skipped without a parent recipient');
       }
     }
 
     const allUserIds = [...new Set(parentLinks.map((r) => r.user_id))];
     if (allUserIds.length === 0) return;
 
-    const devices = await sql`
+    const devices = await db`
       SELECT user_id
       FROM user_devices
       WHERE user_id = ANY(${allUserIds})
@@ -201,7 +210,7 @@ export async function sendTransportNotification(studentIds, eventKey, templateVa
       if (!userIds || userIds.size === 0) continue;
       const hasToken = [...userIds].some((uid) => usersWithTokens.has(uid));
       if (!hasToken) {
-        console.log(`[Transport Notify] No token for student ${studentId}, skipping`);
+        logger.info({ event: 'transport_notification_no_token', schoolId, eventKey }, 'Transport notification skipped without an active token');
       }
     }
 
@@ -210,16 +219,23 @@ export async function sendTransportNotification(studentIds, eventKey, templateVa
 
     await sendNotificationToUsers(notifyUserIds, eventKey, templateVars, { role: 'parent' });
   } catch (err) {
-    console.error('[Transport Notify] dispatch error:', err);
+    logger.error({ err, event: 'transport_notification_dispatch_failed', schoolId, eventKey }, 'Transport notification dispatch failed');
   }
 }
 
 /**
  * Convenience: resolve students at a stop and notify their parents.
  */
-export async function notifyTransportParentsAtStop(schoolId, routeId, stopId, eventKey, stopName) {
-  const studentIds = await getTransportStudentIdsAtStop(schoolId, routeId, stopId);
-  await sendTransportNotification(studentIds, eventKey, { stopName }, schoolId);
+export async function notifyTransportParentsAtStop(
+  schoolId,
+  routeId,
+  stopId,
+  eventKey,
+  stopName,
+  db = sql,
+) {
+  const studentIds = await getTransportStudentIdsAtStop(schoolId, routeId, stopId, db);
+  await sendTransportNotification(studentIds, eventKey, { stopName }, schoolId, db);
 }
 
 /**
@@ -317,7 +333,7 @@ async function sendBatch(tokens, {
   };
 
   try {
-    const response = await admin.messaging().sendEachForMulticast(message);
+    const response = await withFcmTimeout(admin.messaging().sendEachForMulticast(message));
     const invalidTokens = [];
     const retryTokens = [];
 
@@ -344,7 +360,8 @@ async function sendBatch(tokens, {
     let retryFailure = 0;
     const tokenResults = buildTokenResults(tokens, response.responses);
 
-    // Simple Retry Logic for transient errors (1 attempt)
+    // Bounded exponential retry. This stays off transport ingest paths and
+    // stale/invalid tokens are removed after every attempt.
     if (retryTokens.length > 0) {
       const retryRes = await retrySend(retryTokens, message);
       retrySuccess = retryRes.success;
@@ -366,6 +383,7 @@ async function sendBatch(tokens, {
     };
 
   } catch (error) {
+    logger.error({ err: error, event: 'transport_fcm_dispatch_failed', type, tokenCount: tokens.length }, 'FCM batch dispatch failed');
 
     return {
       success: 0,
@@ -376,31 +394,30 @@ async function sendBatch(tokens, {
 }
 
 /**
- * Retry helper for transient errors (recursion or loop could be added for MAX_RETRIES)
- * Currently implementing 1-hop retry for simplicity and safety.
+ * Retry helper with timeout and exponential backoff. It returns per-token
+ * results so invalid tokens remain eligible for the same cleanup path.
  */
 async function retrySend(tokens, originalMessage) {
   if (tokens.length === 0) return { success: 0, failure: 0, tokenResults: [] };
-
-  // Wait 1000ms before retry
-  await new Promise((r) => setTimeout(r, 1000));
-
-  const retryMsg = { ...originalMessage, tokens };
-  try {
-    const response = await admin.messaging().sendEachForMulticast(retryMsg);
-    return {
-      success: response.successCount,
-      failure: response.failureCount,
-      tokenResults: buildTokenResults(tokens, response.responses),
-    };
-  } catch (err) {
-
-    return {
-      success: 0,
-      failure: tokens.length,
-      tokenResults: buildTokenResults(tokens, null, 'dispatch_error'),
-    };
+  let pending = tokens;
+  let success = 0;
+  let latest = new Map(tokens.map((token) => [token, { token, success: false, errorCode: 'dispatch_error' }]));
+  for (let attempt = 1; attempt <= FCM_MAX_RETRIES && pending.length; attempt += 1) {
+    await sleep(250 * (2 ** (attempt - 1)));
+    try {
+      const response = await withFcmTimeout(admin.messaging().sendEachForMulticast({ ...originalMessage, tokens: pending }));
+      const result = buildTokenResults(pending, response.responses);
+      result.forEach((entry) => latest.set(entry.token, entry));
+      success += response.successCount;
+      const invalid = result.filter((entry) => ['messaging/invalid-registration-token', 'messaging/registration-token-not-registered'].includes(entry.errorCode)).map((entry) => entry.token);
+      if (invalid.length) await removeInvalidTokens(invalid);
+      pending = result.filter((entry) => ['messaging/server-unavailable', 'messaging/internal-error'].includes(entry.errorCode)).map((entry) => entry.token);
+    } catch (err) {
+      logger.warn({ err, event: 'transport_fcm_retry_failed', attempt, tokenCount: pending.length }, 'FCM retry attempt failed');
+    }
   }
+  const tokenResults = tokens.map((token) => latest.get(token));
+  return { success, failure: tokenResults.filter((entry) => !entry.success).length, tokenResults };
 }
 
 // Helpers

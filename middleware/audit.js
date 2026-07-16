@@ -36,7 +36,8 @@ async function logAction(req, res, responseData, requestId) {
   if (req.path.includes('/auth/login') && res.statusCode === 200) return;
   if (req.path.includes('/auth/me')) return;
 
-  const user = req.user; // Set by identifyUser
+  const user = req.user; // Effective user (staff when delegated)
+  const auditUserId = req.staffPortalAccess?.admin_user_id || user?.internal_id || null;
   const action = `${req.method} ${req.path}`;
 
   // Attempt to determine entity from path
@@ -49,7 +50,14 @@ async function logAction(req, res, responseData, requestId) {
     params: req.params,
     query: req.query,
     body: { ...req.body },
-    statusCode: res.statusCode
+    statusCode: res.statusCode,
+    ...(req.staffPortalAccess ? {
+      staff_portal_access: {
+        target_staff_id: req.staffPortalAccess.target_staff_id,
+        target_user_id: req.staffPortalAccess.target_user_id,
+        target_name: req.staffPortalAccess.target_name,
+      },
+    } : {}),
   };
 
   // Basic redaction for common sensitive fields
@@ -79,7 +87,7 @@ async function logAction(req, res, responseData, requestId) {
                 user_agent, 
                 request_id
             ) VALUES (
-                ${user?.internal_id || null},
+                ${auditUserId},
                 ${action},
                 ${entity},
                 ${entityId ? String(entityId) : null},

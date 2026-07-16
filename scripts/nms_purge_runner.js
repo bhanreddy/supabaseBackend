@@ -39,6 +39,8 @@ async function main() {
     snap('user_roles',        sql`SELECT * FROM user_roles WHERE user_id=ANY(${userIds}) OR granted_by=ANY(${userIds})`),
     snap('user_devices',      sql`SELECT * FROM user_devices WHERE user_id=ANY(${userIds})`),
     snap('user_settings',     sql`SELECT * FROM user_settings WHERE user_id=ANY(${userIds})`),
+    snap('user_access_contexts', sql`SELECT * FROM user_access_contexts WHERE user_id=ANY(${userIds}) OR student_id=ANY(${studentIds}) OR staff_id=ANY(${staffIds})`),
+    snap('student_fees',      sql`SELECT * FROM student_fees WHERE student_id=ANY(${studentIds})`),
     snap('audit_logs',        sql`SELECT * FROM audit_logs WHERE user_id=ANY(${userIds})`),
     snap('admin_notifications', sql`SELECT * FROM admin_notifications WHERE user_id=ANY(${userIds})`),
     snap('access_requests',   sql`SELECT * FROM access_requests WHERE requested_by=ANY(${userIds}) OR reviewed_by=ANY(${userIds})`),
@@ -60,7 +62,16 @@ async function main() {
     counts.user_roles_granted_by_nulled =
       (await tx`UPDATE user_roles SET granted_by=NULL WHERE granted_by=ANY(${userIds})`).count;
 
+    // 1b) user_access_contexts: NO ACTION on student_id/staff_id blocks the student/staff deletes
+    // below. All implicated rows belong to our own userIds (would cascade on the users delete anyway),
+    // no context_switch_logs reference them, and user_active_sessions.active_context_id is SET NULL.
+    counts.user_access_contexts =
+      (await tx`DELETE FROM user_access_contexts WHERE user_id=ANY(${userIds}) OR student_id=ANY(${studentIds}) OR staff_id=ANY(${staffIds})`).count;
+
     // 2) RESTRICT children of students/persons
+    // student_fees is RESTRICT on student_id (fee rows are trigger-owned); no fee_transactions/
+    // fee_adjustments children exist for these accounts, so removing it first is clean.
+    counts.student_fees        = (await tx`DELETE FROM student_fees WHERE student_id=ANY(${studentIds})`).count;
     counts.student_enrollments = (await tx`DELETE FROM student_enrollments WHERE student_id=ANY(${studentIds})`).count;
     counts.students            = (await tx`DELETE FROM students WHERE id=ANY(${studentIds})`).count;  // cascades student_* children
     // staff: delete attendance + payroll explicitly BEFORE staff so the recalc-payroll

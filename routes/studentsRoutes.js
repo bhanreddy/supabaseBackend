@@ -1407,10 +1407,26 @@ router.get('/:id/attendance', requireAuth, async (req, res) => {
     // Calculate summary
     const summary = await sql`
       SELECT 
-        COUNT(*) FILTER (WHERE da.status = 'present') as present,
-        COUNT(*) FILTER (WHERE da.status = 'absent') as absent,
-        COUNT(*) FILTER (WHERE da.status = 'late') as late,
-        COUNT(*) as total
+        COUNT(*) FILTER (WHERE da.status = 'present')::int as present,
+        COUNT(*) FILTER (WHERE da.status = 'absent')::int as absent,
+        COUNT(*) FILTER (WHERE da.status = 'late')::int as late,
+        COUNT(*) FILTER (WHERE da.status = 'half_day')::int as half_day,
+        (
+          COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+          + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+        )::float as effective_present,
+        (
+          COUNT(*) FILTER (WHERE da.status = 'absent')
+          + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+        )::float as effective_absent,
+        ROUND(
+          (
+            COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+            + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+          )::numeric / NULLIF(COUNT(*), 0) * 100,
+          1
+        )::float as attendance_percentage,
+        COUNT(*)::int as total
       FROM daily_attendance da
       JOIN student_enrollments se ON da.student_enrollment_id = se.id
       WHERE se.student_id = ${targetStudentId}

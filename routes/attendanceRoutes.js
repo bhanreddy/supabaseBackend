@@ -7,6 +7,18 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 const router = express.Router();
 import { sendNotificationToUsers } from '../services/notificationService.js';
 
+const ATTENDANCE_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+/** Resolve a YYYY-MM-DD value to the timetable weekday without timezone drift. */
+function weekdayForAttendanceDate(rawDate) {
+  const value = String(rawDate || '');
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T12:00:00.000Z`)
+    : new Date(value);
+  const index = Number.isNaN(parsed.getTime()) ? new Date().getDay() : parsed.getUTCDay();
+  return ATTENDANCE_DAYS[index];
+}
+
 /**
  * Resolve which half-day session ('morning' | 'afternoon') a mark applies to.
  * The frontend should send it explicitly; if omitted we fall back to the wall
@@ -47,7 +59,7 @@ function lunchEndTime(schoolId) {
  * Falls back to a static class-teacher assignment for either session.
  * Returns the class_section_id (uuid) or null.
  */
-async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, session }) {
+async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, session, dayOfWeek }) {
   if (session === 'afternoon') {
     const [row] = await exec`
       WITH first_after_lunch AS (
@@ -57,6 +69,7 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
         WHERE ts.academic_year_id = ${yearId}
           AND ts.school_id = ${schoolId}
           AND ts.deleted_at IS NULL
+          AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
           AND ts.start_time >= ${lunchEndTime(schoolId)}
         ORDER BY ts.class_section_id, ts.day_of_week, ts.start_time
       )
@@ -75,8 +88,9 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
         AND academic_year_id = ${yearId}
         AND period_number = 1
         AND school_id = ${schoolId}
+        AND LOWER(day_of_week::text) = ${dayOfWeek}
         AND deleted_at IS NULL
-      ORDER BY day_of_week, class_section_id
+      ORDER BY class_section_id
       LIMIT 1
     `;
     if (row) return row.id;
@@ -99,7 +113,7 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
  *   morning   → static class teacher OR period-1 subject teacher
  *   afternoon → static class teacher OR first-period-after-lunch subject teacher
  */
-async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId, session }) {
+async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId, session, dayOfWeek }) {
   if (session === 'afternoon') {
     const [row] = await exec`
       WITH first_after_lunch AS (
@@ -109,6 +123,7 @@ async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId,
         WHERE ts.class_section_id = ${classSectionId}
           AND ts.school_id = ${schoolId}
           AND ts.deleted_at IS NULL
+          AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
           AND ts.start_time >= ${lunchEndTime(schoolId)}
         ORDER BY ts.class_section_id, ts.day_of_week, ts.start_time
       )
@@ -127,7 +142,9 @@ async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId,
     UNION ALL
     SELECT 1 AS ok FROM timetable_slots ts
       WHERE ts.class_section_id = ${classSectionId} AND ts.school_id = ${schoolId}
-        AND ts.teacher_id = ${staffId} AND ts.period_number = 1 AND ts.deleted_at IS NULL
+        AND ts.teacher_id = ${staffId} AND ts.period_number = 1
+        AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
+        AND ts.deleted_at IS NULL
     LIMIT 1
   `;
   return !!row;
@@ -243,6 +260,7 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
   // day; the DB trigger derives the overall day status from both sessions.
   session = resolveSession(session);
   const sessionColumn = session === 'afternoon' ? 'afternoon_status' : 'morning_status';
+  const dayOfWeek = weekdayForAttendanceDate(date);
 
   // Resolve the teacher's staff id once (needed for detection + authorization).
   let staff = null;
@@ -255,7 +273,7 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
     const [currentYear] = await sql`SELECT id FROM academic_years WHERE now() BETWEEN start_date AND end_date AND school_id = ${req.schoolId} LIMIT 1`;
     if (staff && currentYear) {
       class_section_id = await detectClassSectionForSession(sql, {
-        staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session,
+        staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
       });
     }
   }
@@ -269,7 +287,7 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
   //    Afternoon → class teacher / first-period-after-lunch teacher.
   if (!isAdmin) {
     const authorized = staff && await isAuthorizedForSession(sql, {
-      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId, session,
+      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId, session, dayOfWeek,
     });
     if (!authorized) {
       const who = session === 'afternoon'
@@ -455,11 +473,11 @@ router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req
   }
 
   const [attendanceCheck] = await sql`
-    SELECT id
-    FROM daily_attendance
-    WHERE id = ${id}
-      AND school_id = ${req.schoolId}
-      AND deleted_at IS NULL
+    SELECT da.id
+    FROM daily_attendance da
+    WHERE da.id = ${id}
+      AND da.school_id = ${req.schoolId}
+      AND da.deleted_at IS NULL
   `;
 
   if (!attendanceCheck) {
@@ -570,9 +588,12 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   let staff;
 
   if (staff_id) {
+    if (req.staffPortalAccess && String(staff_id) !== String(req.staffPortalAccess.target_staff_id)) {
+      return res.status(403).json({ error: 'Staff portal target mismatch' });
+    }
     const isAdmin = req.user.roles.includes('admin');
     const canView = req.user.permissions.includes('attendance.view');
-    if (!isAdmin && !canView) {
+    if (!isAdmin && !canView && !req.staffPortalAccess) {
       return res.status(403).json({ error: 'Forbidden: Missing permission attendance.view' });
     }
     [staff] = await sql`SELECT id FROM staff WHERE id = ${staff_id} AND school_id = ${req.schoolId}`;
@@ -590,12 +611,15 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'No active academic year found' });
   }
 
+  const date = req.query.date || new Date().toISOString().split('T')[0];
+  const dayOfWeek = weekdayForAttendanceDate(date);
+
   // 3. Find the class section this teacher marks for the requested session.
   //    Morning → first period of the day; Afternoon → first period after lunch;
   //    fallback → static class-teacher assignment.
   const session = resolveSession(req.query.session);
   const classSectionId = await detectClassSectionForSession(sql, {
-    staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session,
+    staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
   });
 
   if (!classSectionId) {
@@ -608,7 +632,6 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   const classSection = { id: classSectionId };
 
   // 4. Load students for this class section (reusing logic)
-  const date = req.query.date || new Date().toISOString().split('T')[0];
   const students = await sql`
     SELECT 
       s.id as student_id, s.admission_no, se.roll_number,
@@ -658,6 +681,8 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
  */
 router.get('/class/:classSectionId', requirePermission('attendance.view'), asyncHandler(async (req, res) => {
   let { classSectionId } = req.params;
+  const { date = new Date().toISOString().split('T')[0] } = req.query;
+  const dayOfWeek = weekdayForAttendanceDate(date);
 
   // 1. Automatic Detection if ID is missing or literal 'undefined'/'null'
   if (!classSectionId || classSectionId === 'undefined' || classSectionId === 'null') {
@@ -672,7 +697,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
         // fallback → static class-teacher assignment.
         const session = resolveSession(req.query.session);
         classSectionId = await detectClassSectionForSession(sql, {
-          staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session,
+          staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
         }) || classSectionId;
       }
     }
@@ -681,8 +706,6 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
   if (!classSectionId || classSectionId === 'undefined' || classSectionId === 'null') {
     return res.status(400).json({ error: 'Class Section ID required (not automatically detectable for this user)' });
   }
-
-  const { date = new Date().toISOString().split('T')[0] } = req.query;
 
   // Get all students in the class with their attendance status for the date
   const students = await sql`

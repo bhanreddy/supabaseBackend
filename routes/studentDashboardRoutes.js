@@ -4,7 +4,6 @@ import sql from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { studentCacheGet, studentCacheSet, studentCacheKey } from '../utils/studentDataCache.js';
 import { requireStudentPortal, resolveStudentId } from '../utils/studentPortal.js';
 
 const router = express.Router();
@@ -92,12 +91,6 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
   }
 
   const studentId = ctx.student_id;
-  const cacheKey = studentCacheKey(studentId, schoolId, 'dashboard');
-  const cached = studentCacheGet(cacheKey);
-  if (cached) {
-    return sendSuccess(res, schoolId, cached);
-  }
-
   const dayOfWeek = DOW[new Date().getDay()];
   const classSectionId = ctx.current_enrollment?.class_section_id;
   const academicYearId = ctx.current_enrollment?.academic_year_id;
@@ -121,9 +114,25 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
             SELECT row_to_json(su)
             FROM (
               SELECT
-                COUNT(*) FILTER (WHERE da.status = 'present') AS present,
-                COUNT(*) FILTER (WHERE da.status = 'absent') AS absent,
-                COUNT(*) FILTER (WHERE da.status = 'late') AS late,
+                COUNT(*) FILTER (WHERE da.status = 'present')::int AS present,
+                COUNT(*) FILTER (WHERE da.status = 'absent')::int AS absent,
+                COUNT(*) FILTER (WHERE da.status = 'late')::int AS late,
+                COUNT(*) FILTER (WHERE da.status = 'half_day')::int AS half_day,
+                (
+                  COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+                  + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+                )::float AS effective_present,
+                (
+                  COUNT(*) FILTER (WHERE da.status = 'absent')
+                  + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+                )::float AS effective_absent,
+                ROUND(
+                  (
+                    COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+                    + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+                  )::numeric / NULLIF(COUNT(*), 0) * 100,
+                  1
+                )::float AS attendance_percentage,
                 COUNT(*)::int AS total
               FROM daily_attendance da
               JOIN student_enrollments se ON da.student_enrollment_id = se.id
@@ -135,7 +144,7 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
           (
             SELECT row_to_json(r)
             FROM (
-              SELECT da.attendance_date, da.status, da.marked_at,
+              SELECT da.attendance_date, da.status, da.morning_status, da.afternoon_status, da.marked_at,
                 c.name AS class_name, sec.name AS section_name
               FROM daily_attendance da
               JOIN student_enrollments se ON da.student_enrollment_id = se.id
@@ -207,14 +216,17 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
     profile,
     notices,
     attendance: {
-      summary: attendanceBlock?.[0]?.summary || { present: 0, absent: 0, late: 0, total: 0 },
+      summary: attendanceBlock?.[0]?.summary || {
+        present: 0, absent: 0, late: 0, half_day: 0,
+        effective_present: 0, effective_absent: 0,
+        attendance_percentage: null, total: 0,
+      },
       latest_record: attendanceBlock?.[0]?.latest_record || null,
     },
     upcoming_fee: upcomingFee?.[0] || null,
     timetable_today: Array.isArray(timetableToday) ? timetableToday : [],
   };
 
-  studentCacheSet(cacheKey, payload, 90 * 1000);
   return sendSuccess(res, schoolId, payload);
 }));
 

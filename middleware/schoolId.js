@@ -1,9 +1,8 @@
 /**
  * Middleware: requireSchoolId (formerly validateSchoolId)
- * SchoolIMS multi-tenant contract: school_id MUST be explicitly passed on every request.
- * - GET/DELETE: from req.query.school_id
- * - POST/PUT/PATCH: from req.body.school_id
- * Never infer from JWT, session, or auth context.
+ * Legacy routes accept an explicit school_id, but tenant-sensitive routes are
+ * listed below and derive it solely from the verified JWT. New multi-tenant
+ * routes must use the JWT path; query/body school_id is not authorization.
  */
 
 /**
@@ -11,6 +10,11 @@
  * never from query/body. Matches full req.path (e.g. /api/v1/settings/upi).
  */
 const JWT_SCHOOL_ID_PATHS = [
+  // Transport is an authenticated, tenant-bound domain.  A build-time client
+  // school_id is not an authorization boundary and must never select data.
+  // Keep this broad rule before the legacy transport exceptions below so every
+  // current and future transport endpoint inherits the same contract.
+  /^\/api\/v1\/transport(?:\/.*)?$/i,
   /^\/api\/v1\/settings\/upi\/?$/i,
   /^\/api\/settings\/upi\/?$/i,
   /^\/api\/v1\/school-settings\/?$/i,
@@ -27,6 +31,12 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/transport\/fee\/[^/]+\/?$/i,
   /^\/api\/v1\/transport\/student-fees\/?$/i,
   /^\/api\/v1\/transport\/collect\/?$/i,
+  // Driver live tracking: tenant identity is always JWT-derived. The Expo
+  // client's legacy school_id body field is ignored for these write paths.
+  /^\/api\/v1\/transport\/buses\/[^/]+\/locations?(?:\/batch)?\/?$/i,
+  /^\/api\/v1\/transport\/buses\/[^/]+\/heartbeat\/?$/i,
+  /^\/api\/v1\/transport\/routes\/[^/]+\/calibration(?:\/reset)?\/?$/i,
+  /^\/api\/v1\/transport\/stops\/[^/]+\/geo\/?$/i,
   /^\/api\/v1\/app\/payment-banner\/?$/i,
   /^\/api\/v1\/schools\/[^/]+\/profile\/?$/i,
   // PaperForge gateway: identity (school_id + user_id) is derived server-side

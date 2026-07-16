@@ -11,8 +11,46 @@ import {
   getTransportStudentIdsAtStop,
 } from '../services/notificationService.js';
 import { resolveStudentId } from '../utils/studentPortal.js';
+import {
+  recordArrivalCalibration,
+  finalizeTripCalibration,
+  getLegCalibrationStatus,
+} from '../services/transportCalibrationService.js';
+import { evaluateGeofence } from '../services/transportGeofenceService.js';
+import { normalizeLeg } from '../services/transportCalibrationService.js';
+import { computeLearnedEta, segKey } from '../services/transportEtaService.js';
+import {
+  evaluateRunningLate,
+  notifyBoardingStopDeparted,
+} from '../services/transportProactiveNotificationService.js';
+import {
+  ingestLocationBatch,
+  runNewestFixEffects,
+} from '../services/transportLocationIngestService.js';
+import {
+  getRouteCalibrationReview,
+  parseCalibrationLeg,
+  resetRouteCalibration,
+  updateStopGeoOverride,
+} from '../services/transportCalibrationAdminService.js';
+import logger from '../utils/logger.js';
+import { validateRequest, transportSchemas } from '../middleware/validateRequest.js';
 
 const router = express.Router();
+
+// The global tenant middleware has already derived req.schoolId from the JWT.
+// Remove client tenant selectors before any handler/service sees the payload.
+router.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    delete req.body.school_id;
+    delete req.body.schoolId;
+  }
+  if (req.query && typeof req.query === 'object') {
+    delete req.query.school_id;
+    delete req.query.schoolId;
+  }
+  next();
+});
 
 // ============================================================
 // HELPERS
@@ -31,7 +69,19 @@ const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 };
 
-const SCHOOL_COORDINATES = { latitude: 28.6139, longitude: 77.2090 };
+/** Notify a stop's parents when the bus is within this straight-line distance. */
+const APPROACH_RADIUS_KM = 0.8;
+/** A GPS fix older than this is presented as stale to tracking clients. */
+const LOCATION_FRESH_SECONDS = 120;
+
+/** Calendar grouping is a school operation, not the server's UTC date. */
+const kolkataDate = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+};
 
 /**
  * Resolve staff_id from authenticated user
@@ -120,6 +170,72 @@ const seedTripStopStatuses = async (schoolId, tripId, routeId, tripDirection) =>
   return sequence;
 };
 
+/**
+ * GPS-proximity "bus approaching" push. Runs off the location-ingest path
+ * (fire-and-forget): when the bus is within APPROACH_RADIUS_KM of the next
+ * pending stop, notify that stop's parents. approach_notified_at is claimed
+ * atomically so the driver-checkpoint notify path can't double-send.
+ */
+const notifyApproachingStop = async (schoolId, busId, latitude, longitude, db = sql) => {
+  try {
+    const [trip] = await db`
+      SELECT t.id, t.route_id FROM trips t
+      JOIN route_leg_calibration cal
+        ON cal.school_id = ${schoolId}
+       AND cal.route_id = t.route_id
+       AND cal.trip_direction = CASE
+         WHEN t.trip_direction IN ('afternoon', 'evening') THEN 'evening'
+         ELSE 'morning'
+       END
+       AND cal.is_calibrated = true
+      WHERE t.bus_id = ${busId}
+        AND t.school_id = ${schoolId}
+        AND t.status IN ('active', 'in_progress')
+      ORDER BY t.created_at DESC
+      LIMIT 1
+    `;
+    if (!trip) return;
+
+    const [nextStop] = await db`
+      SELECT tss.id, tss.stop_id, ts.name, ts.latitude, ts.longitude
+      FROM trip_stop_status tss
+      JOIN transport_stops ts ON ts.id = tss.stop_id AND ts.school_id = ${schoolId}
+      WHERE tss.trip_id = ${trip.id}
+        AND tss.school_id = ${schoolId}
+        AND tss.status = 'pending'
+      ORDER BY tss.stop_order ASC
+      LIMIT 1
+    `;
+    if (!nextStop || nextStop.latitude == null || nextStop.longitude == null) return;
+
+    const distKm = calculateDistanceKm(
+      Number(latitude), Number(longitude),
+      Number(nextStop.latitude), Number(nextStop.longitude),
+    );
+    if (distKm > APPROACH_RADIUS_KM) return;
+
+    const [claimed] = await db`
+      UPDATE trip_stop_status SET approach_notified_at = NOW()
+      WHERE id = ${nextStop.id}
+        AND school_id = ${schoolId}
+        AND approach_notified_at IS NULL
+      RETURNING id
+    `;
+    if (!claimed) return;
+
+    const studentIds = await getTransportStudentIdsAtStop(schoolId, trip.route_id, nextStop.stop_id, db);
+    await sendTransportNotification(
+      studentIds,
+      'TRANSPORT_BUS_APPROACHING',
+      { stopName: nextStop.name },
+      schoolId,
+      db,
+    );
+  } catch (err) {
+    logger.error({ err, event: 'transport_approach_notification_failed', schoolId, busId }, 'Transport approach notification failed');
+  }
+};
+
 /** All buses assigned to a driver (same driver may operate multiple buses). */
 const getDriverBuses = async (schoolId, staffId) => sql`
   SELECT id, bus_no, registration_no, capacity
@@ -130,6 +246,45 @@ const getDriverBuses = async (schoolId, staffId) => sql`
     AND school_id = ${schoolId}
   ORDER BY bus_no
 `;
+
+/** GPS writes are driver-only and must target a bus assigned to that driver. */
+const getOwnedDriverBus = async (schoolId, user, busId) => {
+  if (!user?.roles?.includes('driver')) return null;
+  const staffId = await getStaffId(user);
+  if (!staffId) return null;
+  const [bus] = await sql`
+    SELECT id, driver_id
+    FROM buses
+    WHERE id = ${busId}
+      AND school_id = ${schoolId}
+      AND driver_id = ${staffId}
+      AND is_active = true
+      AND deleted_at IS NULL
+  `;
+  return bus || null;
+};
+
+const driverOwnsRoute = async (schoolId, user, routeId) => {
+  if (!user?.roles?.includes('driver')) return false;
+  const staffId = await getStaffId(user);
+  if (!staffId) return false;
+  const [route] = await sql`
+    SELECT r.id
+    FROM transport_routes r
+    JOIN buses b ON b.id = r.bus_id
+    WHERE r.id = ${routeId}
+      AND r.school_id = ${schoolId}
+      AND r.deleted_at IS NULL
+      AND b.school_id = ${schoolId}
+      AND b.driver_id = ${staffId}
+      AND b.is_active = true
+      AND b.deleted_at IS NULL
+  `;
+  return Boolean(route);
+};
+
+const validCoordinate = (value, low, high) =>
+  Number.isFinite(Number(value)) && Number(value) >= low && Number(value) <= high;
 
 // ============================================================
 // ROUTES CRUD (Admin)
@@ -356,7 +511,7 @@ router.get('/academic-years/current', requireAuth, asyncHandler(async (req, res)
   const [ay] = await sql`
     SELECT id, code, start_date, end_date
     FROM academic_years
-    WHERE CURRENT_DATE BETWEEN start_date AND end_date
+    WHERE (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN start_date AND end_date
       AND school_id = ${req.schoolId}
       AND deleted_at IS NULL
     LIMIT 1
@@ -647,6 +802,9 @@ router.get('/driver/route/:routeId/stops', requireAuth, asyncHandler(async (req,
       AND deleted_at IS NULL
   `;
   if (!route) return res.status(404).json({ error: 'Route not found' });
+  if (!await driverOwnsRoute(req.schoolId, req.user, routeId)) {
+    return res.status(403).json({ error: 'This route is not assigned to you' });
+  }
 
   const tripDirection = resolveTripDirection(
     route.direction,
@@ -682,6 +840,25 @@ router.get('/driver/route/:routeId/stops', requireAuth, asyncHandler(async (req,
  * GET /transport/driver/my-students
  * Returns all students on the driver's assigned routes, grouped by route & stop.
  */
+/**
+ * GET /transport/driver/route/:routeId/calibration?trip_direction=
+ * Calibration status for the driver "Calibrating route" badge (Phase A).
+ */
+router.get('/driver/route/:routeId/calibration', requireAuth, asyncHandler(async (req, res) => {
+  const { routeId } = req.params;
+  const [route] = await sql`
+    SELECT id FROM transport_routes
+    WHERE id = ${routeId} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+  `;
+  if (!route) return res.status(404).json({ error: 'Route not found' });
+  if (!await driverOwnsRoute(req.schoolId, req.user, routeId)) {
+    return res.status(403).json({ error: 'This route is not assigned to you' });
+  }
+
+  const status = await getLegCalibrationStatus(req.schoolId, routeId, req.query.trip_direction);
+  return sendSuccess(res, req.schoolId, status);
+}));
+
 router.get('/driver/my-students', requireAuth, asyncHandler(async (req, res) => {
   if (!req.user?.roles?.includes('driver')) {
     return res.status(403).json({ error: 'Driver role required' });
@@ -833,7 +1010,7 @@ router.post('/trips/start', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'trip_direction is required for both-direction routes (morning or evening)' });
   }
 
-  const todayStart = new Date().toISOString().slice(0, 10);
+  const todayStart = kolkataDate();
 
   const [existingTrip] = await sql`
     SELECT id FROM trips
@@ -899,6 +1076,10 @@ router.get('/trips/:tripId/status', requireAuth, asyncHandler(async (req, res) =
     WHERE t.id = ${tripId} AND t.school_id = ${req.schoolId}
   `;
   if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const isManager = req.user.roles?.includes('admin') || req.user.permissions?.includes('transport.view');
+  if (!isManager && trip.driver_id !== await getStaffId(req.user)) {
+    return res.status(403).json({ error: 'This is not your trip' });
+  }
 
   const stops = await sql`
     SELECT
@@ -910,6 +1091,7 @@ router.get('/trips/:tripId/status', requireAuth, asyncHandler(async (req, res) =
     JOIN transport_stops ts ON tss.stop_id = ts.id
     LEFT JOIN student_transport st ON st.stop_id = ts.id AND st.is_active = true
     WHERE tss.trip_id = ${tripId}
+      AND tss.school_id = ${req.schoolId}
     GROUP BY tss.id, ts.name, ts.latitude, ts.longitude
     ORDER BY tss.stop_order ASC
   `;
@@ -936,11 +1118,15 @@ router.get('/trips/:tripId/status', requireAuth, asyncHandler(async (req, res) =
  */
 router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(async (req, res) => {
   const { tripId, stopId } = req.params;
+  // Optional GPS fix from the driver app (Phase A calibration capture).
+  const { latitude, longitude, accuracy, is_mocked } = req.body || {};
+  const arrivalSource = req.body?.source === 'geofence' ? 'geofence' : 'manual';
 
   // Validate trip is active and belongs to this driver (B2: school_id scoped)
   const staffId = await getStaffId(req.user);
   const [trip] = await sql`
-    SELECT id, driver_id, status FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}
+    SELECT id, driver_id, status, route_id, trip_direction
+    FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}
   `;
   if (!trip) return res.status(404).json({ error: 'Trip not found' });
   if (!tripStatusIsLive(trip.status)) return res.status(400).json({ error: 'Trip is not active' });
@@ -949,7 +1135,7 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
   // Get the target stop status
   const [targetStop] = await sql`
     SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_id = ${stopId}
+    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
   `;
   if (!targetStop) return res.status(404).json({ error: 'Stop not found in this trip' });
   if (targetStop.status !== 'pending') {
@@ -959,7 +1145,7 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
   // ORDER ENFORCEMENT: Check all previous stops are completed/skipped
   const incomplete = await sql`
     SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId}
+    WHERE trip_id = ${tripId} AND school_id = ${req.schoolId}
       AND stop_order < ${targetStop.stop_order}
       AND status NOT IN ('completed', 'skipped')
   `;
@@ -972,11 +1158,27 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
 
   // Mark as arrived
   const [updated] = await sql`
-    UPDATE trip_stop_status SET status = 'arrived', arrival_time = now()
+    UPDATE trip_stop_status SET status = 'arrived', arrival_time = now(), arrival_source = ${arrivalSource}
     WHERE id = ${targetStop.id}
       AND school_id = ${req.schoolId}
     RETURNING *
   `;
+
+  // Phase A calibration capture (fire-and-forget; never blocks the response)
+  setImmediate(() => recordArrivalCalibration({
+    schoolId: req.schoolId,
+    tripId,
+    routeId: trip.route_id,
+    tripDirection: trip.trip_direction,
+    stopId,
+    stopOrder: targetStop.stop_order,
+    arrivalTime: updated?.arrival_time || new Date(),
+    source: arrivalSource,
+    latitude,
+    longitude,
+    accuracy,
+    isMocked: !!is_mocked,
+  }));
 
   return sendSuccess(res, req.schoolId, { message: 'Arrived at stop', stop: updated });
 }));
@@ -997,7 +1199,8 @@ router.post('/trips/:tripId/stops/:stopId/complete', requireAuth, asyncHandler(a
   if (trip.driver_id !== staffId) return res.status(403).json({ error: 'This is not your trip' });
 
   const [targetStop] = await sql`
-    SELECT id, status FROM trip_stop_status WHERE trip_id = ${tripId} AND stop_id = ${stopId}
+    SELECT id, status FROM trip_stop_status
+    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
   `;
   if (!targetStop) return res.status(404).json({ error: 'Stop not found in this trip' });
   if (targetStop.status !== 'arrived') {
@@ -1008,8 +1211,12 @@ router.post('/trips/:tripId/stops/:stopId/complete', requireAuth, asyncHandler(a
     UPDATE trip_stop_status SET status = 'completed', departure_time = now()
     WHERE id = ${targetStop.id}
       AND school_id = ${req.schoolId}
+      AND status = 'arrived'
     RETURNING *
   `;
+  if (!updated) return res.status(409).json({ error: 'Stop was already completed' });
+
+  setImmediate(() => notifyBoardingStopDeparted(req.schoolId, tripId, stopId));
 
   return sendSuccess(res, req.schoolId, { message: 'Stop completed', stop: updated });
 }));
@@ -1030,7 +1237,8 @@ router.post('/trips/:tripId/stops/:stopId/skip', requireAuth, asyncHandler(async
   }
 
   const [targetStop] = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status WHERE trip_id = ${tripId} AND stop_id = ${stopId}
+    SELECT id, stop_order, status FROM trip_stop_status
+    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
   `;
   if (!targetStop) return res.status(404).json({ error: 'Stop not found' });
   if (targetStop.status === 'completed') return res.status(400).json({ error: 'Cannot skip a completed stop' });
@@ -1038,7 +1246,7 @@ router.post('/trips/:tripId/stops/:stopId/skip', requireAuth, asyncHandler(async
   // ORDER ENFORCEMENT
   const incomplete = await sql`
     SELECT id FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_order < ${targetStop.stop_order}
+    WHERE trip_id = ${tripId} AND school_id = ${req.schoolId} AND stop_order < ${targetStop.stop_order}
       AND status NOT IN ('completed', 'skipped')
   `;
   if (incomplete.length > 0) {
@@ -1068,11 +1276,18 @@ router.post('/trips/:tripId/end', requireAuth, asyncHandler(async (req, res) => 
   if (!tripStatusIsLive(trip.status)) return res.status(400).json({ error: 'Trip is not active' });
   if (trip.driver_id !== staffId) return res.status(403).json({ error: 'This is not your trip' });
 
-  // Mark all remaining pending/arrived stops as skipped
+  // Reached-but-not-departed stops (e.g. the final stop, where the bus parks
+  // and never crosses the exit radius) were genuinely serviced → complete them.
+  // Stops never reached stay skipped.
+  await sql`
+    UPDATE trip_stop_status SET status = 'completed', departure_time = now()
+    WHERE trip_id = ${tripId}
+      AND school_id = ${req.schoolId} AND status = 'arrived'
+  `;
   await sql`
     UPDATE trip_stop_status SET status = 'skipped', departure_time = now()
     WHERE trip_id = ${tripId}
-      AND school_id = ${req.schoolId} AND status IN ('pending', 'arrived')
+      AND school_id = ${req.schoolId} AND status = 'pending'
   `;
 
   // End trip
@@ -1082,6 +1297,9 @@ router.post('/trips/:tripId/end', requireAuth, asyncHandler(async (req, res) => 
       AND school_id = ${req.schoolId}
     RETURNING *
   `;
+
+  // Phase A: refresh the calibration gate for this route-leg
+  setImmediate(() => finalizeTripCalibration(req.schoolId, tripId));
 
   return sendSuccess(res, req.schoolId, { message: 'Trip ended', trip: ended });
 }));
@@ -1119,69 +1337,181 @@ router.get('/trips/history', requireAuth, asyncHandler(async (req, res) => {
  * POST /transport/buses/:id/location
  * Update bus location (Phase 5 Hardened)
  */
-router.post('/buses/:id/location', requireAuth, asyncHandler(async (req, res) => {
+router.post('/buses/:id/location', requireAuth,
+  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.location }),
+  asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { latitude, longitude, speed, heading, is_mocked = false } = req.body;
 
-  if (!latitude || !longitude) {
-    return res.status(400).json({ error: 'latitude and longitude are required' });
+  if (!validCoordinate(latitude, -90, 90) || !validCoordinate(longitude, -180, 180)
+      || (speed != null && (!Number.isFinite(Number(speed)) || Number(speed) < 0 || Number(speed) > 250))
+      || (heading != null && (!Number.isFinite(Number(heading)) || Number(heading) < 0 || Number(heading) >= 360))
+      || typeof is_mocked !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid location payload' });
   }
 
-  // B2: Verify bus belongs to this school
-  const [busCheck] = await sql`SELECT id FROM buses WHERE id = ${id} AND school_id = ${req.schoolId}`;
-  if (!busCheck) return res.status(404).json({ error: 'Bus not found' });
+  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
+    return res.status(403).json({ error: 'This bus is not assigned to you' });
+  }
 
-  // Rate limit (drop if < 5s apart)
-  const [lastLoc] = await sql`SELECT recorded_at FROM bus_locations WHERE bus_id = ${id}`;
-  if (lastLoc?.recorded_at) {
-    const secondsSinceLast = (new Date() - new Date(lastLoc.recorded_at)) / 1000;
-    if (secondsSinceLast < 5) {
-      return sendSuccess(res, req.schoolId, { status: 'rate_limited_ignored' });
+  const result = await ingestLocationBatch({
+    schoolId: req.schoolId,
+    busId: id,
+    fixes: [{ latitude: Number(latitude), longitude: Number(longitude), speed, heading, is_mocked, recorded_at: new Date().toISOString() }],
+  });
+  if (is_mocked) {
+    logger.warn({ event: 'transport_mocked_fix', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Mocked transport location stored only in audit history');
+  }
+  if (result.newestForEvaluation) {
+    const context = { schoolId: req.schoolId, busId: id, fix: result.newestForEvaluation };
+    setImmediate(() => runNewestFixEffects(context, {
+      db: sql, evaluateGeofence, notifyApproachingStop, evaluateRunningLate,
+    }).catch((error) => logger.error({ err: error, event: 'transport_side_effect_failed', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Transport side effect failed')));
+  }
+
+  return sendSuccess(res, req.schoolId, { status: result.realtimeUpdated ? 'accepted' : 'rate_limited_ignored', location: result.location }, 201);
+}));
+
+/** GET /transport/routes/:routeId/calibration — compact two-leg admin review. */
+router.get(
+  '/routes/:routeId/calibration',
+  requirePermission('transport.manage'),
+  validateRequest({ params: transportSchemas.routeParams }),
+  asyncHandler(async (req, res) => {
+    const review = await getRouteCalibrationReview(req.schoolId, req.params.routeId);
+    if (!review) return res.status(404).json({ error: 'Route not found' });
+    return sendSuccess(res, req.schoolId, review);
+  }),
+);
+
+/** POST /transport/routes/:routeId/calibration/reset?trip_direction=morning|evening */
+router.post(
+  '/routes/:routeId/calibration/reset',
+  requirePermission('transport.manage'),
+  validateRequest({ params: transportSchemas.routeParams, query: transportSchemas.calibrationLeg }),
+  asyncHandler(async (req, res) => {
+    const leg = parseCalibrationLeg(req.query.trip_direction);
+    if (!leg) return res.status(400).json({ error: 'trip_direction must be morning or evening' });
+
+    const result = await sql.begin((tx) => resetRouteCalibration(
+      req.schoolId,
+      req.params.routeId,
+      leg,
+      tx,
+    ));
+    if (!result) return res.status(404).json({ error: 'Route not found' });
+    return sendSuccess(res, req.schoolId, result);
+  }),
+);
+
+/** PATCH /transport/stops/:stopId/geo — explicit admin coordinate/lock override. */
+router.patch(
+  '/stops/:stopId/geo',
+  requirePermission('transport.manage'),
+  validateRequest({ params: transportSchemas.stopParams, body: transportSchemas.geoOverride }),
+  asyncHandler(async (req, res) => {
+    const leg = parseCalibrationLeg(req.body?.trip_direction);
+    if (!leg) return res.status(400).json({ error: 'trip_direction must be morning or evening' });
+
+    const hasLatitude = req.body?.latitude !== undefined;
+    const hasLongitude = req.body?.longitude !== undefined;
+    const hasLocked = req.body?.locked !== undefined;
+    if (!hasLatitude && !hasLongitude && !hasLocked) {
+      return res.status(400).json({ error: 'Provide latitude, longitude, or locked' });
     }
+
+    const latitude = hasLatitude ? Number(req.body.latitude) : undefined;
+    const longitude = hasLongitude ? Number(req.body.longitude) : undefined;
+    if (hasLatitude && (req.body.latitude === '' || req.body.latitude == null
+        || !Number.isFinite(latitude) || latitude < -90 || latitude > 90)) {
+      return res.status(400).json({ error: 'latitude must be between -90 and 90' });
+    }
+    if (hasLongitude && (req.body.longitude === '' || req.body.longitude == null
+        || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
+      return res.status(400).json({ error: 'longitude must be between -180 and 180' });
+    }
+    if (hasLocked && typeof req.body.locked !== 'boolean') {
+      return res.status(400).json({ error: 'locked must be boolean' });
+    }
+
+    const geo = await updateStopGeoOverride(
+      req.schoolId,
+      req.params.stopId,
+      leg,
+      { latitude, longitude, locked: hasLocked ? req.body.locked : undefined },
+    );
+    if (!geo) return res.status(404).json({ error: 'Learned stop coordinate not found' });
+    return sendSuccess(res, req.schoolId, geo);
+  }),
+);
+
+/**
+ * POST /transport/buses/:id/locations/batch
+ * Retry-safe offline store-and-forward ingestion. History is persisted in
+ * client-time order; only the newest eligible fix may advance live state and
+ * schedule geofence/notification work.
+ */
+router.post('/buses/:id/locations/batch', requireAuth,
+  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.locationBatch }),
+  asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
+    return res.status(403).json({ error: 'This bus is not assigned to you' });
   }
 
-  const is_suspicious = is_mocked;
-
-  // Geofence check (100m from school)
-  const distKm = calculateDistanceKm(latitude, longitude, SCHOOL_COORDINATES.latitude, SCHOOL_COORDINATES.longitude);
-  const isAtSchool = distKm <= 0.1;
-
-  if (isAtSchool) {
-
+  let result;
+  try {
+    result = await ingestLocationBatch({
+      schoolId: req.schoolId,
+      busId: id,
+      fixes: Array.isArray(req.body) ? req.body : req.body?.fixes,
+    });
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof RangeError) {
+      return res.status(400).json({ error: error.message });
+    }
+    throw error;
   }
 
-  // Upsert single realtime row
-  const [location] = await sql`
-    INSERT INTO bus_locations (school_id, bus_id, latitude, longitude, speed, heading, recorded_at, is_mocked, is_suspicious)
-    VALUES (${req.schoolId}, ${id}, ${latitude}, ${longitude}, ${speed}, ${heading}, NOW(), ${is_mocked}, ${is_suspicious})
-    ON CONFLICT (bus_id) DO UPDATE SET
-      latitude = EXCLUDED.latitude,
-      longitude = EXCLUDED.longitude,
-      speed = EXCLUDED.speed,
-      heading = EXCLUDED.heading,
-      is_mocked = EXCLUDED.is_mocked,
-      is_suspicious = EXCLUDED.is_suspicious,
-      recorded_at = NOW()
-    RETURNING *
-  `;
+  if (result.newestForEvaluation) {
+    const context = {
+      schoolId: req.schoolId,
+      busId: id,
+      fix: result.newestForEvaluation,
+    };
+    setImmediate(() => runNewestFixEffects(context, {
+      db: sql,
+      evaluateGeofence,
+      notifyApproachingStop,
+      evaluateRunningLate,
+    }).catch((error) => logger.error({ err: error, event: 'transport_side_effect_failed', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Transport batch side effect failed')));
+  }
 
-  // Trip history (async, non-blocking)
-  sql`
-    INSERT INTO bus_trip_history (school_id, bus_id, latitude, longitude, speed, is_mocked, is_suspicious)
-    VALUES (${req.schoolId}, ${id}, ${latitude}, ${longitude}, ${speed}, ${is_mocked}, ${is_suspicious})
-  `.catch((e) => {});
-
-  return sendSuccess(res, req.schoolId, { ...location, geofence_arrived: isAtSchool }, 201);
+  return sendSuccess(res, req.schoolId, {
+    accepted: result.fixes.length,
+    inserted: result.insertedCount,
+    duplicates: result.duplicateCount,
+    rejected_invalid: result.invalidCount,
+    rejected_stale: result.staleCount,
+    realtime_updated: result.realtimeUpdated,
+    location: result.location,
+  }, 201);
 }));
 
 /**
  * POST /transport/buses/:id/heartbeat
  */
-router.post('/buses/:id/heartbeat', requireAuth, asyncHandler(async (req, res) => {
+router.post('/buses/:id/heartbeat', requireAuth,
+  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.emptyBody }),
+  asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
+    return res.status(403).json({ error: 'This bus is not assigned to you' });
+  }
+  const staffId = await getStaffId(req.user);
   await sql`
     INSERT INTO driver_heartbeat (school_id, driver_id, last_ping, status)
-    VALUES (${req.schoolId}, ${id}, NOW(), 'online')
+    VALUES (${req.schoolId}, ${staffId}, NOW(), 'online')
     ON CONFLICT (driver_id) DO UPDATE SET last_ping = NOW(), status = 'online'
   `;
   return sendSuccess(res, req.schoolId, { status: 'heartbeat_acknowledged' });
@@ -1715,7 +2045,7 @@ router.get('/driver/my-trip', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Route has no bus assigned — admin must link a bus to this route' });
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kolkataDate();
   const tripDir = resolveTripDirection(
     routeAssignment.direction,
     tripDirectionParam || inferDefaultTripDirection(routeAssignment.direction),
@@ -1893,11 +2223,15 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
   }
 
   const { tripId, stopId } = req.params;
+  // Optional GPS fix from the driver app (Phase A calibration capture).
+  const { latitude, longitude, accuracy, is_mocked } = req.body || {};
+  const arrivalSource = req.body?.source === 'geofence' ? 'geofence' : 'manual';
+
   const staffId = await getStaffId(req.user);
   if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
 
   const [trip] = await sql`
-    SELECT t.id, t.route_id
+    SELECT t.id, t.route_id, t.trip_direction
     FROM trips t
     WHERE t.id = ${tripId}
       AND t.school_id = ${req.schoolId}
@@ -1932,7 +2266,7 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
 
   const [stopStatus] = await sql`
     UPDATE trip_stop_status
-    SET status = 'completed', arrival_time = NOW(), departure_time = NOW()
+    SET status = 'completed', arrival_time = NOW(), departure_time = NOW(), arrival_source = ${arrivalSource}
     WHERE trip_id = ${tripId}
       AND stop_id = ${stopId}
       AND school_id = ${req.schoolId}
@@ -1940,6 +2274,24 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
     RETURNING id, stop_id, status, arrival_time
   `;
   if (!stopStatus) return res.status(409).json({ error: 'Stop already reached or not found' });
+
+  // Phase A calibration capture (fire-and-forget; never blocks the response)
+  setImmediate(() => recordArrivalCalibration({
+    schoolId: req.schoolId,
+    tripId,
+    routeId: trip.route_id,
+    tripDirection: trip.trip_direction,
+    stopId,
+    stopOrder: targetStop.stop_order,
+    arrivalTime: stopStatus.arrival_time || new Date(),
+    source: arrivalSource,
+    latitude,
+    longitude,
+    accuracy,
+    isMocked: !!is_mocked,
+  }));
+
+  setImmediate(() => notifyBoardingStopDeparted(req.schoolId, tripId, stopId));
 
   const [nextStopRow] = await sql`
     SELECT ts.id, ts.name
@@ -1955,13 +2307,25 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
   if (nextStop) {
     const notifySchoolId = req.schoolId;
     const routeId = trip.route_id;
-    getTransportStudentIdsAtStop(notifySchoolId, routeId, nextStop.id)
-      .then((studentIds) => sendTransportNotification(
-        studentIds,
-        'TRANSPORT_BUS_APPROACHING',
-        { stopName: nextStop.name },
-        notifySchoolId,
-      ))
+    // Claim approach_notified_at so the GPS-proximity path can't double-send.
+    sql`
+      UPDATE trip_stop_status SET approach_notified_at = NOW()
+      WHERE trip_id = ${tripId}
+        AND stop_id = ${nextStop.id}
+        AND school_id = ${notifySchoolId}
+        AND approach_notified_at IS NULL
+      RETURNING id
+    `
+      .then(([claimed]) => {
+        if (!claimed) return null;
+        return getTransportStudentIdsAtStop(notifySchoolId, routeId, nextStop.id)
+          .then((studentIds) => sendTransportNotification(
+            studentIds,
+            'TRANSPORT_BUS_APPROACHING',
+            { stopName: nextStop.name },
+            notifySchoolId,
+          ));
+      })
       .catch((err) => console.error('[Transport Notify] stop reach error:', err));
   }
 
@@ -2000,6 +2364,9 @@ router.post('/driver/trip/:tripId/complete', requireAuth, asyncHandler(async (re
     WHERE id = ${tripId} AND school_id = ${req.schoolId}
     RETURNING id, status, ended_at
   `;
+
+  // Phase A: refresh the calibration gate for this route-leg
+  setImmediate(() => finalizeTripCalibration(req.schoolId, tripId));
 
   setImmediate(async () => {
     try {
@@ -2064,7 +2431,7 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
 
   const [ay] = await sql`
     SELECT id FROM academic_years
-    WHERE CURRENT_DATE BETWEEN start_date AND end_date AND school_id = ${schoolId}
+    WHERE (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN start_date AND end_date AND school_id = ${schoolId}
     LIMIT 1
   `;
 
@@ -2085,7 +2452,7 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
     return sendSuccess(res, schoolId, { assigned: false });
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kolkataDate();
   const [trip] = await sql`
     SELECT t.id, t.status, t.started_at, t.ended_at,
            p.display_name AS driver_name
@@ -2111,7 +2478,8 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
 
   if (trip) {
     stops = await sql`
-      SELECT ts.id, ts.name, ts.stop_order, tss.stop_order AS exec_order, tss.status, tss.arrival_time AS reached_at
+      SELECT ts.id, ts.name, ts.stop_order, tss.stop_order AS exec_order,
+             ts.latitude, ts.longitude, tss.status, tss.arrival_time AS reached_at
       FROM trip_stop_status tss
       JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${schoolId}
       WHERE tss.trip_id = ${trip.id}
@@ -2121,8 +2489,11 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
       ORDER BY tss.stop_order ASC
     `;
 
+    // An arrived stop is where the bus is now. Once it departs, retain the
+    // last completed stop so the timeline still reflects real trip progress.
+    const arrivedStop = stops.find((s) => s.status === 'arrived');
     const reachedStops = stops.filter((s) => s.status === 'completed');
-    currentStop = reachedStops.length > 0 ? reachedStops[reachedStops.length - 1] : null;
+    currentStop = arrivedStop || (reachedStops.length > 0 ? reachedStops[reachedStops.length - 1] : null);
 
     if (currentStop && assignment.boarding_stop_order != null) {
       const boardingExec = stops.find((s) => s.stop_order === assignment.boarding_stop_order)?.exec_order
@@ -2141,11 +2512,139 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
     assigned: true,
     route_name: assignment.route_name,
     boarding_stop: assignment.boarding_stop,
+    boarding_stop_id: assignment.stop_id,
     boarding_stop_order: assignment.boarding_stop_order,
     trip: tripUi,
     stops,
     current_stop: currentStop,
     stops_until_boarding: stopsUntilBoarding,
+  });
+}));
+
+/**
+ * GET /transport/my-bus/live
+ * Compact live-tracking payload for the student/parent bus screen — one small
+ * call per poll tick: last GPS fix + freshness + server-side ETA to the
+ * student's boarding stop + stop coordinates for the map polyline.
+ * Timeline/attendance data stays on GET /my-bus.
+ */
+router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
+  const schoolId = req.schoolId;
+
+  const studentId = await resolveStudentId(req);
+  if (!studentId) return res.status(404).json({ error: 'No student profile found' });
+
+  const [ay] = await sql`
+    SELECT id FROM academic_years
+    WHERE (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN start_date AND end_date AND school_id = ${schoolId}
+    LIMIT 1
+  `;
+
+  const [assignment] = await sql`
+    SELECT st.route_id, st.stop_id
+    FROM student_transport st
+    JOIN transport_routes r ON st.route_id = r.id AND r.school_id = ${schoolId}
+    WHERE st.student_id = ${studentId}
+      AND st.school_id = ${schoolId}
+      AND st.academic_year_id = ${ay?.id}
+      AND st.is_active = true
+    LIMIT 1
+  `;
+  if (!assignment) {
+    return sendSuccess(res, schoolId, { assigned: false, live: false });
+  }
+
+  const today = kolkataDate();
+  const [trip] = await sql`
+    SELECT t.id, t.bus_id, t.status, t.trip_direction
+    FROM trips t
+    WHERE t.route_id = ${assignment.route_id}
+      AND t.school_id = ${schoolId}
+      AND t.status IN ('active', 'in_progress')
+      AND (
+        t.trip_date = ${today}
+        OR (
+          t.trip_date IS NULL
+          AND COALESCE(t.started_at, t.created_at)::date = ${today}::date
+        )
+      )
+    ORDER BY t.created_at DESC
+    LIMIT 1
+  `;
+  if (!trip || !trip.bus_id) {
+    return sendSuccess(res, schoolId, { assigned: true, live: false });
+  }
+
+  const leg = normalizeLeg(trip.trip_direction);
+  const [locations, stopRows, segmentRows] = await Promise.all([
+    sql`
+      SELECT latitude, longitude, speed, heading, recorded_at
+      FROM bus_locations WHERE bus_id = ${trip.bus_id}
+      ORDER BY recorded_at DESC LIMIT 1
+    `,
+    sql`
+      SELECT ts.id, ts.name, ts.latitude, ts.longitude, tss.stop_order AS exec_order, tss.status
+      FROM trip_stop_status tss
+      JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${schoolId}
+      WHERE tss.trip_id = ${trip.id}
+        AND tss.school_id = ${schoolId}
+      ORDER BY tss.stop_order ASC
+    `,
+    sql`
+      SELECT from_stop_id, to_stop_id, ewma_seconds, ewvar_seconds, sample_count
+      FROM route_segment_time
+      WHERE school_id = ${schoolId} AND route_id = ${assignment.route_id} AND trip_direction = ${leg}
+    `,
+  ]);
+
+  const rawLocation = locations[0] || null;
+  const ageSeconds = rawLocation
+    ? Math.max(0, Math.round((Date.now() - new Date(rawLocation.recorded_at).getTime()) / 1000))
+    : null;
+
+  const segments = {};
+  for (const r of segmentRows) {
+    segments[segKey(r.from_stop_id, r.to_stop_id)] = {
+      ewma: Number(r.ewma_seconds),
+      ewvar: Number(r.ewvar_seconds),
+      count: r.sample_count,
+    };
+  }
+  const eta = computeLearnedEta({
+    location: rawLocation,
+    stops: stopRows,
+    boardingStopId: assignment.stop_id,
+    segments,
+  });
+
+  return sendSuccess(res, schoolId, {
+    assigned: true,
+    live: true,
+    trip: { id: trip.id, status: mapTripUiStatus(trip.status) },
+    location: rawLocation ? {
+      latitude: Number(rawLocation.latitude),
+      longitude: Number(rawLocation.longitude),
+      speed: rawLocation.speed != null ? Number(rawLocation.speed) : null,
+      heading: rawLocation.heading != null ? Number(rawLocation.heading) : null,
+      recorded_at: rawLocation.recorded_at,
+      age_seconds: ageSeconds,
+      is_fresh: ageSeconds != null && ageSeconds <= LOCATION_FRESH_SECONDS,
+    } : null,
+    eta_minutes: eta.eta_minutes,
+    eta_low_minutes: eta.eta_low_minutes,
+    eta_high_minutes: eta.eta_high_minutes,
+    eta_confidence: eta.confidence,
+    eta_source: eta.source,
+    distance_km: eta.distance_km,
+    boarding_stop_id: assignment.stop_id,
+    stops: stopRows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      latitude: s.latitude != null ? Number(s.latitude) : null,
+      longitude: s.longitude != null ? Number(s.longitude) : null,
+      exec_order: s.exec_order,
+      status: s.status,
+    })),
   });
 }));
 
@@ -2158,7 +2657,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
   `;
   if (!route) return res.status(404).json({ error: 'Route not found' });
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kolkataDate();
   const [trip] = await sql`
     SELECT t.id, t.status, t.started_at, t.ended_at, t.trip_direction,
            p.display_name AS driver_name
@@ -2217,7 +2716,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
 }));
 
 router.get('/live-today', requirePermission('transport.view'), asyncHandler(async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kolkataDate();
   const limit = Math.min(Number(req.query.limit) || 80, 200);
 
   const rows = await sql`

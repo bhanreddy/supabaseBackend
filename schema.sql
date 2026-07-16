@@ -4463,12 +4463,20 @@ CREATE TABLE IF NOT EXISTS bus_locations (
     deleted_at TIMESTAMPTZ,
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
     is_mocked boolean DEFAULT false,
-    is_suspicious boolean DEFAULT false
+    is_suspicious boolean DEFAULT false,
+    -- One live row per bus: required by the ON CONFLICT (bus_id) upsert in
+    -- POST /transport/buses/:id/location (full track lives in bus_trip_history).
+    CONSTRAINT bus_locations_bus_id_key UNIQUE (bus_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_bus_locations_school_id ON bus_locations(school_id);
 
 CREATE INDEX IF NOT EXISTS idx_bus_locations_recent ON bus_locations(bus_id, recorded_at DESC);
+
+-- Backward-compat for databases created before the single-row upsert shipped.
+DO $$ BEGIN
+  ALTER TABLE bus_locations ADD CONSTRAINT bus_locations_bus_id_key UNIQUE (bus_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
 -- 14.6 Trips (driver trip execution)
@@ -4515,8 +4523,82 @@ CREATE TABLE IF NOT EXISTS trip_stop_status (
 
 CREATE INDEX IF NOT EXISTS idx_trip_stop_status_school_id ON trip_stop_status(school_id);
 
+-- Live-tracking proximity push dedupe (see migrations/20260715_transport_live_tracking.sql)
+ALTER TABLE trip_stop_status ADD COLUMN IF NOT EXISTS approach_notified_at TIMESTAMPTZ;
+
+-- ── Live tracking v2 Phase A: calibration capture ──────────────────────────
+-- (see migrations/20260715_transport_calibration_phase_a.sql and
+--  TRANSPORT_LIVE_TRACKING_PLAN.md; 'afternoon' folds into the 'evening' leg)
+
+-- Learned geofence per (stop, leg): accuracy-weighted GPS centroid.
+CREATE TABLE IF NOT EXISTS route_stop_geo (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    route_id UUID NOT NULL REFERENCES transport_routes(id) ON DELETE CASCADE,
+    stop_id UUID NOT NULL REFERENCES transport_stops(id) ON DELETE CASCADE,
+    trip_direction TEXT NOT NULL CHECK (trip_direction IN ('morning', 'evening')),
+    latitude DECIMAL(10,8) NOT NULL,
+    longitude DECIMAL(11,8) NOT NULL,
+    sample_weight NUMERIC NOT NULL DEFAULT 0,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    radius_m NUMERIC NOT NULL DEFAULT 150,
+    last_accuracy_m NUMERIC,
+    locked BOOLEAN NOT NULL DEFAULT false,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (school_id, stop_id, trip_direction)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_stop_geo_route ON route_stop_geo(school_id, route_id, trip_direction);
+
+-- Learned travel time between consecutive stops (EWMA + EW variance).
+CREATE TABLE IF NOT EXISTS route_segment_time (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    route_id UUID NOT NULL REFERENCES transport_routes(id) ON DELETE CASCADE,
+    trip_direction TEXT NOT NULL CHECK (trip_direction IN ('morning', 'evening')),
+    from_stop_id UUID NOT NULL REFERENCES transport_stops(id) ON DELETE CASCADE,
+    to_stop_id UUID NOT NULL REFERENCES transport_stops(id) ON DELETE CASCADE,
+    ewma_seconds NUMERIC NOT NULL,
+    ewvar_seconds NUMERIC NOT NULL DEFAULT 0,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    last_seconds NUMERIC,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (school_id, route_id, trip_direction, from_stop_id, to_stop_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_segment_time_route ON route_segment_time(school_id, route_id, trip_direction);
+
+-- Graduation gate per (route, leg): flips is_calibrated after 2 clean trips.
+CREATE TABLE IF NOT EXISTS route_leg_calibration (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    route_id UUID NOT NULL REFERENCES transport_routes(id) ON DELETE CASCADE,
+    trip_direction TEXT NOT NULL CHECK (trip_direction IN ('morning', 'evening')),
+    is_calibrated BOOLEAN NOT NULL DEFAULT false,
+    stops_total INTEGER NOT NULL DEFAULT 0,
+    stops_calibrated INTEGER NOT NULL DEFAULT 0,
+    segments_total INTEGER NOT NULL DEFAULT 0,
+    segments_learned INTEGER NOT NULL DEFAULT 0,
+    clean_trip_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (school_id, route_id, trip_direction)
+);
+
+-- Provenance + geofence working state (Phase B debounce/dwell).
+ALTER TABLE trip_stop_status ADD COLUMN IF NOT EXISTS arrival_source TEXT
+    CHECK (arrival_source IN ('manual', 'geofence', 'timeout'));
+ALTER TABLE trip_stop_status ADD COLUMN IF NOT EXISTS geofence_hits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE trip_stop_status ADD COLUMN IF NOT EXISTS first_seen_in_radius TIMESTAMPTZ;
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS late_notified_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_trip_stop_trip ON trip_stop_status(trip_id);
 CREATE INDEX IF NOT EXISTS idx_trip_stop_status ON trip_stop_status(status);
+CREATE INDEX IF NOT EXISTS idx_trip_stop_status_trip_school_order_status
+  ON trip_stop_status(trip_id, school_id, stop_order, status);
+CREATE INDEX IF NOT EXISTS idx_trips_school_bus_live
+  ON trips(school_id, bus_id, created_at DESC) WHERE status IN ('active', 'in_progress');
+CREATE UNIQUE INDEX IF NOT EXISTS uq_trips_one_live_trip_per_bus
+  ON trips(school_id, bus_id) WHERE status IN ('active', 'in_progress');
 
 
 -- 14.8 RLS for trips
@@ -6160,6 +6242,7 @@ CREATE TABLE IF NOT EXISTS bus_trip_history (
   latitude double precision,
   longitude double precision,
   speed double precision,
+  heading double precision,
   is_mocked boolean DEFAULT false,
   is_suspicious boolean DEFAULT false,
   recorded_at timestamp with time zone DEFAULT now(),
@@ -6168,6 +6251,14 @@ CREATE TABLE IF NOT EXISTS bus_trip_history (
 
 CREATE INDEX IF NOT EXISTS idx_bus_trip_history_bus_id_time ON bus_trip_history (bus_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bus_trip_history_school_id ON bus_trip_history (school_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_bus_trip_history_bus_recorded_at ON bus_trip_history (bus_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_bus_trip_history_school_recorded_at ON bus_trip_history (school_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_bus_locations_school_bus_recorded
+  ON bus_locations (school_id, bus_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_route_stop_geo_school_route_leg_stop
+  ON route_stop_geo (school_id, route_id, trip_direction, stop_id);
+CREATE INDEX IF NOT EXISTS idx_route_segment_time_school_route_leg_endpoints
+  ON route_segment_time (school_id, route_id, trip_direction, from_stop_id, to_stop_id);
 
 CREATE TABLE IF NOT EXISTS debug_class_teachers (
   school_id INTEGER,

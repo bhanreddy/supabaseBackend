@@ -54,6 +54,17 @@ export const aiLimiter = rateLimit({
     message: { error: 'AI rate limit exceeded. Try again in 1 minute.' },
 });
 
+// Credential and refresh endpoints are deliberately IP-keyed: a forged JWT
+// must not create unlimited buckets before authentication has succeeded.
+export const authLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts. Try again in a minute.' },
+});
+
 // 10 notification/reminder dispatches per minute per user
 export const notifyLimiter = rateLimit({
     windowMs: 60 * 1000,

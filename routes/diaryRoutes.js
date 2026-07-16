@@ -19,6 +19,52 @@ function logDebug(msg) {
   } catch (e) {}
 }
 
+async function validateDiaryTarget(schoolId, classSectionId, subjectId) {
+  const [classSection] = await sql`
+    SELECT id
+    FROM class_sections
+    WHERE id = ${classSectionId}
+      AND school_id = ${schoolId}
+      AND deleted_at IS NULL
+  `;
+  if (!classSection) {
+    return { ok: false, status: 404, error: 'Class-section not found' };
+  }
+
+  // A null subject is intentional: it represents a class-wide diary entry.
+  if (subjectId == null) return { ok: true };
+
+  const [subject] = await sql`
+    SELECT s.id
+    FROM subjects s
+    WHERE s.id = ${subjectId}
+      AND s.school_id = ${schoolId}
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM class_subjects csub
+          WHERE csub.class_section_id = ${classSectionId}
+            AND csub.subject_id = s.id
+            AND csub.school_id = ${schoolId}
+            AND csub.deleted_at IS NULL
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM timetable_slots ts
+          WHERE ts.class_section_id = ${classSectionId}
+            AND ts.subject_id = s.id
+            AND ts.school_id = ${schoolId}
+            AND ts.deleted_at IS NULL
+        )
+      )
+  `;
+
+  if (!subject) {
+    return { ok: false, status: 400, error: 'Subject is not assigned to this class-section' };
+  }
+  return { ok: true };
+}
+
 /**
  * GET /diary
  * DR1: All branches now filter by school_id via diary_entries.school_id
@@ -273,6 +319,10 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     return res.status(400).json({ error: 'class_section_id, content, and entry_date are required' });
   }
 
+  const normalizedSubjectId = subject_id || null;
+  const target = await validateDiaryTarget(schoolId, class_section_id, normalizedSubjectId);
+  if (!target.ok) return res.status(target.status).json({ error: target.error });
+
   const resolved = await resolveDiaryTextFields({ title, content, input_language });
   const { title: resolvedTitle, title_te, content: resolvedContent, content_te } = resolved;
 
@@ -281,7 +331,7 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
   try {
     const result = await sql`
       INSERT INTO diary_entries (school_id, class_section_id, subject_id, entry_date, title, title_te, content, content_te, homework_due_date, attachments, created_by)
-      VALUES (${schoolId}, ${class_section_id}, ${subject_id}, ${entry_date}, ${resolvedTitle}, ${title_te}, ${resolvedContent}, ${content_te},
+      VALUES (${schoolId}, ${class_section_id}, ${normalizedSubjectId}, ${entry_date}, ${resolvedTitle}, ${title_te}, ${resolvedContent}, ${content_te},
               ${homework_due_date || null}, ${attachments ? JSON.stringify(attachments) : null}, ${req.user.internal_id})
       ON CONFLICT (school_id, class_section_id, subject_id, entry_date, created_by)
       DO UPDATE SET
@@ -291,6 +341,7 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
         content_te = EXCLUDED.content_te,
         homework_due_date = EXCLUDED.homework_due_date,
         attachments = EXCLUDED.attachments,
+        deleted_at = NULL,
         updated_at = now()
       RETURNING *, (xmax = 0) AS _was_insert
     `;
@@ -359,13 +410,27 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
 
   // DR3: Scoped ownership check
   const [existing] = await sql`
-    SELECT created_by FROM diary_entries WHERE id = ${id} AND school_id = ${schoolId}
+    SELECT created_by, class_section_id
+    FROM diary_entries
+    WHERE id = ${id} AND school_id = ${schoolId} AND deleted_at IS NULL
   `;
   if (!existing) return res.status(404).json({ error: 'Diary entry not found' });
 
-  const isAdmin = req.user?.roles.includes('admin');
-  if (!isAdmin && existing.created_by !== req.user.internal_id) {
+  const roles = Array.isArray(req.user?.roles) ? req.user.roles : [];
+  const permissions = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+  const canManageDiary = roles.includes('admin') || permissions.includes('diary.manage');
+  if (!canManageDiary && existing.created_by !== req.user.internal_id) {
     return res.status(403).json({ error: 'Can only update your own entries' });
+  }
+
+  const hasSubjectId = Object.prototype.hasOwnProperty.call(req.body, 'subject_id');
+  if (hasSubjectId) {
+    const target = await validateDiaryTarget(schoolId, existing.class_section_id, subject_id || null);
+    if (!target.ok) return res.status(target.status).json({ error: target.error });
+  }
+
+  if (content !== undefined && !String(content).trim()) {
+    return res.status(400).json({ error: 'content cannot be empty' });
   }
 
   logDebug(`[Diary] Updating entry: id=${id}, subject=${subject_id}`);
@@ -374,6 +439,13 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
   let sql_content = sql`content`;
   let sql_title_te = sql`title_te`;
   let sql_content_te = sql`content_te`;
+  const sql_subject = hasSubjectId ? sql`${subject_id || null}` : sql`subject_id`;
+  const hasHomeworkDueDate = Object.prototype.hasOwnProperty.call(req.body, 'homework_due_date');
+  const sql_homework_due_date = hasHomeworkDueDate ? sql`${homework_due_date || null}` : sql`homework_due_date`;
+  const hasAttachments = Object.prototype.hasOwnProperty.call(req.body, 'attachments');
+  const sql_attachments = hasAttachments
+    ? sql`${attachments ? JSON.stringify(attachments) : null}`
+    : sql`attachments`;
 
   if (title !== undefined || content !== undefined) {
     const resolved = await resolveDiaryTextFields({
@@ -396,13 +468,13 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
     const result = await sql`
       UPDATE diary_entries
       SET
-        subject_id = COALESCE(${subject_id ?? null}, subject_id),
+        subject_id = ${sql_subject},
         title = ${sql_title},
         content = ${sql_content},
         title_te = ${sql_title_te},
         content_te = ${sql_content_te},
-        homework_due_date = COALESCE(${homework_due_date || null}, homework_due_date),
-        attachments = COALESCE(${attachments ? JSON.stringify(attachments) : null}, attachments),
+        homework_due_date = ${sql_homework_due_date},
+        attachments = ${sql_attachments},
         updated_at = now()
       WHERE id = ${id}
       AND school_id = ${req.schoolId}

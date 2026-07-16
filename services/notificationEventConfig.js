@@ -279,6 +279,28 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['stopName']
     },
 
+    TRANSPORT_BUS_RUNNING_LATE: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: '🚌 Bus Delay',
+        titleTemplate_te: '🚌 బస్ ఆలస్యం',
+        bodyTemplate: '🚌 Bus running ~{{delayMinutes}} min late today.',
+        bodyTemplate_te: '🚌 ఈ రోజు బస్ సుమారు {{delayMinutes}} నిమిషాలు ఆలస్యంగా నడుస్తోంది.',
+        deepLink: '/Screen/busTracker',
+        requiredParams: ['delayMinutes']
+    },
+
+    TRANSPORT_BUS_DEPARTED: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: '🚌 Bus Departed',
+        titleTemplate_te: '🚌 బస్ బయలుదేరింది',
+        bodyTemplate: '🚌 Bus departed {{stopName}} — {{studentName}} {{boardingStatus}}.',
+        bodyTemplate_te: '🚌 బస్ {{stopName}} నుండి బయలుదేరింది — {{studentName}} {{boardingStatus_te}}.',
+        deepLink: '/Screen/busTracker',
+        requiredParams: ['stopName', 'studentName', 'boardingStatus', 'boardingStatus_te']
+    },
+
     TRANSPORT_TRIP_CANCELLED: {
         channelId: 'emergency',
         sound: 'emergency.wav',
