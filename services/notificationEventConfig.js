@@ -135,6 +135,36 @@ export const NotificationEventConfig = Object.freeze({
         deepLink: '/Screen/fees',
         requiredParams: ['message']
     },
+    FEE_PAYMENT_DELETION_REQUESTED: {
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
+        titleTemplate: '🗑️ Payment Deletion Request',
+        bodyTemplate: '🧾 {{message}}',
+        titleTemplate_te: '🗑️ చెల్లింపు తొలగింపు అభ్యర్థన',
+        bodyTemplate_te: '🧾 {{message}}',
+        deepLink: '/admin/fee-approvals',
+        requiredParams: ['message']
+    },
+    FEE_PAYMENT_DELETION_APPROVED: {
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
+        titleTemplate: '✅ Payment Deletion Approved',
+        bodyTemplate: '🧾 {{message}}',
+        titleTemplate_te: '✅ చెల్లింపు తొలగింపు ఆమోదించబడింది',
+        bodyTemplate_te: '🧾 {{message}}',
+        deepLink: '/accounts/receipts',
+        requiredParams: ['message']
+    },
+    FEE_PAYMENT_DELETION_REJECTED: {
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
+        titleTemplate: '❌ Payment Deletion Rejected',
+        bodyTemplate: '🧾 {{message}}',
+        titleTemplate_te: '❌ చెల్లింపు తొలగింపు తిరస్కరించబడింది',
+        bodyTemplate_te: '🧾 {{message}}',
+        deepLink: '/accounts/receipts',
+        requiredParams: ['message']
+    },
     FEE_ADJUSTED: {   // Fee adjustment/waiver applied
         channelId: 'fee_reminder',
         sound: 'fee_reminder.wav',
@@ -313,12 +343,26 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     STUDENT_BUS_PRESENT: {
-        channelId: 'notification_default',
-        sound: 'Bus_Present.wav',
+        // Dedicated channel so Android plays bus_present.wav (the channel's sound
+        // is authoritative on Android, not the per-message sound). Filename must
+        // be lowercase to match the android raw resource.
+        channelId: 'bus_present',
+        sound: 'bus_present.wav',
         titleTemplate: '🚌 Bus Boarding Update',
         titleTemplate_te: '🚌 బస్ బోర్డింగ్ అప్‌డేట్',
         bodyTemplate: '✅ {{studentName}} has boarded the bus at {{stopName}}.',
         bodyTemplate_te: '✅ {{studentName}} {{stopName}} వద్ద బస్సు ఎక్కారు.',
+        deepLink: '/Screen/busTracker',
+        requiredParams: ['studentName', 'stopName']
+    },
+    STUDENT_BUS_ABSENT: {
+        // Reuses the existing absent-alert channel/sound.
+        channelId: 'attendance_absent_alert',
+        sound: 'attendance_absent_alert.wav',
+        titleTemplate: '🚌 Bus Attendance',
+        titleTemplate_te: '🚌 బస్ హాజరు',
+        bodyTemplate: '❌ {{studentName}} was marked absent for the bus at {{stopName}}.',
+        bodyTemplate_te: '❌ {{studentName}} {{stopName}} వద్ద బస్సుకు గైర్హాజరుగా గుర్తించబడ్డారు.',
         deepLink: '/Screen/busTracker',
         requiredParams: ['studentName', 'stopName']
     },

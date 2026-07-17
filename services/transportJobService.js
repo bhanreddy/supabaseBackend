@@ -12,8 +12,26 @@ export const isTransportJobsReady = () => !config.transportJobs.enabled || trans
 
 export async function startTransportJobs() {
   if (!config.transportJobs.enabled || boss) return;
-  boss = new PgBoss({ connectionString: config.transportJobs.databaseUrl, schema: 'pgboss' });
-  boss.on('error', (error) => logger.error({ error }, 'pg-boss transport worker error'));
+  boss = new PgBoss({
+    connectionString: config.transportJobs.databaseUrl,
+    schema: 'pgboss',
+    application_name: 'schoolims-pgboss',
+    // Small pool: the Supabase session pooler has limited slots and the nightly
+    // job needs only a couple of connections.
+    max: 3,
+    // TCP keepalive so a connection the pooler/NAT silently drops is detected and
+    // recycled promptly, instead of surfacing minutes later as read ETIMEDOUT on
+    // pg-boss's idle long-poll workers.
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    connectionTimeoutMillis: 30_000,
+  });
+  // Log a concise summary — pg errors carry the whole pg client object, which
+  // otherwise floods the logs with thousands of lines per transient blip.
+  boss.on('error', (error) => logger.error(
+    { code: error?.code, message: error?.message, queue: error?.queue },
+    'pg-boss transport worker error',
+  ));
   await boss.start();
 
   await boss.work(TRANSPORT_MAINTENANCE_JOB, async () => {

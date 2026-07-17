@@ -861,6 +861,8 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             JOIN student_fees sf ON ft.student_fee_id = sf.id
             WHERE ft.paid_at::DATE = ${targetDate}::DATE
               AND sf.school_id = ${schoolId}
+              AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+              AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
         `,
         sql`
             SELECT COALESCE(SUM(ft.amount), 0) as total
@@ -868,12 +870,16 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             JOIN student_fees sf ON ft.student_fee_id = sf.id
             WHERE date_trunc('month', ft.paid_at) = date_trunc('month', ${targetDate}::DATE)
               AND sf.school_id = ${schoolId}
+              AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+              AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
         `,
         sql`
             SELECT COALESCE(SUM(ft.amount), 0) as total
             FROM fee_transactions ft
             JOIN student_fees sf ON ft.student_fee_id = sf.id
             WHERE sf.school_id = ${schoolId}
+              AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+              AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
         `,
         sql`
             SELECT COALESCE(SUM(sf.amount_due - sf.amount_paid - sf.discount), 0) as total
@@ -906,6 +912,8 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             JOIN persons p ON s.person_id = p.id
             WHERE s.school_id = ${schoolId}
               AND t.paid_at::DATE = ${targetDate}::DATE
+              AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+              AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
             ORDER BY t.paid_at DESC
             LIMIT 1000
         `,

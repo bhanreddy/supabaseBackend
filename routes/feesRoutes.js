@@ -25,6 +25,10 @@ import {
   isPartialFeePaymentEnabled,
 } from '../services/feePaymentService.js';
 import { createApprovalRequest } from '../services/approvalService.js';
+import {
+  requestFeePaymentDeletion,
+  executeApprovedFeePaymentDeletion,
+} from '../services/feePaymentDeletionService.js';
 
 const router = express.Router();
 
@@ -909,6 +913,54 @@ router.post('/transactions', requirePermission('fees.collect'), asyncHandler(asy
 }));
 
 /**
+ * Request admin approval to delete a successfully posted payment. Only the
+ * accountant who collected the payment may request or execute its deletion.
+ */
+router.post(
+  '/transactions/:id/deletion-request',
+  requireRole('accounts'),
+  requirePermission('fees.collect'),
+  asyncHandler(async (req, res) => {
+    try {
+      const request = await requestFeePaymentDeletion({
+        transactionId: req.params.id,
+        reason: req.body?.reason,
+        schoolId: req.schoolId,
+        requestedBy: req.user.internal_id,
+      });
+      return sendSuccess(res, req.schoolId, {
+        message: 'Payment deletion request sent to admin',
+        approval_request: request,
+      }, 202);
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
+  })
+);
+
+/** Consume an approved one-time deletion authorization by posting reversals. */
+router.post(
+  '/transactions/:id/delete-approved',
+  requireRole('accounts'),
+  requirePermission('fees.collect'),
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await executeApprovedFeePaymentDeletion({
+        transactionId: req.params.id,
+        approvalRequestId: req.body?.approval_request_id,
+        schoolId: req.schoolId,
+        accountantId: req.user.internal_id,
+      });
+      return sendSuccess(res, req.schoolId, result);
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
+  })
+);
+
+/**
  * All assigned student_fees with per-type balances (for receipt printing).
  */
 async function getStudentFeeDuesForReceipt(studentId, schoolId, academicYearCode = null) {
@@ -1428,6 +1480,11 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
       t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
       t.received_by as received_by_id,
       t.student_fee_id,
+      deletion_request.id as deletion_approval_id,
+      CASE
+        WHEN reversal.id IS NOT NULL THEN 'DELETED'
+        ELSE deletion_request.status
+      END as deletion_status,
       sf.student_id,
       s.admission_no, p.display_name as student_name,
       enroll.class_name, enroll.section_name,
@@ -1448,6 +1505,27 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
     LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
     LEFT JOIN users u ON t.received_by = u.id
     LEFT JOIN persons receiver ON u.person_id = receiver.id
+    LEFT JOIN LATERAL (
+      SELECT ar.id, ar.status
+      FROM approval_requests ar
+      WHERE ar.school_id = ${req.schoolId}
+        AND ar.type = 'fee_payment_deletion'
+        AND ar.requested_by = t.received_by
+        AND ar.payload->>'scope_key' = CASE
+          WHEN t.receipt_group IS NOT NULL THEN 'receipt_group:' || t.receipt_group::text
+          ELSE 'transaction:' || t.id::text
+        END
+      ORDER BY ar.created_at DESC
+      LIMIT 1
+    ) deletion_request ON true
+    LEFT JOIN LATERAL (
+      SELECT rev.id
+      FROM fee_transactions rev
+      WHERE rev.school_id = ${req.schoolId}
+        AND rev.refund_of = t.id
+        AND rev.transaction_ref LIKE 'VOID-%'
+      LIMIT 1
+    ) reversal ON true
     LEFT JOIN LATERAL (
       SELECT c.name as class_name, sec.name as section_name
       FROM student_enrollments se
@@ -1484,6 +1562,7 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
       LIMIT 1
     ) father_info ON true
     WHERE t.school_id = ${req.schoolId}
+      AND t.refund_of IS NULL
       ${from_date ? sql`AND t.paid_at >= ${from_date}` : sql``}
       ${to_date ? sql`AND t.paid_at <= ${to_date}` : sql``}
       ${payment_method ? sql`AND t.payment_method = ${payment_method}` : sql``}
@@ -1511,6 +1590,11 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
       t.received_by as received_by_id,
       t.student_fee_id,
+      deletion_request.id as deletion_approval_id,
+      CASE
+        WHEN reversal.id IS NOT NULL THEN 'DELETED'
+        ELSE deletion_request.status
+      END as deletion_status,
       sf.student_id,
       s.admission_no, p.display_name as student_name,
       enroll.class_name, enroll.section_name,
@@ -1531,6 +1615,27 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
     LEFT JOIN users u ON t.received_by = u.id
     LEFT JOIN persons receiver ON u.person_id = receiver.id
+    LEFT JOIN LATERAL (
+      SELECT ar.id, ar.status
+      FROM approval_requests ar
+      WHERE ar.school_id = ${req.schoolId}
+        AND ar.type = 'fee_payment_deletion'
+        AND ar.requested_by = t.received_by
+        AND ar.payload->>'scope_key' = CASE
+          WHEN t.receipt_group IS NOT NULL THEN 'receipt_group:' || t.receipt_group::text
+          ELSE 'transaction:' || t.id::text
+        END
+      ORDER BY ar.created_at DESC
+      LIMIT 1
+    ) deletion_request ON true
+    LEFT JOIN LATERAL (
+      SELECT rev.id
+      FROM fee_transactions rev
+      WHERE rev.school_id = ${req.schoolId}
+        AND rev.refund_of = t.id
+        AND rev.transaction_ref LIKE 'VOID-%'
+      LIMIT 1
+    ) reversal ON true
     LEFT JOIN LATERAL (
       SELECT c.name as class_name, sec.name as section_name
       FROM student_enrollments se
@@ -1568,6 +1673,7 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     ) father_info ON true
     WHERE t.school_id = ${req.schoolId}
       AND t.received_by = ${collectorId}
+      AND t.refund_of IS NULL
       AND t.paid_at >= CURRENT_DATE
       AND t.paid_at < CURRENT_DATE + INTERVAL '1 day'
     ORDER BY t.paid_at DESC
@@ -1575,26 +1681,36 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
 
   const byPaymentMethod = await sql`
     SELECT
-      payment_method,
+      t.payment_method,
       COUNT(*)::int as transaction_count,
-      COALESCE(SUM(amount), 0) as total_amount
-    FROM fee_transactions
-    WHERE school_id = ${req.schoolId}
-      AND received_by = ${collectorId}
-      AND paid_at >= CURRENT_DATE
-      AND paid_at < CURRENT_DATE + INTERVAL '1 day'
-    GROUP BY payment_method
+      COALESCE(SUM(t.amount), 0) as total_amount
+    FROM fee_transactions t
+    WHERE t.school_id = ${req.schoolId}
+      AND t.received_by = ${collectorId}
+      AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+      AND NOT EXISTS (
+        SELECT 1 FROM fee_transactions rev
+        WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%'
+      )
+      AND t.paid_at >= CURRENT_DATE
+      AND t.paid_at < CURRENT_DATE + INTERVAL '1 day'
+    GROUP BY t.payment_method
   `;
 
   const [totals] = await sql`
     SELECT
       COUNT(*)::int as total_transactions,
       COALESCE(SUM(amount), 0) as total_collected
-    FROM fee_transactions
-    WHERE school_id = ${req.schoolId}
-      AND received_by = ${collectorId}
-      AND paid_at >= CURRENT_DATE
-      AND paid_at < CURRENT_DATE + INTERVAL '1 day'
+    FROM fee_transactions t
+    WHERE t.school_id = ${req.schoolId}
+      AND t.received_by = ${collectorId}
+      AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+      AND NOT EXISTS (
+        SELECT 1 FROM fee_transactions rev
+        WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%'
+      )
+      AND t.paid_at >= CURRENT_DATE
+      AND t.paid_at < CURRENT_DATE + INTERVAL '1 day'
   `;
 
   const [todayRow] = await sql`SELECT CURRENT_DATE::text as today`;
@@ -1617,29 +1733,33 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
  */
 router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(async (req, res) => {
   const { date, from_date, to_date, group_by = 'day', received_by } = req.query;
-  const receivedByFilter = received_by ? sql`AND received_by = ${received_by}` : sql``;
+  const receivedByFilter = received_by ? sql`AND t.received_by = ${received_by}` : sql``;
 
   if (date) {
     // Single day summary — F7 FIX: Add school_id filter
     const summary = await sql`
       SELECT
-        payment_method,
+        t.payment_method,
         COUNT(*) as transaction_count,
-        SUM(amount) as total_amount
-      FROM fee_transactions
-      WHERE DATE(paid_at) = ${date}
-        AND school_id = ${req.schoolId}
+        SUM(t.amount) as total_amount
+      FROM fee_transactions t
+      WHERE DATE(t.paid_at) = ${date}
+        AND t.school_id = ${req.schoolId}
+        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
         ${receivedByFilter}
-      GROUP BY payment_method
+      GROUP BY t.payment_method
     `;
 
     const total = await sql`
       SELECT
         COUNT(*) as total_transactions,
-        COALESCE(SUM(amount), 0) as total_collected
-      FROM fee_transactions
-      WHERE DATE(paid_at) = ${date}
-        AND school_id = ${req.schoolId}
+        COALESCE(SUM(t.amount), 0) as total_collected
+      FROM fee_transactions t
+      WHERE DATE(t.paid_at) = ${date}
+        AND t.school_id = ${req.schoolId}
+        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
         ${receivedByFilter}
     `;
 
@@ -1654,27 +1774,31 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
     if (group_by === 'month') {
       summary = await sql`
         SELECT
-          DATE_TRUNC('month', paid_at) as period,
+          DATE_TRUNC('month', t.paid_at) as period,
           COUNT(*) as transaction_count,
-          SUM(amount) as total_amount
-        FROM fee_transactions
-        WHERE paid_at BETWEEN ${from_date} AND ${to_date}
-          AND school_id = ${req.schoolId}
+          SUM(t.amount) as total_amount
+        FROM fee_transactions t
+        WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
           ${receivedByFilter}
-        GROUP BY DATE_TRUNC('month', paid_at)
+        GROUP BY DATE_TRUNC('month', t.paid_at)
         ORDER BY period
       `;
     } else {
       summary = await sql`
         SELECT
-          DATE(paid_at) as period,
+          DATE(t.paid_at) as period,
           COUNT(*) as transaction_count,
-          SUM(amount) as total_amount
-        FROM fee_transactions
-        WHERE paid_at BETWEEN ${from_date} AND ${to_date}
-          AND school_id = ${req.schoolId}
+          SUM(t.amount) as total_amount
+        FROM fee_transactions t
+        WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
           ${receivedByFilter}
-        GROUP BY DATE(paid_at)
+        GROUP BY DATE(t.paid_at)
         ORDER BY period
       `;
     }
@@ -1682,10 +1806,12 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
     const [rangeTotal] = await sql`
       SELECT
         COUNT(*)::int as total_transactions,
-        COALESCE(SUM(amount), 0) as total_collected
-      FROM fee_transactions
-      WHERE paid_at BETWEEN ${from_date} AND ${to_date}
-        AND school_id = ${req.schoolId}
+        COALESCE(SUM(t.amount), 0) as total_collected
+      FROM fee_transactions t
+      WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+        AND t.school_id = ${req.schoolId}
+        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
         ${receivedByFilter}
     `;
 
@@ -1699,10 +1825,12 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
     const summary = await sql`
       SELECT
         COUNT(*) as total_transactions,
-        COALESCE(SUM(amount), 0) as total_collected
-      FROM fee_transactions
-      WHERE DATE(paid_at) = ${today}
-        AND school_id = ${req.schoolId}
+        COALESCE(SUM(t.amount), 0) as total_collected
+      FROM fee_transactions t
+      WHERE DATE(t.paid_at) = ${today}
+        AND t.school_id = ${req.schoolId}
+        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
         ${receivedByFilter}
     `;
 
@@ -1858,9 +1986,11 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
   // Always calculate these non-toggleable items
   const [totalCollected, defaulterCount, recentTransactions] = await Promise.all([
     sql`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM fee_transactions
-      WHERE school_id = ${schoolId}
+      SELECT COALESCE(SUM(ft.amount), 0) as total
+      FROM fee_transactions ft
+      WHERE ft.school_id = ${schoolId}
+        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
     `,
     sql`
       SELECT COUNT(DISTINCT sf.student_id) as count
@@ -1890,6 +2020,8 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
       LEFT JOIN classes c ON fs.class_id = c.id
       LEFT JOIN fee_types ftype ON fs.fee_type_id = ftype.id
       WHERE ft.school_id = ${schoolId}
+        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
       ORDER BY ft.paid_at DESC
       LIMIT 5
     `
@@ -1902,20 +2034,24 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
   // Conditional stats computation
   if (config.total_collection_month) {
     const monthlyStats = await sql`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM fee_transactions
-      WHERE date_trunc('month', paid_at) = date_trunc('month', CURRENT_DATE)
-        AND school_id = ${schoolId}
+      SELECT COALESCE(SUM(ft.amount), 0) as total
+      FROM fee_transactions ft
+      WHERE date_trunc('month', ft.paid_at) = date_trunc('month', CURRENT_DATE)
+        AND ft.school_id = ${schoolId}
+        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
     `;
     stats.total_collection_month = Number(monthlyStats[0]?.total || 0);
   }
 
   if (config.todays_collection) {
     const todayStats = await sql`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM fee_transactions
-      WHERE paid_at::date = CURRENT_DATE
-        AND school_id = ${schoolId}
+      SELECT COALESCE(SUM(ft.amount), 0) as total
+      FROM fee_transactions ft
+      WHERE ft.paid_at::date = CURRENT_DATE
+        AND ft.school_id = ${schoolId}
+        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
     `;
     stats.todays_collection = Number(todayStats[0]?.total || 0);
   }
@@ -1952,6 +2088,8 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
         JOIN student_fees sf ON ft.student_fee_id = sf.id
         WHERE ft.paid_at >= ${start}
           AND sf.school_id = ${schoolId}
+          AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
       `,
       sql`
         SELECT COALESCE(SUM(sf.amount_due - sf.discount - sf.amount_paid), 0) as total
@@ -1978,6 +2116,8 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
       JOIN student_fees sf ON ft.student_fee_id = sf.id
       WHERE ft.paid_at > CURRENT_DATE - INTERVAL '6 months'
         AND sf.school_id = ${schoolId}
+        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
       GROUP BY TO_CHAR(ft.paid_at, 'Mon'), DATE_TRUNC('month', ft.paid_at)
       ORDER BY DATE_TRUNC('month', ft.paid_at)
     `;

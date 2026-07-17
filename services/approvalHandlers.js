@@ -16,4 +16,18 @@ export const approvalHandlers = {
       },
     };
   },
+
+  /**
+   * Authorize the requesting accountant to reverse exactly the payment scope
+   * captured in the request. Approval itself intentionally does not mutate the
+   * ledger; the accountant must consume this one-time authorization.
+   */
+  fee_payment_deletion: async (payload) => {
+    return {
+      authorization: {
+        scope_key: payload.scope_key,
+        transaction_ids: payload.transaction_ids,
+      },
+    };
+  },
 };

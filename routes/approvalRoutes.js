@@ -17,9 +17,14 @@ const router = express.Router();
  */
 router.get('/', requireAuth, requirePermission('fee.underpayment.approve'), asyncHandler(async (req, res) => {
   const { status = 'PENDING', type } = req.query;
+  const isAdmin = req.user?.roles?.includes('admin');
+  if (type === 'fee_payment_deletion' && !isAdmin) {
+    return res.status(403).json({ error: 'Only an admin can review payment deletion requests' });
+  }
   const rows = await listApprovalRequests(req.schoolId, {
     status: typeof status === 'string' ? status : 'PENDING',
     type: typeof type === 'string' ? type : undefined,
+    includePaymentDeletion: isAdmin,
   });
   return sendSuccess(res, req.schoolId, rows);
 }));
@@ -58,6 +63,7 @@ router.post('/:id/reject', requireAuth, requirePermission('fee.underpayment.appr
       schoolId: req.schoolId,
       reviewerId: req.user.internal_id,
       reviewReason: reason,
+      user: req.user,
     });
     return sendSuccess(res, req.schoolId, {
       message: 'Approval request rejected',

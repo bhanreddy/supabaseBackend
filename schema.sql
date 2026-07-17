@@ -664,8 +664,10 @@ BEGIN
         NEW.status := 'paid';
     ELSIF NEW.amount_paid > 0 THEN
         NEW.status := 'partial';
-    ELSIF NEW.due_date < CURRENT_DATE AND NEW.status = 'pending' THEN
+    ELSIF NEW.due_date IS NOT NULL AND NEW.due_date < CURRENT_DATE THEN
         NEW.status := 'overdue';
+    ELSE
+        NEW.status := 'pending';
     END IF;
     RETURN NEW;
 END;
@@ -3780,6 +3782,12 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_pending_type
     ON approval_requests (school_id, type)
     WHERE status = 'PENDING';
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_fee_payment_deletion_scope
+    ON approval_requests (school_id, type, ((payload->>'scope_key')))
+    WHERE type = 'fee_payment_deletion'
+      AND status IN ('PENDING', 'APPROVED')
+      AND payload->>'consumed_at' IS NULL;
+
 
 -- Backfill any existing NULL transaction_ref values before constraints
 
@@ -3792,6 +3800,9 @@ ALTER TABLE fee_transactions ALTER COLUMN transaction_ref SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fee_txn_ref_unique ON fee_transactions(school_id, transaction_ref);
 
 CREATE INDEX IF NOT EXISTS idx_transactions_paid_at ON fee_transactions(paid_at);
+CREATE INDEX IF NOT EXISTS idx_fee_transactions_refund_of
+    ON fee_transactions (school_id, refund_of)
+    WHERE refund_of IS NOT NULL;
 
 -- Remediation: Financial Trigger (APPEND-ONLY — INSERT only)
 -- Refunds are negative-amount INSERTs, so += handles both payment and refund

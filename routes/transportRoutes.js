@@ -2860,11 +2860,11 @@ router.post('/driver/bus-attendance/mark', requireAuth, asyncHandler(async (req,
     RETURNING id, student_id, status
   `;
 
-  // Trigger parent notifications in background
-  const newlyPresent = upserted.filter(r => r.status === 'present');
-  if (newlyPresent.length > 0) {
-    const presentStudentIds = newlyPresent.map(r => r.student_id);
-
+  // Trigger parent notifications in background — present → bus_present sound,
+  // absent → absent-alert sound. Fire-and-forget; never blocks the response.
+  const statusByStudent = new Map(upserted.map(r => [r.student_id, r.status]));
+  const affectedStudentIds = [...statusByStudent.keys()];
+  if (affectedStudentIds.length > 0) {
     (async () => {
       try {
         const [stop] = await sql`
@@ -2874,8 +2874,8 @@ router.post('/driver/bus-attendance/mark', requireAuth, asyncHandler(async (req,
         `;
 
         const parentNotifications = await sql`
-          SELECT 
-            u.id as user_id, 
+          SELECT
+            u.id as user_id,
             sp.student_id,
             p_student.display_name as student_name
           FROM student_parents sp
@@ -2883,23 +2883,26 @@ router.post('/driver/bus-attendance/mark', requireAuth, asyncHandler(async (req,
           JOIN users u ON p_parent.person_id = u.person_id AND u.school_id = ${req.schoolId}
           JOIN students s ON sp.student_id = s.id AND s.school_id = ${req.schoolId}
           JOIN persons p_student ON s.person_id = p_student.id
-          WHERE sp.student_id = ANY(${sql.array(presentStudentIds)}::uuid[])
+          WHERE sp.student_id = ANY(${sql.array(affectedStudentIds)}::uuid[])
             AND sp.school_id = ${req.schoolId}
             AND u.account_status = 'active'
         `;
 
         for (const pn of parentNotifications) {
+          const eventKey = statusByStudent.get(pn.student_id) === 'present'
+            ? 'STUDENT_BUS_PRESENT'
+            : 'STUDENT_BUS_ABSENT';
           try {
             await sendNotificationToUsers(
               [pn.user_id],
-              'STUDENT_BUS_PRESENT',
+              eventKey,
               {
                 studentName: pn.student_name,
                 stopName: stop?.name || 'stop'
               }
             );
           } catch (err) {
-            console.warn('Failed to send STUDENT_BUS_PRESENT notification:', err);
+            console.warn(`Failed to send ${eventKey} notification:`, err);
           }
         }
       } catch (err) {

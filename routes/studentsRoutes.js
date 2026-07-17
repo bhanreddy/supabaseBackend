@@ -59,8 +59,17 @@ const PARENTS_SUBQUERY = sql`
   ) as parents
 `;
 
+// Relationship ids this student form owns end-to-end. Only these are reconciled
+// (soft-deleted when absent from the payload); any others attached via the
+// standalone /:id/parents endpoint are left untouched.
+const MANAGED_RELATIONSHIP_IDS = [1, 2, 3]; // Father, Mother, Guardian
+
 async function syncStudentParents(sql, schoolId, studentId, parents) {
-  if (!parents || !Array.isArray(parents) || parents.length === 0) return;
+  // `undefined` means "caller didn't touch parents" -> leave existing links as-is.
+  // An explicit array (including []) is the full desired set and drives reconcile.
+  if (parents === undefined || parents === null || !Array.isArray(parents)) return;
+
+  const desiredRelIds = new Set();
 
   for (const rawParent of parents) {
     const parentFirstName = typeof rawParent.first_name === 'string'
@@ -69,7 +78,8 @@ async function syncStudentParents(sql, schoolId, studentId, parents) {
     const parentLastName = normalizeOptionalName(rawParent.last_name);
     const parentRelation = rawParent.relation;
 
-    if (!parentFirstName || !parentLastName || !parentRelation) continue;
+    // A first name and a relation are required; last name is optional (mononyms).
+    if (!parentFirstName || !parentRelation) continue;
 
     const parentData = {
       ...rawParent,
@@ -79,7 +89,8 @@ async function syncStudentParents(sql, schoolId, studentId, parents) {
     };
 
     const relId = RELATIONSHIP_MAP[parentData.relation] || 3;
-    const displayName = `${parentData.first_name} ${parentData.last_name}`;
+    desiredRelIds.add(relId);
+    const displayName = [parentData.first_name, parentData.last_name].filter(Boolean).join(' ');
 
     const [existingLink] = await sql`
       SELECT pa.id as parent_id, pp.id as person_id
@@ -164,6 +175,20 @@ async function syncStudentParents(sql, schoolId, studentId, parents) {
         `;
       }
     }
+  }
+
+  // Reconcile removals: any managed relation the payload no longer includes gets
+  // its link soft-deleted, so clearing a parent in edit mode actually removes it.
+  const relIdsToRemove = MANAGED_RELATIONSHIP_IDS.filter((r) => !desiredRelIds.has(r));
+  if (relIdsToRemove.length > 0) {
+    await sql`
+      UPDATE student_parents
+      SET deleted_at = NOW()
+      WHERE student_id = ${studentId}
+        AND school_id = ${schoolId}
+        AND relationship_id = ANY(${relIdsToRemove})
+        AND deleted_at IS NULL
+    `;
   }
 }
 

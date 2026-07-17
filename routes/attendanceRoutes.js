@@ -20,6 +20,22 @@ function weekdayForAttendanceDate(rawDate) {
 }
 
 /**
+ * The weekday whose timetable template applies to a given calendar date.
+ *
+ * Uniform schools keep a single template stored on Monday (Tue–Sat rows are
+ * deleted on switch), so slot-based attendance detection must always look at
+ * Monday regardless of the real weekday — otherwise no teacher-based class is
+ * found Tue–Sat and only class teachers (via the static fallback) can mark.
+ * Per-day schools store a row per weekday, so we use the real weekday.
+ */
+async function timetableDayForDate(schoolId, rawDate) {
+  const [row] = await sql`SELECT timetable_mode FROM schools WHERE id = ${schoolId}`;
+  return row?.timetable_mode === 'per_day'
+    ? weekdayForAttendanceDate(rawDate)
+    : 'monday';
+}
+
+/**
  * Resolve which half-day session ('morning' | 'afternoon') a mark applies to.
  * The frontend should send it explicitly; if omitted we fall back to the wall
  * clock — before 13:00 counts as the morning (first period) session, otherwise
@@ -56,11 +72,17 @@ function lunchEndTime(schoolId) {
  * Auto-detect which class section a teacher should mark for the given session.
  *   morning   → the class where they teach the first period of the day (period 1)
  *   afternoon → the class where they teach the first period AFTER lunch
- * Falls back to a static class-teacher assignment for either session.
+ * Each session is driven strictly by the timetable so the two tabs fetch
+ * different rosters. Morning keeps a static class-teacher fallback (class
+ * teachers are auto-assigned period 1, so it's just a safety net); afternoon
+ * does NOT fall back — a teacher with no post-lunch first period gets no
+ * afternoon class, rather than wrongly reusing their morning class.
  * Returns the class_section_id (uuid) or null.
  */
 async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, session, dayOfWeek }) {
   if (session === 'afternoon') {
+    // Afternoon belongs to the teacher of the FIRST period after lunch. Strict:
+    // no class-teacher fallback (that's what made the morning class reappear here).
     const [row] = await exec`
       WITH first_after_lunch AS (
         SELECT DISTINCT ON (ts.class_section_id, ts.day_of_week)
@@ -79,24 +101,25 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
       ORDER BY day_of_week
       LIMIT 1
     `;
-    if (row) return row.id;
-  } else {
-    const [row] = await exec`
-      SELECT class_section_id AS id
-      FROM timetable_slots
-      WHERE teacher_id = ${staffId}
-        AND academic_year_id = ${yearId}
-        AND period_number = 1
-        AND school_id = ${schoolId}
-        AND LOWER(day_of_week::text) = ${dayOfWeek}
-        AND deleted_at IS NULL
-      ORDER BY class_section_id
-      LIMIT 1
-    `;
-    if (row) return row.id;
+    return row?.id || null;
   }
 
-  // Fallback: static class-teacher assignment (applies to either session).
+  // Morning → the class where they teach period 1.
+  const [row] = await exec`
+    SELECT class_section_id AS id
+    FROM timetable_slots
+    WHERE teacher_id = ${staffId}
+      AND academic_year_id = ${yearId}
+      AND period_number = 1
+      AND school_id = ${schoolId}
+      AND LOWER(day_of_week::text) = ${dayOfWeek}
+      AND deleted_at IS NULL
+    ORDER BY class_section_id
+    LIMIT 1
+  `;
+  if (row) return row.id;
+
+  // Morning fallback: static class-teacher assignment.
   const [staticRow] = await exec`
     SELECT id FROM class_sections
     WHERE class_teacher_id = ${staffId}
@@ -260,7 +283,7 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
   // day; the DB trigger derives the overall day status from both sessions.
   session = resolveSession(session);
   const sessionColumn = session === 'afternoon' ? 'afternoon_status' : 'morning_status';
-  const dayOfWeek = weekdayForAttendanceDate(date);
+  const dayOfWeek = await timetableDayForDate(req.schoolId, date);
 
   // Resolve the teacher's staff id once (needed for detection + authorization).
   let staff = null;
@@ -612,7 +635,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const date = req.query.date || new Date().toISOString().split('T')[0];
-  const dayOfWeek = weekdayForAttendanceDate(date);
+  const dayOfWeek = await timetableDayForDate(req.schoolId, date);
 
   // 3. Find the class section this teacher marks for the requested session.
   //    Morning → first period of the day; Afternoon → first period after lunch;
@@ -682,7 +705,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
 router.get('/class/:classSectionId', requirePermission('attendance.view'), asyncHandler(async (req, res) => {
   let { classSectionId } = req.params;
   const { date = new Date().toISOString().split('T')[0] } = req.query;
-  const dayOfWeek = weekdayForAttendanceDate(date);
+  const dayOfWeek = await timetableDayForDate(req.schoolId, date);
 
   // 1. Automatic Detection if ID is missing or literal 'undefined'/'null'
   if (!classSectionId || classSectionId === 'undefined' || classSectionId === 'null') {

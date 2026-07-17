@@ -1,6 +1,15 @@
+import dns from 'node:dns';
 import postgres from 'postgres';
 import { createClient } from '@supabase/supabase-js';
 import config from './config/env.js';
+
+// Prefer IPv4 for every outbound connection in this process (main pool,
+// pg-boss, supabase-js). The Supabase poolers are IPv4-reachable, but some
+// networks resolve/route the AAAA (NAT64 `64:ff9b::`) path unreliably, which
+// surfaced as periodic "Connection terminated unexpectedly" / read ETIMEDOUT
+// drops on idle connections. setDefaultResultOrder is process-global and runs
+// before any client actually dials (postgres.js and supabase-js connect lazily).
+dns.setDefaultResultOrder('ipv4first');
 
 // 1. Core Postgres Client (for sql`...` template literals)
 const sql = postgres(config.databaseUrl, {

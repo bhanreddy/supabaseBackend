@@ -1,6 +1,7 @@
 import sql from '../db.js';
 import { approvalHandlers } from './approvalHandlers.js';
 import { enrichFeeTransaction } from './feePaymentService.js';
+import { sendNotificationToUsers } from './notificationService.js';
 
 /**
  * Create a pending approval request. Does NOT execute the payload mutation.
@@ -30,7 +31,10 @@ export async function createApprovalRequest({
 /**
  * List approval requests for a school, optionally filtered by status/type.
  */
-export async function listApprovalRequests(schoolId, { status = 'PENDING', type } = {}) {
+export async function listApprovalRequests(
+  schoolId,
+  { status = 'PENDING', type, includePaymentDeletion = true } = {}
+) {
   return sql`
     SELECT
       ar.*,
@@ -44,6 +48,7 @@ export async function listApprovalRequests(schoolId, { status = 'PENDING', type 
     WHERE ar.school_id = ${schoolId}
       ${status ? sql`AND ar.status = ${status}` : sql``}
       ${type ? sql`AND ar.type = ${type}` : sql``}
+      ${includePaymentDeletion ? sql`` : sql`AND ar.type <> 'fee_payment_deletion'`}
     ORDER BY ar.created_at DESC
   `;
 }
@@ -74,6 +79,12 @@ export async function approveApprovalRequest(id, { schoolId, reviewerId, user })
       throw err;
     }
 
+    if (request.type === 'fee_payment_deletion' && !user?.roles?.includes('admin')) {
+      const err = new Error('Only an admin can approve payment deletion requests');
+      err.status = 403;
+      throw err;
+    }
+
     const handler = approvalHandlers[request.type];
     if (!handler) {
       const err = new Error(`No handler registered for approval type: ${request.type}`);
@@ -99,41 +110,65 @@ export async function approveApprovalRequest(id, { schoolId, reviewerId, user })
     outcome.result.transaction = await enrichFeeTransaction(outcome.result.transaction, schoolId);
   }
 
+  if (outcome.request.type === 'fee_payment_deletion') {
+    void sendNotificationToUsers(
+      [outcome.request.requested_by],
+      'FEE_PAYMENT_DELETION_APPROVED',
+      { message: 'Admin approved your request. Open Receipts and delete the approved payment.' }
+    ).catch(() => {});
+  }
+
   return outcome;
 }
 
 /**
  * Reject a pending request — nothing is posted to the ledger.
  */
-export async function rejectApprovalRequest(id, { schoolId, reviewerId, reviewReason }) {
-  const [request] = await sql`
-    SELECT id, status
-    FROM approval_requests
-    WHERE id = ${id}
-      AND school_id = ${schoolId}
-    FOR UPDATE
-  `;
+export async function rejectApprovalRequest(id, { schoolId, reviewerId, reviewReason, user }) {
+  const updated = await sql.begin(async (trx) => {
+    const [request] = await trx`
+      SELECT id, status, type
+      FROM approval_requests
+      WHERE id = ${id}
+        AND school_id = ${schoolId}
+      FOR UPDATE
+    `;
 
-  if (!request) {
-    const err = new Error('Approval request not found');
-    err.status = 404;
-    throw err;
-  }
-  if (request.status !== 'PENDING') {
-    const err = new Error(`Request is already ${request.status.toLowerCase()}`);
-    err.status = 409;
-    throw err;
-  }
+    if (!request) {
+      const err = new Error('Approval request not found');
+      err.status = 404;
+      throw err;
+    }
+    if (request.status !== 'PENDING') {
+      const err = new Error(`Request is already ${request.status.toLowerCase()}`);
+      err.status = 409;
+      throw err;
+    }
+    if (request.type === 'fee_payment_deletion' && !user?.roles?.includes('admin')) {
+      const err = new Error('Only an admin can reject payment deletion requests');
+      err.status = 403;
+      throw err;
+    }
 
-  const [updated] = await sql`
-    UPDATE approval_requests
-    SET status = 'REJECTED',
-        reviewed_by = ${reviewerId},
-        reviewed_at = NOW(),
-        reason = COALESCE(${reviewReason || null}, reason)
-    WHERE id = ${id}
-    RETURNING *
-  `;
+    const [row] = await trx`
+      UPDATE approval_requests
+      SET status = 'REJECTED',
+          reviewed_by = ${reviewerId},
+          reviewed_at = NOW(),
+          reason = COALESCE(${reviewReason || null}, reason)
+      WHERE id = ${id}
+      RETURNING *
+    `;
+    return row;
+  });
+
+  if (updated.type === 'fee_payment_deletion') {
+    void sendNotificationToUsers(
+      [updated.requested_by],
+      'FEE_PAYMENT_DELETION_REJECTED',
+      { message: 'Admin rejected your payment deletion request. The ledger was not changed.' }
+    ).catch(() => {});
+  }
 
   return updated;
 }
