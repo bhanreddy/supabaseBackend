@@ -767,7 +767,8 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
       return res.status(400).json({ error: 'Both class and section are required to change enrollment.' });
     }
 
-    const normalizedMiddleName = normalizeOptionalName(middle_name);
+    // Allow clearing optional names: empty string → NULL. Only skip when the field is omitted.
+    const normalizedMiddleName = middle_name !== undefined ? normalizeOptionalName(middle_name) : undefined;
     const normalizedLastName = last_name !== undefined ? normalizeOptionalName(last_name) : undefined;
     const normalizedDob = blankToNull(dob);
 
@@ -814,11 +815,13 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     const result = await sql.begin(async (sql) => {
 
       // 2. Update Person
+      // middle_name / last_name use direct assignment (not COALESCE) so clearing to empty
+      // persists as NULL instead of retaining the previous value.
       await sql`
         UPDATE persons
         SET 
           first_name = COALESCE(${first_name ?? null}, first_name),
-          middle_name = COALESCE(${normalizedMiddleName}, middle_name),
+          ${normalizedMiddleName !== undefined ? sql`middle_name = ${normalizedMiddleName},` : sql``}
           ${normalizedLastName !== undefined ? sql`last_name = ${normalizedLastName},` : sql``}
           dob = COALESCE(${normalizedDob}, dob),
           gender_id = COALESCE(${gender_id ?? null}, gender_id)
@@ -1169,7 +1172,7 @@ router.post('/:id/hard-delete', requirePermission('students.delete'), async (req
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const result = await hardDeleteStudent(req.schoolId, id);
+    const result = await hardDeleteStudent(Number(req.schoolId), id);
 
     if (!result.deleted) {
       return res.status(404).json({ error: 'Student not found' });
@@ -1181,6 +1184,7 @@ router.post('/:id/hard-delete', requirePermission('students.delete'), async (req
       authFailures: result.authFailures,
     });
   } catch (error) {
+    console.error('hard-delete student failed:', error);
     res.status(500).json({ error: 'Failed to permanently delete student', details: error.message });
   }
 });

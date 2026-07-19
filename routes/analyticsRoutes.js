@@ -101,33 +101,114 @@ router.get('/risk', requireAuth, asyncHandler(async (req, res) => {
           AND s.school_id = ${schoolId}
     `;
 
-    const riskProfiles = students.map(s => {
+    /**
+     * Composite risk score (0–100). Higher = more urgent.
+     * Weights: attendance 40 · academics 30 · discipline 20 · mark trend 10
+     * Multiple mid-level flags compound into CRITICAL so single-threshold
+     * blind spots (e.g. 76% attendance + 1 fail) are not under-ranked.
+     */
+    const scoreTrendDecline = (rawTrend) => {
+        const series = Array.isArray(rawTrend)
+            ? rawTrend.map(Number).filter((n) => Number.isFinite(n))
+            : [];
+        if (series.length < 3) return { points: 0, label: null, values: series.length ? [...series].reverse() : [0, 0, 0, 0, 0] };
+        const chronological = [...series].reverse(); // oldest → newest
+        const first = chronological.slice(0, Math.ceil(chronological.length / 2));
+        const last = chronological.slice(-Math.ceil(chronological.length / 2));
+        const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+        const drop = avg(first) - avg(last);
+        if (drop >= 20) return { points: 10, label: `Marks ↓ ${Math.round(drop)} pts`, values: chronological };
+        if (drop >= 10) return { points: 6, label: `Marks soft ↓ ${Math.round(drop)} pts`, values: chronological };
+        if (drop >= 5) return { points: 3, label: null, values: chronological };
+        return { points: 0, label: null, values: chronological };
+    };
+
+    const riskProfiles = students.map((s) => {
+        const attendance = Number(s.attendance_pct);
+        const att = Number.isFinite(attendance) ? attendance : 100;
+        const failedCount = Number(s.failed_count) || 0;
+        const failedNames = Array.isArray(s.failed_names) ? s.failed_names.filter(Boolean) : [];
+        const disciplineCount = Number(s.discipline_count) || 0;
+        const disciplineSeverity = Number(s.discipline_severity) || 0;
+
+        let score = 0;
+        const factors = [];
+        let hardCritical = false;
+
+        // Attendance (0–40)
+        if (att < 60) {
+            score += 40;
+            hardCritical = true;
+            factors.push(`Attendance ${att.toFixed(0)}%`);
+        } else if (att < 70) {
+            score += 34;
+            hardCritical = true;
+            factors.push(`Attendance ${att.toFixed(0)}%`);
+        } else if (att < 75) {
+            score += 28;
+            factors.push(`Attendance ${att.toFixed(0)}%`);
+        } else if (att < 80) {
+            score += 18;
+            factors.push(`Attendance ${att.toFixed(0)}%`);
+        } else if (att < 85) {
+            score += 12;
+            factors.push(`Attendance ${att.toFixed(0)}%`);
+        } else if (att < 90) {
+            score += 5;
+        }
+
+        // Academics (0–30)
+        if (failedCount >= 3) {
+            score += 30;
+            hardCritical = true;
+            factors.push(`${failedCount} failed subjects`);
+        } else if (failedCount === 2) {
+            score += 24;
+            hardCritical = true;
+            factors.push('2 failed subjects');
+        } else if (failedCount === 1) {
+            score += 14;
+            factors.push(failedNames[0] ? `Failed ${failedNames[0]}` : '1 failed subject');
+        }
+
+        // Discipline (0–20)
+        if (disciplineSeverity >= 2) {
+            score += 20;
+            hardCritical = true;
+            factors.push('Urgent discipline case');
+        } else if (disciplineSeverity === 1 || disciplineCount >= 3) {
+            score += 12;
+            factors.push(disciplineCount >= 3 ? `${disciplineCount} incidents` : 'Behavior warning');
+        } else if (disciplineCount >= 1) {
+            score += 6;
+            factors.push(`${disciplineCount} incident${disciplineCount > 1 ? 's' : ''}`);
+        }
+
+        // Mark trend (0–10)
+        const trendInfo = scoreTrendDecline(s.trend);
+        score += trendInfo.points;
+        if (trendInfo.label) factors.push(trendInfo.label);
+
+        // Compound escalation: 2+ medium signals → treat as critical band
+        const mediumSignals = factors.length;
+        if (!hardCritical && mediumSignals >= 2 && score >= 22) {
+            hardCritical = true;
+        }
+
         let riskLevel = 'SAFE';
-        let factors = [];
+        if (hardCritical || score >= 36) riskLevel = 'CRITICAL';
+        else if (score >= 14) riskLevel = 'WARNING';
 
-        if (s.attendance_pct < 75) {
-            riskLevel = 'CRITICAL';
-            factors.push(`Attendance ${(s.attendance_pct || 0).toFixed(0)}%`);
-        } else if (s.attendance_pct < 85) {
-            if (riskLevel !== 'CRITICAL') riskLevel = 'WARNING';
-            factors.push('Low Attendance');
-        }
-
-        if (s.failed_count >= 2) {
-            riskLevel = 'CRITICAL';
-            factors.push(`${s.failed_count} Failed Subjects`);
-        } else if (s.failed_count === 1) {
-            if (riskLevel !== 'CRITICAL') riskLevel = 'WARNING';
-            const subject = Array.isArray(s.failed_names) ? s.failed_names[0] : '';
-            factors.push(`Failed ${subject}`);
-        }
-
-        if (s.discipline_severity >= 2) {
-            riskLevel = 'CRITICAL';
-            factors.push('Discipline Issues');
-        } else if (s.discipline_severity === 1) {
-            if (riskLevel !== 'CRITICAL') riskLevel = 'WARNING';
-            factors.push('Behavior Warning');
+        const primaryFactor = factors[0] || 'On track';
+        let recommendation = 'Keep monitoring routine progress.';
+        if (riskLevel === 'CRITICAL') {
+            recommendation = att < 75
+                ? 'Call parent this week — attendance recovery plan.'
+                : failedCount >= 2
+                    ? 'Schedule academic support / remedial meeting.'
+                    : 'Escalate with counselor + parent conference.';
+        } else if (riskLevel === 'WARNING') {
+            recommendation = 'Soft check-in with class teacher this fortnight.';
         }
 
         return {
@@ -135,14 +216,21 @@ router.get('/risk', requireAuth, asyncHandler(async (req, res) => {
             name: s.name,
             class: s.class_name,
             riskLevel,
-            factors,
-            trend: s.trend && s.trend.length > 0 ? s.trend.reverse() : [0, 0, 0, 0, 0]
+            riskScore: Math.min(100, Math.round(score)),
+            attendancePct: Math.round(att),
+            failedCount,
+            factors: factors.slice(0, 4),
+            primaryFactor,
+            recommendation,
+            trend: trendInfo.values.length ? trendInfo.values : [0, 0, 0, 0, 0],
         };
     });
 
     const sorted = riskProfiles.sort((a, b) => {
-        const order = { 'CRITICAL': 0, 'WARNING': 1, 'SAFE': 2 };
-        return order[a.riskLevel] - order[b.riskLevel];
+        const order = { CRITICAL: 0, WARNING: 1, SAFE: 2 };
+        const byLevel = order[a.riskLevel] - order[b.riskLevel];
+        if (byLevel !== 0) return byLevel;
+        return b.riskScore - a.riskScore;
     });
 
     return sendSuccess(res, req.schoolId, sorted);

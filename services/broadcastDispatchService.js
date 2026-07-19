@@ -153,7 +153,23 @@ export async function resolveRecipients(schoolId, { classIds = [], sectionIds = 
   const classFilter = buildClassFilterClause(classIds, sectionIds);
 
   if (channelType === 'ATTENDANCE_ABSENT' || channelType === 'ATTENDANCE_PRESENT') {
-    const targetStatus = channelType === 'ATTENDANCE_ABSENT' ? 'absent' : 'present';
+    // Attendance is marked in two sessions (morning + afternoon). The day-level
+    // `daily_attendance.status` is a DERIVED value that only becomes 'present'
+    // once BOTH sessions are attended — a morning-only mark computes to
+    // 'half_day'. So keying these notifications off `status` makes them show 0
+    // recipients until the afternoon is also marked. Arrival/absence are morning
+    // signals, so match the morning session directly (falling back to the legacy
+    // day-level status for older single-write rows that have no session columns).
+    const attendanceMatch =
+      channelType === 'ATTENDANCE_PRESENT'
+        ? sql`AND (
+            da.morning_status IN ('present', 'late')
+            OR (da.morning_status IS NULL AND da.status IN ('present', 'late', 'half_day'))
+          )`
+        : sql`AND (
+            da.morning_status = 'absent'
+            OR (da.morning_status IS NULL AND da.status = 'absent')
+          )`;
     return sql`
       SELECT DISTINCT u.id
       FROM users u
@@ -168,7 +184,8 @@ export async function resolveRecipients(schoolId, { classIds = [], sectionIds = 
         AND u.account_status = 'active'
         AND u.school_id = ${schoolId}
         AND da.attendance_date = CURRENT_DATE
-        AND da.status = ${targetStatus}
+        AND da.deleted_at IS NULL
+        ${attendanceMatch}
         ${classFilter}
       UNION
       SELECT DISTINCT u.id
@@ -186,7 +203,8 @@ export async function resolveRecipients(schoolId, { classIds = [], sectionIds = 
         AND u.account_status = 'active'
         AND u.school_id = ${schoolId}
         AND da.attendance_date = CURRENT_DATE
-        AND da.status = ${targetStatus}
+        AND da.deleted_at IS NULL
+        ${attendanceMatch}
         ${classFilter}
     `;
   }
@@ -442,6 +460,44 @@ async function runDispatch(batchId, schoolId, adminId, channelType, recipients) 
 }
 
 /**
+ * Look up a recent broadcast created with the same client idempotency key.
+ * Returns a dispatchBroadcast-shaped response (so the caller can return it
+ * verbatim) or null when there is no recent match.
+ */
+async function findBroadcastByIdempotencyKey(schoolId, idempotencyKey) {
+  const [existing] = await sql`
+    SELECT id, status, total_targets, sent_count, failure_count,
+           no_token_count, tokens_targeted
+    FROM notification_batches
+    WHERE school_id = ${schoolId}
+      AND type = 'BROADCAST'
+      AND filters->>'idempotency_key' = ${idempotencyKey}
+      AND created_at > now() - interval '10 minutes'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  if (!existing) return null;
+
+  const total = existing.total_targets ?? 0;
+  const sent = existing.sent_count ?? 0;
+  const failed = existing.failure_count ?? 0;
+  const noToken = existing.no_token_count ?? 0;
+  return {
+    batch_id: existing.id,
+    status: existing.status,
+    mode: 'async',
+    total_targets: total,
+    sent_count: sent,
+    failure_count: failed,
+    no_token_count: noToken,
+    tokens_targeted: existing.tokens_targeted ?? 0,
+    remaining_count: Math.max(total - sent - failed - noToken, 0),
+    deduped: true,
+    message: 'Duplicate send ignored — returning the existing broadcast.',
+  };
+}
+
+/**
  * Create and run a broadcast dispatch.
  * All broadcasts run asynchronously; clients poll GET /broadcast/:batchId for progress.
  */
@@ -452,11 +508,20 @@ export async function dispatchBroadcast({
   classIds = [],
   sectionIds = [],
   parentBatchId = null,
+  idempotencyKey = null,
 }) {
   assertBroadcastType(channelType);
 
   const normalizedClassIds = normalizeClassIds(classIds);
   const isClassTargeted = normalizedClassIds.length > 0 || normalizeSectionIds(sectionIds).length > 0;
+
+  // Idempotency: a double-tapped "Send", a React re-invocation, or the API
+  // client transparently retrying a 502/503/429 all reuse the same client key.
+  // Return the already-created batch instead of firing a second broadcast.
+  if (idempotencyKey) {
+    const existing = await findBroadcastByIdempotencyKey(schoolId, idempotencyKey);
+    if (existing) return existing;
+  }
 
   const recipients = await resolveRecipients(schoolId, {
     classIds: normalizedClassIds,
@@ -470,6 +535,7 @@ export async function dispatchBroadcast({
     section_ids: normalizeSectionIds(sectionIds),
   };
   if (parentBatchId) filters.parent_batch_id = parentBatchId;
+  if (idempotencyKey) filters.idempotency_key = idempotencyKey;
 
   const [batch] = await sql`
     INSERT INTO notification_batches (
@@ -610,7 +676,17 @@ export async function getBroadcastStatus(batchId, schoolId) {
 }
 
 /**
- * Retry failed recipients from a prior batch.
+ * Resend everyone from a prior batch who was NOT confirmed delivered.
+ *
+ * Crucially this is not "resend the rows we marked failed". A process crash,
+ * redeploy, or OOM kill in the middle of an in-process dispatch leaves the
+ * un-attempted recipients with NO audit row at all — they are neither 'sent'
+ * nor 'failed'. Retrying only status='failed' rows would silently abandon them
+ * forever. Instead we re-resolve the batch's CURRENT audience from its stored
+ * filters and subtract only the users we can prove received it (status='sent').
+ * The remainder — failed, no-token, and never-attempted — is resent. That makes
+ * a broadcast fully recoverable after any mid-flight failure.
+ *
  * Creates a NEW batch linked via parent_batch_id; original rows are never mutated.
  */
 export async function retryBroadcast(batchId, schoolId, adminId) {
@@ -630,22 +706,37 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
     throw new Error('Source batch is still processing');
   }
 
-  const failedUsers = await sql`
-    SELECT DISTINCT ndr.user_id AS id
-    FROM notification_dispatch_recipients ndr
-    WHERE ndr.batch_id = ${batchId}
-      AND ndr.school_id = ${schoolId}
-      AND ndr.status = 'failed'
-  `;
-
-  if (failedUsers.length === 0) {
-    throw new Error('No failed recipients to retry');
-  }
-
   const channelType = sourceBatch.channel_type;
-  const filters = sourceBatch.filters || {};
+  assertBroadcastType(channelType);
+  // Drop the source's idempotency key so the retry batch can't be mistaken for
+  // the original in a dedupe lookup — a resend is a deliberate, distinct action.
+  const { idempotency_key: _ignoredKey, ...filters } = sourceBatch.filters || {};
   const classIds = filters.class_ids || [];
   const sectionIds = filters.section_ids || [];
+
+  // Users we can prove already got it — never resend to these.
+  const sentRows = await sql`
+    SELECT DISTINCT user_id
+    FROM notification_dispatch_recipients
+    WHERE batch_id = ${batchId}
+      AND school_id = ${schoolId}
+      AND status = 'sent'
+      AND user_id IS NOT NULL
+  `;
+  const alreadySent = new Set(sentRows.map((r) => r.user_id));
+
+  // Re-resolve the batch's current audience (carries per-recipient balance for
+  // FEE_REMINDER) so un-attempted recipients lost to a crash are recovered too.
+  const currentTargets = await resolveRecipients(schoolId, {
+    classIds,
+    sectionIds,
+    channelType,
+  });
+  const recipients = currentTargets.filter((r) => !alreadySent.has(r.id));
+
+  if (recipients.length === 0) {
+    throw new Error('No pending recipients to resend — everyone has already been notified.');
+  }
 
   const [retryBatch] = await sql`
     INSERT INTO notification_batches (
@@ -667,49 +758,10 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
       ${batchId},
       ${JSON.stringify({ ...filters, retry_of: batchId })},
       'processing',
-      ${failedUsers.length}
+      ${recipients.length}
     )
     RETURNING id
   `;
-
-  let recipients = failedUsers;
-  if (channelType === 'FEE_REMINDER') {
-    const userIds = failedUsers.map((r) => r.id);
-    recipients = await sql`
-      WITH pending_students AS (
-        SELECT sf.student_id,
-               SUM(sf.amount_due - sf.discount - sf.amount_paid) AS balance
-        FROM student_fees sf
-        JOIN students s ON sf.student_id = s.id
-          AND s.school_id = ${schoolId}
-        WHERE sf.school_id = ${schoolId}
-          AND sf.status IN ('pending', 'overdue', 'partial')
-        GROUP BY sf.student_id
-        HAVING SUM(sf.amount_due - sf.discount - sf.amount_paid) > 0
-      )
-      SELECT u.id, MAX(ps.balance) AS balance
-      FROM users u
-      JOIN students s ON u.person_id = s.person_id
-        AND s.school_id = ${schoolId}
-      JOIN pending_students ps ON s.id = ps.student_id
-      WHERE u.id = ANY(${userIds})
-        AND u.school_id = ${schoolId}
-      GROUP BY u.id
-      UNION
-      SELECT u.id, MAX(ps.balance) AS balance
-      FROM users u
-      JOIN parents p ON u.person_id = p.person_id
-      JOIN student_parents sp ON p.id = sp.parent_id
-      JOIN pending_students ps ON sp.student_id = ps.student_id
-      WHERE u.id = ANY(${userIds})
-        AND u.school_id = ${schoolId}
-      GROUP BY u.id
-    `;
-
-    if (recipients.length === 0) {
-      recipients = failedUsers.map((r) => ({ id: r.id, balance: 0 }));
-    }
-  }
 
   const result = await runDispatch(retryBatch.id, schoolId, adminId, channelType, recipients);
   return {

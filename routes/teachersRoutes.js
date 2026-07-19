@@ -72,7 +72,19 @@ router.get(
 
     // 2. Fetch class assignments from BOTH timetable_slots AND class_subjects
     //    so teachers see their classes regardless of which table holds the mapping.
+    //    Scoped to the current academic year — class_sections are unique per
+    //    (class, section, year), so omitting the year filter surfaces duplicate
+    //    chips like "10-A English" once for each year the teacher was assigned.
     const assignments = await sql`
+      WITH chosen_year AS (
+        SELECT ay.id
+        FROM academic_years ay
+        WHERE ay.school_id = ${schoolId}
+        ORDER BY
+          CASE WHEN CURRENT_DATE BETWEEN ay.start_date AND ay.end_date THEN 0 ELSE 1 END,
+          ay.start_date DESC
+        LIMIT 1
+      )
       SELECT DISTINCT ON (class_section_id, subject_id)
         class_section_id,
         class_id,
@@ -95,6 +107,7 @@ router.get(
         FROM timetable_slots ts
         JOIN class_sections csec ON ts.class_section_id = csec.id
           AND csec.school_id = ${schoolId}
+        JOIN chosen_year cy ON cy.id = csec.academic_year_id
         JOIN classes c ON csec.class_id = c.id
           AND c.school_id = ${schoolId}
         JOIN sections sec ON csec.section_id = sec.id
@@ -117,6 +130,7 @@ router.get(
         FROM class_subjects csub
         JOIN class_sections csec ON csub.class_section_id = csec.id
           AND csec.school_id = ${schoolId}
+        JOIN chosen_year cy ON cy.id = csec.academic_year_id
         JOIN classes c ON csec.class_id = c.id
           AND c.school_id = ${schoolId}
         JOIN sections sec ON csec.section_id = sec.id
@@ -124,6 +138,7 @@ router.get(
           AND s.school_id = ${schoolId}
         WHERE csub.teacher_id = ${staff.id}
           AND csub.school_id  = ${schoolId}
+          AND csub.deleted_at IS NULL
       ) combined
       ORDER BY class_section_id, subject_id, class_name, section_name, subject_name
     `;

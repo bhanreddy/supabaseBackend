@@ -71,13 +71,18 @@ router.post(
   requireAuth,
   requirePermission('dashboard.view'),
   asyncHandler(async (req, res) => {
-    const { type, class_ids, section_ids } = req.body;
+    const { type, class_ids, section_ids, idempotency_key } = req.body;
     const adminId = req.user.internal_id;
     const schoolId = req.schoolId;
 
     if (!type) {
       return res.status(400).json({ error: 'type (channel) is required' });
     }
+
+    const idempotencyKey =
+      typeof idempotency_key === 'string' && idempotency_key.trim()
+        ? idempotency_key.trim().slice(0, 100)
+        : null;
 
     if (await isPlatformKillSwitchActive()) {
       return res.status(503).json({ error: 'Notifications are globally paused via Kill Switch.' });
@@ -112,6 +117,7 @@ router.post(
       channelType: type,
       classIds,
       sectionIds,
+      idempotencyKey,
     });
 
     return sendSuccess(res, req.schoolId, result);
@@ -157,7 +163,9 @@ router.post(
       const message = err?.message || 'Retry failed';
       if (message.includes('not found')) return res.status(404).json({ error: message });
       if (message.includes('still processing')) return res.status(409).json({ error: message });
-      if (message.includes('No failed')) return res.status(400).json({ error: message });
+      if (message.includes('No pending') || message.includes('No failed')) {
+        return res.status(400).json({ error: message });
+      }
       return res.status(500).json({ error: message });
     }
   })
@@ -401,7 +409,20 @@ router.post(
 
     // AN2: Every recipient query now scoped to schoolId
     if (type === 'ATTENDANCE_ABSENT' || type === 'ATTENDANCE_PRESENT') {
-      const targetStatus = type === 'ATTENDANCE_ABSENT' ? 'absent' : 'present';
+      // Match the morning session, not the derived full-day status. The day-level
+      // `status` only becomes 'present' once BOTH sessions are marked, so keying
+      // off it hides morning-only marks (they compute to 'half_day'). See the
+      // matching logic in broadcastDispatchService.resolveRecipients().
+      const attendanceMatch =
+        type === 'ATTENDANCE_PRESENT'
+          ? sql`AND (
+              da.morning_status IN ('present', 'late')
+              OR (da.morning_status IS NULL AND da.status IN ('present', 'late', 'half_day'))
+            )`
+          : sql`AND (
+              da.morning_status = 'absent'
+              OR (da.morning_status IS NULL AND da.status = 'absent')
+            )`;
       recipients = await sql`
         SELECT DISTINCT u.id
         FROM users u
@@ -414,7 +435,8 @@ router.post(
           AND u.account_status   = 'active'
           AND u.school_id        = ${schoolId}
           AND da.attendance_date = CURRENT_DATE
-          AND da.status          = ${targetStatus}
+          AND da.deleted_at IS NULL
+          ${attendanceMatch}
         UNION
         SELECT DISTINCT u.id
         FROM users u
@@ -429,7 +451,8 @@ router.post(
           AND u.account_status   = 'active'
           AND u.school_id        = ${schoolId}
           AND da.attendance_date = CURRENT_DATE
-          AND da.status          = ${targetStatus}
+          AND da.deleted_at IS NULL
+          ${attendanceMatch}
       `;
     } else if (type === 'FEE_REMINDER') {
       recipients = await sql`

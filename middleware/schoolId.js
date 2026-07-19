@@ -44,6 +44,8 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/paperforge\/ingest\/?$/i,
   /^\/api\/v1\/paperforge\/ingest\/[^/]+\/?$/i,
   /^\/api\/v1\/paperforge\/health\/?$/i,
+  /^\/api\/v1\/paperforge\/generate\/?$/i,
+  /^\/api\/v1\/paperforge\/export\/[^/]+\/?$/i,
   // Payment Gateway (Phase 2): school_id MUST come from the JWT, never from the
   // client. These must be added in the same change that introduces the routes so
   // there is never a window where the route trusts a client-supplied school_id.

@@ -422,10 +422,19 @@ router.get('/routes/:id', requirePermission('transport.view'), asyncHandler(asyn
 router.put('/routes/:id', requirePermission('transport.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { name, name_te, code, description, description_te, start_point, start_point_te, end_point, end_point_te, monthly_fee, direction, bus_id, is_active } = req.body;
+  const clearOrSetBus = Object.prototype.hasOwnProperty.call(req.body, 'bus_id');
 
   // T3 FIX: Ownership check first
   const [existing] = await sql`SELECT id FROM transport_routes WHERE id = ${id} AND school_id = ${req.schoolId}`;
   if (!existing) return res.status(404).json({ error: 'Route not found' });
+
+  if (clearOrSetBus && bus_id) {
+    const [bus] = await sql`
+      SELECT id FROM buses
+      WHERE id = ${bus_id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+    if (!bus) return res.status(404).json({ error: 'Bus not found' });
+  }
 
   // Auto-translate name if name_te not provided
   let finalNameTe = name_te ?? null;
@@ -443,8 +452,12 @@ router.put('/routes/:id', requirePermission('transport.manage'), asyncHandler(as
       end_point = COALESCE(${end_point ?? null}, end_point),
       monthly_fee = COALESCE(${monthly_fee ?? null}, monthly_fee),
       direction = COALESCE(${direction ?? null}, direction),
-      bus_id = COALESCE(${bus_id ?? null}, bus_id),
-      is_active = COALESCE(${is_active ?? null}, is_active)
+      bus_id = CASE
+        WHEN ${clearOrSetBus} THEN ${bus_id ?? null}
+        ELSE bus_id
+      END,
+      is_active = COALESCE(${is_active ?? null}, is_active),
+      updated_at = NOW()
     WHERE id = ${id} AND school_id = ${req.schoolId}
     RETURNING *
   `;
@@ -633,14 +646,35 @@ router.get('/buses', requirePermission('transport.view'), asyncHandler(async (re
       COALESCE(p.display_name, b.driver_name) as driver_name,
       p.display_name as assigned_driver_name,
       s.staff_code as driver_code,
-      MAX(r.name) as route_name,
-      COUNT(DISTINCT r.id) as route_count
+      (
+        SELECT r.id FROM transport_routes r
+        WHERE r.bus_id = b.id
+          AND r.school_id = ${req.schoolId}
+          AND r.is_active = true
+          AND r.deleted_at IS NULL
+        ORDER BY r.updated_at DESC NULLS LAST, r.name
+        LIMIT 1
+      ) as route_id,
+      (
+        SELECT r.name FROM transport_routes r
+        WHERE r.bus_id = b.id
+          AND r.school_id = ${req.schoolId}
+          AND r.is_active = true
+          AND r.deleted_at IS NULL
+        ORDER BY r.updated_at DESC NULLS LAST, r.name
+        LIMIT 1
+      ) as route_name,
+      (
+        SELECT COUNT(*)::int FROM transport_routes r
+        WHERE r.bus_id = b.id
+          AND r.school_id = ${req.schoolId}
+          AND r.is_active = true
+          AND r.deleted_at IS NULL
+      ) as route_count
     FROM buses b
     LEFT JOIN staff s ON b.driver_id = s.id AND s.school_id = ${req.schoolId}
     LEFT JOIN persons p ON s.person_id = p.id
-    LEFT JOIN transport_routes r ON r.bus_id = b.id AND r.is_active = true
     WHERE b.deleted_at IS NULL AND b.school_id = ${req.schoolId}
-    GROUP BY b.id, p.display_name, s.staff_code, b.driver_name
     ORDER BY b.bus_no
   `;
   return sendSuccess(res, req.schoolId, buses);
@@ -674,17 +708,29 @@ router.post('/buses', requirePermission('transport.manage'), asyncHandler(async 
 router.put('/buses/:id', requirePermission('transport.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { bus_no, registration_no, capacity, driver_id, is_active } = req.body;
+  const clearOrSetDriver = Object.prototype.hasOwnProperty.call(req.body, 'driver_id');
 
   // T5 FIX: Ownership check first
   const [existing] = await sql`SELECT id FROM buses WHERE id = ${id} AND school_id = ${req.schoolId}`;
   if (!existing) return res.status(404).json({ error: 'Bus not found' });
+
+  if (clearOrSetDriver && driver_id) {
+    const [driver] = await sql`
+      SELECT id FROM staff
+      WHERE id = ${driver_id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+  }
 
   const [bus] = await sql`
     UPDATE buses SET
       bus_no = COALESCE(${bus_no ?? null}, bus_no),
       registration_no = COALESCE(${registration_no ?? null}, registration_no),
       capacity = COALESCE(${capacity ?? null}, capacity),
-      driver_id = COALESCE(${driver_id ?? null}, driver_id),
+      driver_id = CASE
+        WHEN ${clearOrSetDriver} THEN ${driver_id ?? null}
+        ELSE driver_id
+      END,
       is_active = COALESCE(${is_active ?? null}, is_active)
     WHERE id = ${id} AND school_id = ${req.schoolId}
     RETURNING *
@@ -692,6 +738,157 @@ router.put('/buses/:id', requirePermission('transport.manage'), asyncHandler(asy
 
   if (!bus) return res.status(404).json({ error: 'Bus not found' });
   return sendSuccess(res, req.schoolId, { message: 'Bus updated', bus });
+}));
+
+/**
+ * PUT /transport/buses/:id/assignment
+ * Independently set or clear driver and/or route on a bus.
+ * Omit a field to leave it unchanged; send null to clear it.
+ */
+router.put('/buses/:id/assignment', requirePermission('transport.manage'), asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const hasDriver = Object.prototype.hasOwnProperty.call(req.body, 'driver_id');
+  const hasRoute = Object.prototype.hasOwnProperty.call(req.body, 'route_id');
+  const { driver_id = null, route_id = null } = req.body || {};
+
+  if (!hasDriver && !hasRoute) {
+    return res.status(400).json({ error: 'Provide driver_id and/or route_id (null to clear)' });
+  }
+
+  const [bus] = await sql`
+    SELECT id, driver_id FROM buses
+    WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+  `;
+  if (!bus) return res.status(404).json({ error: 'Bus not found' });
+
+  if (hasDriver && driver_id) {
+    const [driver] = await sql`
+      SELECT id FROM staff
+      WHERE id = ${driver_id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+  }
+
+  if (hasRoute && route_id) {
+    const [route] = await sql`
+      SELECT id FROM transport_routes
+      WHERE id = ${route_id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+    if (!route) return res.status(404).json({ error: 'Route not found' });
+  }
+
+  const linkedRoutes = await sql`
+    SELECT id FROM transport_routes
+    WHERE bus_id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+  `;
+  const previousRouteIds = linkedRoutes.map((r) => r.id);
+  const effectiveDriverId = hasDriver ? driver_id : bus.driver_id;
+  let effectiveRouteId = hasRoute
+    ? route_id
+    : (previousRouteIds[0] || null);
+
+  if (hasDriver) {
+    await sql`
+      UPDATE buses
+      SET driver_id = ${driver_id}
+      WHERE id = ${id} AND school_id = ${req.schoolId}
+    `;
+  }
+
+  if (hasRoute) {
+    // Detach this bus from any currently linked routes
+    await sql`
+      UPDATE transport_routes
+      SET bus_id = NULL, updated_at = NOW()
+      WHERE bus_id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+
+    if (route_id) {
+      // If another bus owned this route, take it over
+      await sql`
+        UPDATE transport_routes
+        SET bus_id = ${id}, updated_at = NOW()
+        WHERE id = ${route_id} AND school_id = ${req.schoolId}
+      `;
+      effectiveRouteId = route_id;
+    } else {
+      effectiveRouteId = null;
+    }
+  }
+
+  // Keep driver_route_assignments in sync with the effective pairing
+  if (hasDriver || hasRoute) {
+    const routesToClear = hasRoute
+      ? previousRouteIds.filter((rid) => rid !== effectiveRouteId)
+      : [];
+
+    if (hasRoute && !effectiveRouteId && previousRouteIds.length) {
+      routesToClear.push(...previousRouteIds);
+    }
+
+    if (routesToClear.length) {
+      await sql`
+        UPDATE driver_route_assignments
+        SET is_active = false, deleted_at = NOW()
+        WHERE school_id = ${req.schoolId}
+          AND route_id = ANY(${routesToClear})
+          AND deleted_at IS NULL
+      `;
+    }
+
+    if (effectiveRouteId && effectiveDriverId) {
+      await sql`
+        INSERT INTO driver_route_assignments (school_id, route_id, driver_id, is_active)
+        VALUES (${req.schoolId}, ${effectiveRouteId}, ${effectiveDriverId}, true)
+        ON CONFLICT (school_id, route_id, driver_id)
+        DO UPDATE SET is_active = true, deleted_at = NULL, updated_at = NOW()
+      `;
+      // Deactivate other drivers on this route
+      await sql`
+        UPDATE driver_route_assignments
+        SET is_active = false, deleted_at = NOW()
+        WHERE school_id = ${req.schoolId}
+          AND route_id = ${effectiveRouteId}
+          AND driver_id <> ${effectiveDriverId}
+          AND deleted_at IS NULL
+      `;
+    } else if (effectiveRouteId && hasDriver && !effectiveDriverId) {
+      await sql`
+        UPDATE driver_route_assignments
+        SET is_active = false, deleted_at = NOW()
+        WHERE school_id = ${req.schoolId}
+          AND route_id = ${effectiveRouteId}
+          AND deleted_at IS NULL
+      `;
+    }
+  }
+
+  const [updated] = await sql`
+    SELECT
+      b.id, b.bus_no, b.registration_no, b.capacity, b.is_active, b.driver_id,
+      COALESCE(p.display_name, b.driver_name) as driver_name,
+      (
+        SELECT r.id FROM transport_routes r
+        WHERE r.bus_id = b.id AND r.school_id = ${req.schoolId}
+          AND r.is_active = true AND r.deleted_at IS NULL
+        ORDER BY r.updated_at DESC NULLS LAST LIMIT 1
+      ) as route_id,
+      (
+        SELECT r.name FROM transport_routes r
+        WHERE r.bus_id = b.id AND r.school_id = ${req.schoolId}
+          AND r.is_active = true AND r.deleted_at IS NULL
+        ORDER BY r.updated_at DESC NULLS LAST LIMIT 1
+      ) as route_name
+    FROM buses b
+    LEFT JOIN staff s ON b.driver_id = s.id AND s.school_id = ${req.schoolId}
+    LEFT JOIN persons p ON s.person_id = p.id
+    WHERE b.id = ${id} AND b.school_id = ${req.schoolId}
+  `;
+
+  return sendSuccess(res, req.schoolId, {
+    message: 'Assignment updated',
+    bus: updated,
+  });
 }));
 
 /**

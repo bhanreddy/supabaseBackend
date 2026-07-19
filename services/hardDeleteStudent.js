@@ -32,9 +32,16 @@ async function runDeleteTransaction(tx, schoolId, studentId) {
     JOIN target_students ts ON ts.person_id = u.person_id
     WHERE u.school_id = ${schoolId}
   `;
+  // Explicit PK so parent-person inserts can safely de-dupe.
   await tx`
-    CREATE TEMP TABLE target_persons ON COMMIT DROP AS
-    SELECT person_id AS id FROM target_students
+    CREATE TEMP TABLE target_persons (
+      id UUID PRIMARY KEY
+    ) ON COMMIT DROP
+  `;
+  await tx`
+    INSERT INTO target_persons (id)
+    SELECT person_id FROM target_students
+    WHERE person_id IS NOT NULL
   `;
   // Parents are shared entities — only orphaned ones (no other child) get wiped.
   await tx`
@@ -245,6 +252,54 @@ async function runDeleteTransaction(tx, schoolId, studentId) {
       RETURNING sp.id
     ) SELECT count(*)::int AS count FROM deleted`);
 
+  // ── Messenger + portal-switcher rows (FK NO ACTION on students/users) ───────
+  // Conversations cascade to messages / participants / typing / outbox.
+  await del('message_conversations', `
+    WITH deleted AS (
+      DELETE FROM public.message_conversations mc
+      WHERE mc.school_id = ${schoolId}
+        AND (
+          mc.student_id IN (SELECT id FROM target_students)
+          OR mc.participant_low_user_id IN (SELECT id FROM target_users)
+          OR mc.participant_high_user_id IN (SELECT id FROM target_users)
+          OR mc.created_by IN (SELECT id FROM target_users)
+        )
+      RETURNING mc.id
+    ) SELECT count(*)::int AS count FROM deleted`);
+
+  await del('leave_applications', `
+    WITH deleted AS (
+      DELETE FROM public.leave_applications la USING target_users tu
+      WHERE la.applicant_id = tu.id OR la.reviewed_by = tu.id
+      RETURNING la.id
+    ) SELECT count(*)::int AS count FROM deleted`);
+
+  // context_switch_logs must go before user_access_contexts (NO ACTION FKs).
+  await del('context_switch_logs', `
+    WITH deleted AS (
+      DELETE FROM public.context_switch_logs csl
+      USING public.user_access_contexts uac
+      WHERE (csl.from_context_id = uac.id OR csl.to_context_id = uac.id)
+        AND (
+          uac.student_id IN (SELECT id FROM target_students)
+          OR uac.user_id IN (SELECT id FROM target_users)
+          OR uac.parent_id IN (SELECT id FROM target_parents)
+        )
+      RETURNING csl.id
+    ) SELECT count(*)::int AS count FROM deleted`);
+
+  await del('user_access_contexts', `
+    WITH deleted AS (
+      DELETE FROM public.user_access_contexts uac
+      WHERE uac.school_id = ${schoolId}
+        AND (
+          uac.student_id IN (SELECT id FROM target_students)
+          OR uac.user_id IN (SELECT id FROM target_users)
+          OR uac.parent_id IN (SELECT id FROM target_parents)
+        )
+      RETURNING uac.id
+    ) SELECT count(*)::int AS count FROM deleted`);
+
   // ── Notifications & per-user rows (parents/students) ────────────────────────
   await del('notification_dispatch_recipients', `
     WITH deleted AS (
@@ -363,10 +418,12 @@ async function deleteAuthUsers(authUserIds) {
  * @returns {Promise<{ deleted: boolean, stats: object, authFailures: object[] }>}
  */
 export async function hardDeleteStudent(schoolId, studentId) {
-  if (!Number.isInteger(schoolId) || schoolId <= 0) throw new Error('Invalid schoolId');
+  // Middleware always sets req.schoolId as a string; coerce so the API path works.
+  const sid = typeof schoolId === 'number' ? schoolId : Number(schoolId);
+  if (!Number.isInteger(sid) || sid <= 0) throw new Error('Invalid schoolId');
   if (typeof studentId !== 'string' || !UUID_RE.test(studentId)) throw new Error('Invalid studentId');
 
-  const result = await sql.begin((tx) => runDeleteTransaction(tx, schoolId, studentId));
+  const result = await sql.begin((tx) => runDeleteTransaction(tx, sid, studentId));
 
   let authFailures = [];
   if (result.authUserIds.length > 0 && supabaseAdmin) {

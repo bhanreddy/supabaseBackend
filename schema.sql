@@ -7419,6 +7419,8 @@ CREATE TABLE IF NOT EXISTS messages (
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
     sender_user_id UUID NOT NULL REFERENCES users(id),
     body TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 4000),
+    reply_to_message_id UUID NULL REFERENCES messages(id) ON DELETE SET NULL,
+    forwarded_from_message_id UUID NULL REFERENCES messages(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     edited_at TIMESTAMPTZ NULL,
     deleted_at TIMESTAMPTZ NULL
@@ -7431,6 +7433,10 @@ CREATE TABLE IF NOT EXISTS messages (
 -- Thread messages: keyset pagination by (created_at DESC, id DESC)
 CREATE INDEX IF NOT EXISTS idx_messages_conv_created
     ON messages (conversation_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to
+    ON messages (reply_to_message_id)
+    WHERE reply_to_message_id IS NOT NULL;
 
 -- Conversation list for a user: find all conversations where user is participant_low
 CREATE INDEX IF NOT EXISTS idx_conv_low_user

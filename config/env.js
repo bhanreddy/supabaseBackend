@@ -96,6 +96,8 @@ const config = {
         timeoutMs: Number(optional('PAPERFORGE_TIMEOUT_MS', '30000')),
         // Longer timeout for the streamed PDF upload to /ingest.
         uploadTimeoutMs: Number(optional('PAPERFORGE_UPLOAD_TIMEOUT_MS', '120000')),
+        // LLM generation and document export may take longer than status calls.
+        generationTimeoutMs: Number(optional('PAPERFORGE_GENERATION_TIMEOUT_MS', '180000')),
     },
     rateLimit: {
         // Dev churns requests via hot-reload/multi-tab remounts against one

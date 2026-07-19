@@ -13,6 +13,9 @@ networks:
   public_net:
     driver: bridge
     name: supabase_backend_public
+  paperforge_internal:
+    external: true
+    name: paperforge_internal
 
 services:
   # ----------------------------------------------------------------------
@@ -31,6 +34,7 @@ services:
     # PRODUCTION RULE: Custom bridge network (no default network)
     networks:
       - public_net
+      - paperforge_internal
 
     # External access: Expose port to host so external Load Balancer/Proxy can hit it
     # Uses configurable PORT from .env, falling back to 3001

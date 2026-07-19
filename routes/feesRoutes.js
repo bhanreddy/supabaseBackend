@@ -1002,7 +1002,8 @@ async function getStudentFeeDuesForReceipt(studentId, schoolId, academicYearCode
     ...tuitionDues,
     {
       student_fee_id: null,
-      fee_type: 'Transport',
+      fee_type: 'Transport Fee',
+      stop_name: transportDue.stop_name,
       academic_year: transportDue.academic_year,
       amount_due: transportDue.fee_amount,
       amount_paid: transportDue.paid_amount,
@@ -1036,6 +1037,7 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
     admission_no,
     father_name,
     mobile,
+    village,
   } = req.query;
   const feeMode = await getSchoolFeeMode(req.schoolId);
   const structureModeFilter = activeStructureFilter(feeMode);
@@ -1048,6 +1050,8 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
   const admissionNoText = typeof admission_no === 'string' ? admission_no.trim() : '';
   const fatherNameText = typeof father_name === 'string' ? father_name.trim() : '';
   const mobileText = typeof mobile === 'string' ? mobile.trim().replace(/\D/g, '') : '';
+  // Village is the transport stop name (stop_name) from student_transport.
+  const villageText = typeof village === 'string' ? village.trim() : '';
 
   const baseWhere = sql`s.deleted_at IS NULL AND s.school_id = ${req.schoolId}`;
   const classFilter = class_id ? sql`AND c.id = ${class_id}` : sql``;
@@ -1096,7 +1100,19 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
         )
       )`
     : sql``;
-  const extraFilters = sql`${admissionFilter} ${fatherNameFilter} ${mobileFilter}`;
+  const villageFilter = villageText
+    ? sql`AND EXISTS (
+        SELECT 1
+        FROM student_transport st
+        JOIN transport_stops ts ON ts.id = st.stop_id AND ts.deleted_at IS NULL
+        WHERE st.student_id = s.id
+          AND st.school_id = ${req.schoolId}
+          AND st.is_active = TRUE
+          ${academic_year_id ? sql`AND st.academic_year_id = ${academic_year_id}` : sql``}
+          AND ts.name ILIKE ${'%' + villageText + '%'}
+      )`
+    : sql``;
+  const extraFilters = sql`${admissionFilter} ${fatherNameFilter} ${mobileFilter} ${villageFilter}`;
   const statusFilter = selectedStatus ? sql`AND status = ${selectedStatus}` : sql``;
   const ayFilter = academic_year_id
     ? sql`AND sf.fee_structure_id IN (

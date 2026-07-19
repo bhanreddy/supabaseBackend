@@ -150,3 +150,37 @@ export async function forwardHealth({ schoolId, userId }) {
     throw normaliseError(err);
   }
 }
+
+/** POST /generate — blueprint JSON to a grounded, compliance-checked paper. */
+export async function forwardGenerate({ schoolId, userId, blueprint }) {
+  try {
+    const response = await axios.post(`${ENGINE_URL}/generate`, blueprint, {
+      headers: {
+        ...identityHeaders(schoolId, userId),
+        'Content-Type': 'application/json',
+      },
+      timeout: config.paperforge.generationTimeoutMs,
+      maxBodyLength: 512 * 1024,
+      maxContentLength: 2 * 1024 * 1024,
+      maxRedirects: 0,
+    });
+    return response.data;
+  } catch (err) {
+    throw normaliseError(err);
+  }
+}
+
+/** GET /export/{paper_id} — return the engine file response without buffering. */
+export async function forwardExport({ schoolId, userId, paperId, format }) {
+  try {
+    return await axios.get(`${ENGINE_URL}/export/${encodeURIComponent(paperId)}`, {
+      headers: identityHeaders(schoolId, userId),
+      params: { format },
+      responseType: 'stream',
+      timeout: config.paperforge.generationTimeoutMs,
+      maxRedirects: 0,
+    });
+  } catch (err) {
+    throw normaliseError(err);
+  }
+}

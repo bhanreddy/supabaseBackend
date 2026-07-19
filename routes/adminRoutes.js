@@ -1,4 +1,5 @@
 import express from 'express';
+import XLSX from 'xlsx';
 import sql from '../db.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
@@ -6,6 +7,7 @@ import { requireRole } from '../middleware/requireRole.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { ACCOUNTS_STAT_KEYS, resolveAccountsDashboardConfig } from '../utils/constants.js';
 import { activeStructureFilter, getSchoolFeeMode } from '../services/feeModeService.js';
+import { getTranslationStats, probeTranslation } from '../services/geminiTranslator.js';
 
 const router = express.Router();
 
@@ -56,6 +58,140 @@ async function ensureAccountAccessOverrideColumns() {
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS unrestricted_access_granted_by UUID REFERENCES users(id) ON DELETE SET NULL`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS unrestricted_access_granted_at TIMESTAMPTZ`;
     accountAccessOverrideColumnsReady = true;
+}
+
+/**
+ * Resolve the academic year used by the due-list report. The school setting is
+ * authoritative; the most recent year is only a safe fallback for older data.
+ */
+async function resolveDueListAcademicYear(schoolId, requestedYearId) {
+    if (requestedYearId) {
+        const [year] = await sql`
+            SELECT id, code
+            FROM academic_years
+            WHERE id = ${requestedYearId}
+              AND school_id = ${schoolId}
+              AND deleted_at IS NULL
+            LIMIT 1
+        `;
+        return year || null;
+    }
+
+    const [year] = await sql`
+        SELECT ay.id, ay.code
+        FROM academic_years ay
+        LEFT JOIN school_settings ss
+          ON ss.school_id = ay.school_id
+         AND ss.key = 'active_academic_year_id'
+         AND ss.value = ay.id::text
+        WHERE ay.school_id = ${schoolId}
+          AND ay.deleted_at IS NULL
+        ORDER BY CASE WHEN ss.value IS NOT NULL THEN 0 ELSE 1 END, ay.start_date DESC
+        LIMIT 1
+    `;
+    return year || null;
+}
+
+function money(value) {
+    return Number(value || 0);
+}
+
+function buildDueListWorkbook({ schoolName, academicYear, rows, filters }) {
+    const generatedAt = new Date().toLocaleString('en-IN');
+    const totals = rows.reduce((acc, row) => ({
+        schoolTotal: acc.schoolTotal + money(row.school_total_fee),
+        discount: acc.discount + money(row.discount_given),
+        finalFee: acc.finalFee + money(row.final_fee),
+        paid: acc.paid + money(row.paid_fee),
+        due: acc.due + money(row.due_amount),
+    }), { schoolTotal: 0, discount: 0, finalFee: 0, paid: 0, due: 0 });
+
+    const filtersText = [
+        filters.class_name ? `Class: ${filters.class_name}` : null,
+        filters.section_name ? `Section: ${filters.section_name}` : null,
+        filters.village_name ? `Village: ${filters.village_name}` : null,
+        filters.overdue_only ? 'Only overdue dues' : null,
+    ].filter(Boolean).join(' | ') || 'All pending fees';
+
+    const sheetRows = [
+        [`${schoolName || 'School'} — Pending Fees Due List`],
+        ['Academic Year', academicYear],
+        ['Filters', filtersText],
+        ['Generated', generatedAt],
+        [],
+        ['Students', rows.length, 'School Total Fee', totals.schoolTotal, 'Discount Given', totals.discount, 'Final Fee', totals.finalFee, 'Paid Fee', totals.paid, 'Due Amount', totals.due],
+        [],
+        ['S.No.', 'Admission No.', 'Student Name', 'Class', 'Section', 'Roll No.', 'Village / Stop', 'Route', 'School Total Fee', 'Discount Given', 'Final Fee', 'Paid Fee', 'Due Amount', 'Fee Items', 'Earliest Due Date', 'Overdue'],
+        ...rows.map((row, index) => [
+            index + 1,
+            row.admission_no || '',
+            row.student_name || '',
+            row.class_name || '',
+            row.section_name || '',
+            row.roll_number ?? '',
+            row.village || 'Not assigned',
+            row.route_name || '',
+            money(row.school_total_fee),
+            money(row.discount_given),
+            money(row.final_fee),
+            money(row.paid_fee),
+            money(row.due_amount),
+            Number(row.fee_item_count || 0),
+            row.earliest_due_date || '',
+            row.is_overdue ? 'Yes' : 'No',
+        ]),
+        [],
+        ['TOTAL', '', '', '', '', '', '', '', totals.schoolTotal, totals.discount, totals.finalFee, totals.paid, totals.due],
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+    worksheet['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 15 } },
+    ];
+    worksheet['!cols'] = [
+        { wch: 8 }, { wch: 16 }, { wch: 28 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 22 }, { wch: 20 },
+        { wch: 17 }, { wch: 17 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 17 }, { wch: 10 },
+    ];
+    worksheet['!autofilter'] = { ref: `A8:P${Math.max(8, rows.length + 8)}` };
+    worksheet['!freeze'] = { xSplit: 0, ySplit: 8 };
+
+    const headerStyle = {
+        fill: { fgColor: { rgb: '5B21B6' } },
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    };
+    const summaryLabelStyle = { font: { bold: true, color: { rgb: '4C1D95' } }, fill: { fgColor: { rgb: 'EDE9FE' } } };
+    const currencyFormat = '₹#,##0.00';
+
+    for (let col = 0; col < 16; col += 1) {
+        const cell = XLSX.utils.encode_cell({ r: 7, c: col });
+        if (worksheet[cell]) worksheet[cell].s = headerStyle;
+    }
+    for (const cell of ['A1', 'A6', 'C6', 'E6', 'G6', 'I6', 'K6']) {
+        if (worksheet[cell]) worksheet[cell].s = summaryLabelStyle;
+    }
+    for (const cell of ['D6', 'F6', 'H6', 'J6', 'L6']) {
+        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
+    }
+    for (let row = 8; row <= rows.length + 8; row += 1) {
+        for (const col of [8, 9, 10, 11, 12]) {
+            const cell = XLSX.utils.encode_cell({ r: row, c: col });
+            if (worksheet[cell]) worksheet[cell].z = currencyFormat;
+        }
+    }
+    const totalRow = rows.length + 9;
+    for (let col = 0; col < 16; col += 1) {
+        const cell = XLSX.utils.encode_cell({ r: totalRow, c: col });
+        if (worksheet[cell]) worksheet[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: 'FEF3C7' } } };
+    }
+    for (const col of [8, 9, 10, 11, 12]) {
+        const cell = XLSX.utils.encode_cell({ r: totalRow, c: col });
+        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
+    }
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Pending Fees');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
 }
 
 /**
@@ -839,6 +975,191 @@ router.patch('/account-access/:userId', requireAuth, requireRole('admin', 'princ
  * Full finance summary for the admin Finance & Collection screen.
  * Never gated by accounts_dashboard_config visibility toggles.
  */
+/**
+ * GET /admin/pending-fees/filter-options
+ * Filter values are derived from students who currently have a school-fee due.
+ * A transport stop is presented as a village because that is the available,
+ * maintained locality field in this installation's transport data.
+ */
+router.get('/pending-fees/filter-options', requirePermission('fees.view'), asyncHandler(async (req, res) => {
+    const schoolId = req.schoolId;
+    const academicYear = await resolveDueListAcademicYear(schoolId, req.query.academic_year_id);
+    if (!academicYear) {
+        return res.status(404).json({ error: 'No academic year configured for this school.' });
+    }
+
+    const feeMode = await getSchoolFeeMode(schoolId);
+    const structureModeFilter = activeStructureFilter(feeMode);
+    const [classes, sections, villages] = await Promise.all([
+        sql`
+            SELECT DISTINCT c.id, c.name
+            FROM student_fees sf
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            JOIN student_enrollments se ON se.student_id = sf.student_id
+              AND se.academic_year_id = fs.academic_year_id
+              AND se.school_id = ${schoolId}
+              AND se.status = 'active'
+              AND se.deleted_at IS NULL
+            JOIN class_sections cs ON cs.id = se.class_section_id AND cs.deleted_at IS NULL
+            JOIN classes c ON c.id = cs.class_id AND c.deleted_at IS NULL
+            WHERE sf.school_id = ${schoolId}
+              AND fs.academic_year_id = ${academicYear.id}
+              AND sf.deleted_at IS NULL
+              AND fs.deleted_at IS NULL
+              AND sf.status IN ('pending', 'partial', 'overdue')
+              AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+              ${structureModeFilter}
+            ORDER BY c.name
+        `,
+        sql`
+            SELECT DISTINCT sec.id, sec.name
+            FROM student_fees sf
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            JOIN student_enrollments se ON se.student_id = sf.student_id
+              AND se.academic_year_id = fs.academic_year_id
+              AND se.school_id = ${schoolId}
+              AND se.status = 'active'
+              AND se.deleted_at IS NULL
+            JOIN class_sections cs ON cs.id = se.class_section_id AND cs.deleted_at IS NULL
+            JOIN sections sec ON sec.id = cs.section_id AND sec.deleted_at IS NULL
+            WHERE sf.school_id = ${schoolId}
+              AND fs.academic_year_id = ${academicYear.id}
+              AND sf.deleted_at IS NULL
+              AND fs.deleted_at IS NULL
+              AND sf.status IN ('pending', 'partial', 'overdue')
+              AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+              ${structureModeFilter}
+            ORDER BY sec.name
+        `,
+        sql`
+            SELECT DISTINCT ts.id, ts.name, tr.name AS route_name
+            FROM student_fees sf
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            JOIN student_transport st ON st.student_id = sf.student_id
+              AND st.academic_year_id = fs.academic_year_id
+              AND st.school_id = ${schoolId}
+              AND st.is_active = TRUE
+            JOIN transport_stops ts ON ts.id = st.stop_id AND ts.deleted_at IS NULL
+            JOIN transport_routes tr ON tr.id = st.route_id AND tr.deleted_at IS NULL
+            WHERE sf.school_id = ${schoolId}
+              AND fs.academic_year_id = ${academicYear.id}
+              AND sf.deleted_at IS NULL
+              AND fs.deleted_at IS NULL
+              AND sf.status IN ('pending', 'partial', 'overdue')
+              AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+              ${structureModeFilter}
+            ORDER BY ts.name, tr.name
+        `,
+    ]);
+
+    return sendSuccess(res, schoolId, {
+        academic_year: academicYear,
+        classes,
+        sections,
+        villages: villages.map((village) => ({
+            ...village,
+            label: village.route_name ? `${village.name} · ${village.route_name}` : village.name,
+        })),
+    });
+}));
+
+/**
+ * GET /admin/pending-fees/export
+ * One row per student, aggregating every outstanding school fee into the due
+ * figures used by Finance & Collection. Transport data is only used for the
+ * optional village/stop and route filters; transport fees are not mixed into
+ * the school-fee totals.
+ */
+router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
+    const schoolId = req.schoolId;
+    const { academic_year_id, class_id, section_id, village_id, overdue_only } = req.query;
+    const academicYear = await resolveDueListAcademicYear(schoolId, academic_year_id);
+    if (!academicYear) {
+        return res.status(404).json({ error: 'No academic year configured for this school.' });
+    }
+
+    const feeMode = await getSchoolFeeMode(schoolId);
+    const structureModeFilter = activeStructureFilter(feeMode);
+    const rows = await sql`
+        SELECT
+            s.admission_no,
+            p.display_name AS student_name,
+            c.name AS class_name,
+            sec.name AS section_name,
+            se.roll_number,
+            ts.name AS village,
+            tr.name AS route_name,
+            COALESCE(SUM(sf.amount_due), 0)::numeric AS school_total_fee,
+            COALESCE(SUM(sf.discount), 0)::numeric AS discount_given,
+            COALESCE(SUM(sf.amount_due - sf.discount), 0)::numeric AS final_fee,
+            COALESCE(SUM(sf.amount_paid), 0)::numeric AS paid_fee,
+            COALESCE(SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)), 0)::numeric AS due_amount,
+            COUNT(sf.id)::int AS fee_item_count,
+            MIN(sf.due_date) AS earliest_due_date,
+            BOOL_OR(sf.due_date < CURRENT_DATE) AS is_overdue
+        FROM student_fees sf
+        JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+        JOIN students s ON s.id = sf.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
+        JOIN persons p ON p.id = s.person_id
+        JOIN student_enrollments se ON se.student_id = sf.student_id
+          AND se.academic_year_id = fs.academic_year_id
+          AND se.school_id = ${schoolId}
+          AND se.status = 'active'
+          AND se.deleted_at IS NULL
+        JOIN class_sections cs ON cs.id = se.class_section_id AND cs.deleted_at IS NULL
+        JOIN classes c ON c.id = cs.class_id AND c.deleted_at IS NULL
+        JOIN sections sec ON sec.id = cs.section_id AND sec.deleted_at IS NULL
+        LEFT JOIN student_transport st ON st.student_id = sf.student_id
+          AND st.academic_year_id = fs.academic_year_id
+          AND st.school_id = ${schoolId}
+          AND st.is_active = TRUE
+        LEFT JOIN transport_stops ts ON ts.id = st.stop_id AND ts.deleted_at IS NULL
+        LEFT JOIN transport_routes tr ON tr.id = st.route_id AND tr.deleted_at IS NULL
+        WHERE sf.school_id = ${schoolId}
+          AND fs.academic_year_id = ${academicYear.id}
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
+          AND sf.status IN ('pending', 'partial', 'overdue')
+          AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+          ${structureModeFilter}
+          ${class_id ? sql`AND c.id = ${class_id}` : sql``}
+          ${section_id ? sql`AND sec.id = ${section_id}` : sql``}
+          ${village_id ? sql`AND ts.id = ${village_id}` : sql``}
+        GROUP BY s.id, s.admission_no, p.display_name, c.name, sec.name, se.roll_number, ts.name, tr.name
+        HAVING ${overdue_only === 'true'} = FALSE OR BOOL_OR(sf.due_date < CURRENT_DATE)
+        ORDER BY c.name, sec.name, p.display_name
+    `;
+
+    const [school] = await sql`
+        SELECT name FROM schools WHERE id = ${schoolId} LIMIT 1
+    `;
+    const [classFilter] = class_id ? await sql`
+        SELECT name FROM classes WHERE id = ${class_id} AND school_id = ${schoolId} LIMIT 1
+    ` : [];
+    const [sectionFilter] = section_id ? await sql`
+        SELECT name FROM sections WHERE id = ${section_id} AND school_id = ${schoolId} LIMIT 1
+    ` : [];
+    const [villageFilter] = village_id ? await sql`
+        SELECT name FROM transport_stops WHERE id = ${village_id} AND school_id = ${schoolId} LIMIT 1
+    ` : [];
+
+    const buffer = buildDueListWorkbook({
+        schoolName: school?.name,
+        academicYear: academicYear.code,
+        rows,
+        filters: {
+            class_name: classFilter?.name,
+            section_name: sectionFilter?.name,
+            village_name: villageFilter?.name,
+            overdue_only: overdue_only === 'true',
+        },
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="pending-fees-due-list-${stamp}.xlsx"`);
+    return res.send(buffer);
+}));
+
 router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
     const { date } = req.query;
@@ -927,6 +1248,21 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
         defaulter_count: parseInt(defaulterCount?.count || 0, 10),
         recent_transactions: recentTransactions || [],
     });
+}));
+
+/**
+ * GET /admin/translation-health
+ * Admin diagnostic for the EN↔TE translation pipeline used by diary, notices
+ * and complaints. Reports cumulative engine counters and (unless ?probe=false)
+ * runs a live probe showing whether Gemini is answering or we've dropped to the
+ * free-scraper fallback (degraded). If `degraded` or `!healthy`, translations
+ * are unreliable — usually the Gemini key needs billing enabled.
+ */
+router.get('/translation-health', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    const stats = getTranslationStats();
+    const runProbe = String(req.query.probe ?? 'true') !== 'false';
+    const probe = runProbe ? await probeTranslation() : null;
+    return sendSuccess(res, req.schoolId, { stats, probe });
 }));
 
 export default router;

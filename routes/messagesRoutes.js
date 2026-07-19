@@ -6,6 +6,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { messageSendLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // ─── RBAC Helpers ─────────────────────────────────────────────────────────────
 
@@ -521,29 +522,56 @@ router.get('/conversations/:id/messages', requireAuth, asyncHandler(async (req, 
 
   let messages;
   if (since) {
-    // Delta sync: return messages newer than this timestamp
+    // Delta sync includes new, edited and deleted messages so every participant
+    // receives mutations without re-downloading the whole thread.
     messages = await sql`
-      SELECT m.id, m.conversation_id, m.sender_user_id, m.body,
+      SELECT m.id, m.conversation_id, m.sender_user_id,
+             CASE WHEN m.deleted_at IS NULL THEN m.body ELSE '' END AS body,
+             m.reply_to_message_id, m.forwarded_from_message_id,
+             CASE WHEN rm.deleted_at IS NULL THEN rm.body ELSE NULL END AS reply_to_body,
+             rm.sender_user_id AS reply_to_sender_user_id,
+             rp.display_name AS reply_to_sender_name,
              m.created_at, m.edited_at, m.deleted_at,
              p.display_name as sender_name, p.photo_url as sender_photo
       FROM messages m
       JOIN users u ON m.sender_user_id = u.id
       JOIN persons p ON u.person_id = p.id
+      LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+        AND rm.conversation_id = m.conversation_id
+      LEFT JOIN users ru ON ru.id = rm.sender_user_id
+      LEFT JOIN persons rp ON rp.id = ru.person_id
       WHERE m.conversation_id = ${id}
         AND m.school_id = ${req.schoolId}
-        AND m.created_at > ${since}
-      ORDER BY m.created_at ASC, m.id ASC
+        AND GREATEST(
+          m.created_at,
+          COALESCE(m.edited_at, m.created_at),
+          COALESCE(m.deleted_at, m.created_at)
+        ) > ${since}
+      ORDER BY GREATEST(
+        m.created_at,
+        COALESCE(m.edited_at, m.created_at),
+        COALESCE(m.deleted_at, m.created_at)
+      ) ASC, m.id ASC
       LIMIT ${lim}
     `;
   } else if (before) {
     // Keyset pagination: older messages
     messages = await sql`
-      SELECT m.id, m.conversation_id, m.sender_user_id, m.body,
+      SELECT m.id, m.conversation_id, m.sender_user_id,
+             CASE WHEN m.deleted_at IS NULL THEN m.body ELSE '' END AS body,
+             m.reply_to_message_id, m.forwarded_from_message_id,
+             CASE WHEN rm.deleted_at IS NULL THEN rm.body ELSE NULL END AS reply_to_body,
+             rm.sender_user_id AS reply_to_sender_user_id,
+             rp.display_name AS reply_to_sender_name,
              m.created_at, m.edited_at, m.deleted_at,
              p.display_name as sender_name, p.photo_url as sender_photo
       FROM messages m
       JOIN users u ON m.sender_user_id = u.id
       JOIN persons p ON u.person_id = p.id
+      LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+        AND rm.conversation_id = m.conversation_id
+      LEFT JOIN users ru ON ru.id = rm.sender_user_id
+      LEFT JOIN persons rp ON rp.id = ru.person_id
       WHERE m.conversation_id = ${id}
         AND m.school_id = ${req.schoolId}
         AND m.created_at < ${before}
@@ -553,12 +581,21 @@ router.get('/conversations/:id/messages', requireAuth, asyncHandler(async (req, 
   } else {
     // Latest messages (initial load)
     messages = await sql`
-      SELECT m.id, m.conversation_id, m.sender_user_id, m.body,
+      SELECT m.id, m.conversation_id, m.sender_user_id,
+             CASE WHEN m.deleted_at IS NULL THEN m.body ELSE '' END AS body,
+             m.reply_to_message_id, m.forwarded_from_message_id,
+             CASE WHEN rm.deleted_at IS NULL THEN rm.body ELSE NULL END AS reply_to_body,
+             rm.sender_user_id AS reply_to_sender_user_id,
+             rp.display_name AS reply_to_sender_name,
              m.created_at, m.edited_at, m.deleted_at,
              p.display_name as sender_name, p.photo_url as sender_photo
       FROM messages m
       JOIN users u ON m.sender_user_id = u.id
       JOIN persons p ON u.person_id = p.id
+      LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+        AND rm.conversation_id = m.conversation_id
+      LEFT JOIN users ru ON ru.id = rm.sender_user_id
+      LEFT JOIN persons rp ON rp.id = ru.person_id
       WHERE m.conversation_id = ${id}
         AND m.school_id = ${req.schoolId}
       ORDER BY m.created_at DESC, m.id DESC
@@ -575,7 +612,15 @@ router.get('/conversations/:id/messages', requireAuth, asyncHandler(async (req, 
  */
 router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { body } = req.body;
+  const requestedBody = typeof req.body.body === 'string' ? req.body.body : '';
+  const replyToMessageId =
+    typeof req.body.reply_to_message_id === 'string' && req.body.reply_to_message_id.trim()
+      ? req.body.reply_to_message_id.trim()
+      : null;
+  const forwardedFromMessageId =
+    typeof req.body.forwarded_from_message_id === 'string' && req.body.forwarded_from_message_id.trim()
+      ? req.body.forwarded_from_message_id.trim()
+      : null;
   // Optional client-generated id → idempotent sends (retries / offline queue /
   // double-taps all collapse to one server message).
   const clientMsgId =
@@ -583,10 +628,19 @@ router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyn
       ? req.body.client_msg_id.trim().slice(0, 100)
       : null;
 
-  if (!body || typeof body !== 'string' || body.trim().length === 0) {
+  if (replyToMessageId && forwardedFromMessageId) {
+    return res.status(400).json({ error: 'A message cannot be both a reply and a forward' });
+  }
+  if (
+    (replyToMessageId && !UUID_PATTERN.test(replyToMessageId))
+    || (forwardedFromMessageId && !UUID_PATTERN.test(forwardedFromMessageId))
+  ) {
+    return res.status(400).json({ error: 'Invalid referenced message id' });
+  }
+  if (!forwardedFromMessageId && requestedBody.trim().length === 0) {
     return res.status(400).json({ error: 'Message body is required' });
   }
-  if (body.length > 4000) {
+  if (requestedBody.length > 4000) {
     return res.status(400).json({ error: 'Message body cannot exceed 4000 characters' });
   }
 
@@ -611,6 +665,45 @@ router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyn
     return res.status(403).json({ error: 'Only group admins can post in a broadcast group' });
   }
 
+  let referencedMessage = null;
+  let messageBody = requestedBody.trim();
+
+  if (replyToMessageId) {
+    [referencedMessage] = await sql`
+      SELECT m.id, m.body, m.sender_user_id, p.display_name AS sender_name
+      FROM messages m
+      JOIN users u ON u.id = m.sender_user_id
+      JOIN persons p ON p.id = u.person_id
+      WHERE m.id = ${replyToMessageId}
+        AND m.conversation_id = ${id}
+        AND m.school_id = ${req.schoolId}
+        AND m.deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (!referencedMessage) {
+      return res.status(400).json({ error: 'The message being replied to is unavailable' });
+    }
+  }
+
+  if (forwardedFromMessageId) {
+    [referencedMessage] = await sql`
+      SELECT m.id, m.body, m.sender_user_id
+      FROM messages m
+      JOIN message_participants mp
+        ON mp.conversation_id = m.conversation_id
+        AND mp.user_id = ${req.user.internal_id}
+        AND mp.school_id = ${req.schoolId}
+      WHERE m.id = ${forwardedFromMessageId}
+        AND m.school_id = ${req.schoolId}
+        AND m.deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (!referencedMessage) {
+      return res.status(400).json({ error: 'The message being forwarded is unavailable' });
+    }
+    messageBody = referencedMessage.body;
+  }
+
   const otherUserIds = participants
     .filter((p) => p.user_id !== req.user.internal_id)
     .map((p) => p.user_id);
@@ -618,8 +711,14 @@ router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyn
   // Insert message idempotently (trigger auto-updates conversation preview).
   // On a client_msg_id conflict the row already exists → DO NOTHING, then re-read.
   const inserted = await sql`
-    INSERT INTO messages (conversation_id, school_id, sender_user_id, body, client_msg_id)
-    VALUES (${id}, ${req.schoolId}, ${req.user.internal_id}, ${body.trim()}, ${clientMsgId})
+    INSERT INTO messages (
+      conversation_id, school_id, sender_user_id, body, client_msg_id,
+      reply_to_message_id, forwarded_from_message_id
+    )
+    VALUES (
+      ${id}, ${req.schoolId}, ${req.user.internal_id}, ${messageBody}, ${clientMsgId},
+      ${replyToMessageId}, ${forwardedFromMessageId}
+    )
     ON CONFLICT (conversation_id, sender_user_id, client_msg_id) WHERE client_msg_id IS NOT NULL
     DO NOTHING
     RETURNING *
@@ -640,7 +739,7 @@ router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyn
 
   // Only notify on a genuinely NEW message (never re-notify on an idempotent retry).
   if (isNew && otherUserIds.length > 0) {
-    const preview = body.trim().slice(0, 80);
+    const preview = `${forwardedFromMessageId ? 'Forwarded: ' : ''}${messageBody}`.slice(0, 80);
     const label = conv.is_group ? `${conv.group_name} · ${senderName}` : senderName;
     queueMessageNotification(req.schoolId, otherUserIds, id, label, preview);
   }
@@ -648,7 +747,116 @@ router.post('/conversations/:id/messages', requireAuth, messageSendLimiter, asyn
   return sendSuccess(res, req.schoolId, {
     ...message,
     sender_name: senderName,
+    ...(replyToMessageId && referencedMessage
+      ? {
+          reply_to_body: referencedMessage.body,
+          reply_to_sender_user_id: referencedMessage.sender_user_id,
+          reply_to_sender_name: referencedMessage.sender_name,
+        }
+      : {}),
   }, 201);
+}));
+
+/**
+ * PATCH /conversations/:id/messages/:messageId
+ * Edit one of the caller's own, non-deleted messages.
+ */
+router.patch('/conversations/:id/messages/:messageId', requireAuth, asyncHandler(async (req, res) => {
+  const { id, messageId } = req.params;
+  const body = typeof req.body.body === 'string' ? req.body.body.trim() : '';
+
+  if (!UUID_PATTERN.test(id) || !UUID_PATTERN.test(messageId)) {
+    return res.status(400).json({ error: 'Invalid conversation or message id' });
+  }
+  if (!body) return res.status(400).json({ error: 'Message body is required' });
+  if (body.length > 4000) {
+    return res.status(400).json({ error: 'Message body cannot exceed 4000 characters' });
+  }
+
+  const [message] = await sql`
+    UPDATE messages m
+    SET body = ${body}, edited_at = now()
+    WHERE m.id = ${messageId}
+      AND m.conversation_id = ${id}
+      AND m.school_id = ${req.schoolId}
+      AND m.sender_user_id = ${req.user.internal_id}
+      AND m.deleted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM message_participants mp
+        WHERE mp.conversation_id = ${id}
+          AND mp.user_id = ${req.user.internal_id}
+          AND mp.school_id = ${req.schoolId}
+      )
+    RETURNING m.*
+  `;
+  if (!message) {
+    return res.status(404).json({ error: 'Message not found or cannot be edited' });
+  }
+
+  await sql`
+    UPDATE message_conversations mc
+    SET last_message_preview = LEFT(${body}, 100), updated_at = now()
+    WHERE mc.id = ${id}
+      AND mc.school_id = ${req.schoolId}
+      AND NOT EXISTS (
+        SELECT 1 FROM messages newer
+        WHERE newer.conversation_id = ${id}
+          AND (newer.created_at, newer.id) > (${message.created_at}, ${message.id})
+      )
+  `;
+
+  const senderName = await getSenderDisplayName(req.user.internal_id, req.schoolId);
+  return sendSuccess(res, req.schoolId, { ...message, sender_name: senderName });
+}));
+
+/**
+ * DELETE /conversations/:id/messages/:messageId
+ * Soft-delete one of the caller's own messages for every participant.
+ */
+router.delete('/conversations/:id/messages/:messageId', requireAuth, asyncHandler(async (req, res) => {
+  const { id, messageId } = req.params;
+  if (!UUID_PATTERN.test(id) || !UUID_PATTERN.test(messageId)) {
+    return res.status(400).json({ error: 'Invalid conversation or message id' });
+  }
+
+  const [message] = await sql`
+    UPDATE messages m
+    SET deleted_at = now()
+    WHERE m.id = ${messageId}
+      AND m.conversation_id = ${id}
+      AND m.school_id = ${req.schoolId}
+      AND m.sender_user_id = ${req.user.internal_id}
+      AND m.deleted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM message_participants mp
+        WHERE mp.conversation_id = ${id}
+          AND mp.user_id = ${req.user.internal_id}
+          AND mp.school_id = ${req.schoolId}
+      )
+    RETURNING m.*
+  `;
+  if (!message) {
+    return res.status(404).json({ error: 'Message not found or cannot be deleted' });
+  }
+
+  await sql`
+    UPDATE message_conversations mc
+    SET last_message_preview = 'Message deleted', updated_at = now()
+    WHERE mc.id = ${id}
+      AND mc.school_id = ${req.schoolId}
+      AND NOT EXISTS (
+        SELECT 1 FROM messages newer
+        WHERE newer.conversation_id = ${id}
+          AND (newer.created_at, newer.id) > (${message.created_at}, ${message.id})
+      )
+  `;
+
+  const senderName = await getSenderDisplayName(req.user.internal_id, req.schoolId);
+  return sendSuccess(res, req.schoolId, {
+    ...message,
+    body: '',
+    sender_name: senderName,
+  });
 }));
 
 /**

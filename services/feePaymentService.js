@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import sql from '../db.js';
 import { sendNotificationToUsers } from './notificationService.js';
+import { getStudentTransportDue, resolveAcademicYearCode } from './transportFeeService.js';
 
 const VALID_METHODS = ['cash', 'card', 'upi', 'bank_transfer', 'cheque', 'online'];
 
@@ -97,7 +98,7 @@ export async function postTermFeePayment(tx, {
   return { transaction, fee: updatedFee };
 }
 
-async function getStudentFeeDuesForReceipt(studentId, schoolId) {
+async function getStudentFeeDuesForReceipt(studentId, schoolId, academicYearCode = null) {
   const tuitionDues = await sql`
     SELECT
       sf.id as student_fee_id,
@@ -118,7 +119,34 @@ async function getStudentFeeDuesForReceipt(studentId, schoolId) {
       AND fs.deleted_at IS NULL
     ORDER BY ft.name, ay.code NULLS LAST
   `;
-  return tuitionDues;
+
+  const yearCode = academicYearCode || await resolveAcademicYearCode(schoolId);
+  const transportDue = yearCode
+    ? await getStudentTransportDue(studentId, yearCode, schoolId)
+    : null;
+
+  if (!transportDue || transportDue.fee_not_set) {
+    return tuitionDues;
+  }
+
+  return [
+    ...tuitionDues,
+    {
+      student_fee_id: null,
+      fee_type: 'Transport Fee',
+      stop_name: transportDue.stop_name,
+      academic_year: transportDue.academic_year,
+      amount_due: transportDue.fee_amount,
+      amount_paid: transportDue.paid_amount,
+      discount: 0,
+      balance_due: transportDue.balance_due,
+      status: transportDue.balance_due <= 0
+        ? 'paid'
+        : transportDue.paid_amount > 0
+          ? 'partial'
+          : 'pending',
+    },
+  ];
 }
 
 /**
@@ -192,7 +220,11 @@ export async function enrichFeeTransaction(transaction, schoolId) {
     return transaction;
   }
 
-  const fee_dues = await getStudentFeeDuesForReceipt(enrichedTransaction.student_id, schoolId);
+  const fee_dues = await getStudentFeeDuesForReceipt(
+    enrichedTransaction.student_id,
+    schoolId,
+    enrichedTransaction.academic_year,
+  );
 
   (async () => {
     try {
