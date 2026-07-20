@@ -1065,10 +1065,12 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
 
 /**
  * GET /admin/pending-fees/export
- * One row per student, aggregating every outstanding school fee into the due
- * figures used by Finance & Collection. Transport data is only used for the
- * optional village/stop and route filters; transport fees are not mixed into
- * the school-fee totals.
+ * One row per student with outstanding school-fee dues. Money columns
+ * (school total, discount, final fee, paid) aggregate ALL of that student's
+ * fee lines for the academic year — including fully waived / paid lines —
+ * so fee-adjustment waivers still appear under Discount Given. Due amount,
+ * fee-item count, earliest due date, and overdue flag stay based on
+ * outstanding lines only. Transport is used only for village/route filters.
  */
 router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
@@ -1080,53 +1082,89 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
 
     const feeMode = await getSchoolFeeMode(schoolId);
     const structureModeFilter = activeStructureFilter(feeMode);
+    // Money columns MUST be aggregated at the student_fees grain (one row per
+    // fee line). Joining student_enrollments / student_transport before the SUM
+    // fans out fee lines whenever a student has more than one matching row —
+    // e.g. two active enrollments in the same year after a mid-year section
+    // change — which multiplies school-total / discount / paid / due. So we
+    // aggregate fees per student in a CTE first, then join enrollment (deduped
+    // to the latest active row) and transport (unique per year) for display only.
     const rows = await sql`
+        WITH fee_agg AS (
+            SELECT
+                sf.student_id,
+                COALESCE(SUM(sf.amount_due), 0)::numeric AS school_total_fee,
+                COALESCE(SUM(sf.discount), 0)::numeric AS discount_given,
+                COALESCE(SUM(sf.amount_due - sf.discount), 0)::numeric AS final_fee,
+                COALESCE(SUM(sf.amount_paid), 0)::numeric AS paid_fee,
+                COALESCE(SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)), 0)::numeric AS due_amount,
+                COUNT(sf.id) FILTER (
+                  WHERE (sf.amount_due - sf.discount - sf.amount_paid) > 0
+                )::int AS fee_item_count,
+                MIN(sf.due_date) FILTER (
+                  WHERE (sf.amount_due - sf.discount - sf.amount_paid) > 0
+                ) AS earliest_due_date,
+                BOOL_OR(
+                  sf.due_date < CURRENT_DATE
+                  AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+                ) AS is_overdue
+            FROM student_fees sf
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            WHERE sf.school_id = ${schoolId}
+              AND fs.academic_year_id = ${academicYear.id}
+              AND sf.deleted_at IS NULL
+              AND fs.deleted_at IS NULL
+              ${structureModeFilter}
+            GROUP BY sf.student_id
+            HAVING SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) > 0
+        ),
+        enroll AS (
+            SELECT DISTINCT ON (se.student_id)
+                se.student_id,
+                se.roll_number,
+                cs.class_id,
+                cs.section_id
+            FROM student_enrollments se
+            JOIN class_sections cs ON cs.id = se.class_section_id AND cs.deleted_at IS NULL
+            WHERE se.academic_year_id = ${academicYear.id}
+              AND se.school_id = ${schoolId}
+              AND se.status = 'active'
+              AND se.deleted_at IS NULL
+            ORDER BY se.student_id, se.start_date DESC, se.created_at DESC
+        )
         SELECT
             s.admission_no,
             p.display_name AS student_name,
             c.name AS class_name,
             sec.name AS section_name,
-            se.roll_number,
+            en.roll_number,
             ts.name AS village,
             tr.name AS route_name,
-            COALESCE(SUM(sf.amount_due), 0)::numeric AS school_total_fee,
-            COALESCE(SUM(sf.discount), 0)::numeric AS discount_given,
-            COALESCE(SUM(sf.amount_due - sf.discount), 0)::numeric AS final_fee,
-            COALESCE(SUM(sf.amount_paid), 0)::numeric AS paid_fee,
-            COALESCE(SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)), 0)::numeric AS due_amount,
-            COUNT(sf.id)::int AS fee_item_count,
-            MIN(sf.due_date) AS earliest_due_date,
-            BOOL_OR(sf.due_date < CURRENT_DATE) AS is_overdue
-        FROM student_fees sf
-        JOIN fee_structures fs ON fs.id = sf.fee_structure_id
-        JOIN students s ON s.id = sf.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
+            fa.school_total_fee,
+            fa.discount_given,
+            fa.final_fee,
+            fa.paid_fee,
+            fa.due_amount,
+            fa.fee_item_count,
+            fa.earliest_due_date,
+            fa.is_overdue
+        FROM fee_agg fa
+        JOIN students s ON s.id = fa.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
         JOIN persons p ON p.id = s.person_id
-        JOIN student_enrollments se ON se.student_id = sf.student_id
-          AND se.academic_year_id = fs.academic_year_id
-          AND se.school_id = ${schoolId}
-          AND se.status = 'active'
-          AND se.deleted_at IS NULL
-        JOIN class_sections cs ON cs.id = se.class_section_id AND cs.deleted_at IS NULL
-        JOIN classes c ON c.id = cs.class_id AND c.deleted_at IS NULL
-        JOIN sections sec ON sec.id = cs.section_id AND sec.deleted_at IS NULL
-        LEFT JOIN student_transport st ON st.student_id = sf.student_id
-          AND st.academic_year_id = fs.academic_year_id
+        JOIN enroll en ON en.student_id = fa.student_id
+        JOIN classes c ON c.id = en.class_id AND c.deleted_at IS NULL
+        JOIN sections sec ON sec.id = en.section_id AND sec.deleted_at IS NULL
+        LEFT JOIN student_transport st ON st.student_id = fa.student_id
+          AND st.academic_year_id = ${academicYear.id}
           AND st.school_id = ${schoolId}
           AND st.is_active = TRUE
         LEFT JOIN transport_stops ts ON ts.id = st.stop_id AND ts.deleted_at IS NULL
         LEFT JOIN transport_routes tr ON tr.id = st.route_id AND tr.deleted_at IS NULL
-        WHERE sf.school_id = ${schoolId}
-          AND fs.academic_year_id = ${academicYear.id}
-          AND sf.deleted_at IS NULL
-          AND fs.deleted_at IS NULL
-          AND sf.status IN ('pending', 'partial', 'overdue')
-          AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
-          ${structureModeFilter}
+        WHERE TRUE
           ${class_id ? sql`AND c.id = ${class_id}` : sql``}
           ${section_id ? sql`AND sec.id = ${section_id}` : sql``}
           ${village_id ? sql`AND ts.id = ${village_id}` : sql``}
-        GROUP BY s.id, s.admission_no, p.display_name, c.name, sec.name, se.roll_number, ts.name, tr.name
-        HAVING ${overdue_only === 'true'} = FALSE OR BOOL_OR(sf.due_date < CURRENT_DATE)
+          AND (${overdue_only === 'true'} = FALSE OR fa.is_overdue)
         ORDER BY c.name, sec.name, p.display_name
     `;
 
