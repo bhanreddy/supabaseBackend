@@ -23,6 +23,7 @@ import {
   getStudentFeeBalance,
   canBypassUnderpaymentApproval,
   isPartialFeePaymentEnabled,
+  isPartialFeeDirectCollectEnabled,
 } from '../services/feePaymentService.js';
 import { createApprovalRequest } from '../services/approvalService.js';
 import {
@@ -733,6 +734,10 @@ async function handleFeeCollection(req, res, successMessage) {
       })
       : null;
 
+    // When the school enables direct partial collection, accounts may post a
+    // partial payment immediately without an admin approval request. This is a
+    // sub-option of partial payments, so it only applies when they are enabled.
+    let directCollectEnabled = false;
     if (isUnderpayment) {
       const partialEnabled = await isPartialFeePaymentEnabled(req.schoolId);
       if (!partialEnabled && !wantsApprovalRequest && !partialPermission) {
@@ -741,9 +746,16 @@ async function handleFeeCollection(req, res, successMessage) {
           code: 'PARTIAL_FEE_PAYMENT_DISABLED',
         });
       }
+      directCollectEnabled = partialEnabled && await isPartialFeeDirectCollectEnabled(req.schoolId);
     }
 
-    if (isUnderpayment && (wantsApprovalRequest || (!canBypassApproval && !partialPermission))) {
+    // Route to admin approval unless the collector can bypass, already holds an
+    // approved one-time permission, or the school allows direct partial
+    // collection. An explicit approval request always queues, regardless.
+    if (
+      isUnderpayment &&
+      (wantsApprovalRequest || (!canBypassApproval && !partialPermission && !directCollectEnabled))
+    ) {
       const approvalRequest = await createApprovalRequest({
         schoolId: req.schoolId,
         type: 'fee_underpayment',

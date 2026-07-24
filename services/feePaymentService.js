@@ -467,3 +467,29 @@ export async function isPartialFeePaymentEnabled(schoolId) {
   `;
   return row?.partial_fee_payment_enabled === true;
 }
+
+let partialFeeDirectCollectColumnReady = false;
+
+async function ensurePartialFeeDirectCollectColumn() {
+  if (partialFeeDirectCollectColumnReady) return;
+  await sql`
+    ALTER TABLE schools
+    ADD COLUMN IF NOT EXISTS partial_fee_direct_collect_enabled BOOLEAN NOT NULL DEFAULT false
+  `;
+  partialFeeDirectCollectColumnReady = true;
+}
+
+/**
+ * Whether this school lets the accounts department post partial fee payments
+ * directly, without an admin approval step. Only meaningful when partial fee
+ * payments are enabled.
+ */
+export async function isPartialFeeDirectCollectEnabled(schoolId) {
+  await ensurePartialFeeDirectCollectColumn();
+  const [row] = await sql`
+    SELECT partial_fee_direct_collect_enabled
+    FROM schools
+    WHERE id = ${schoolId}
+  `;
+  return row?.partial_fee_direct_collect_enabled === true;
+}

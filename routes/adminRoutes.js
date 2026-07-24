@@ -35,6 +35,18 @@ async function ensurePartialFeePaymentColumn() {
     partialFeePaymentColumnReady = true;
 }
 
+let partialFeeDirectCollectColumnReady = false;
+
+async function ensurePartialFeeDirectCollectColumn() {
+    if (partialFeeDirectCollectColumnReady) return;
+
+    await sql`
+        ALTER TABLE schools
+        ADD COLUMN IF NOT EXISTS partial_fee_direct_collect_enabled BOOLEAN NOT NULL DEFAULT false
+    `;
+    partialFeeDirectCollectColumnReady = true;
+}
+
 let staffPayslipsColumnReady = false;
 
 async function ensureStaffPayslipsColumn() {
@@ -653,6 +665,52 @@ router.put('/partial-fee-payment', requireAuth, requireRole('admin', 'principal'
         message: enabled
             ? 'Partial fee collection enabled for this school'
             : 'Partial fee collection disabled — full balance required',
+    });
+}));
+
+/**
+ * GET /admin/partial-fee-direct-collect
+ * Read whether the accounts department may collect partial term-fees directly,
+ * without raising an approval request to admin.
+ */
+router.get('/partial-fee-direct-collect', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    await ensurePartialFeeDirectCollectColumn();
+
+    const [row] = await sql`
+        SELECT partial_fee_direct_collect_enabled
+        FROM schools
+        WHERE id = ${req.schoolId}
+    `;
+    return sendSuccess(res, req.schoolId, {
+        enabled: row?.partial_fee_direct_collect_enabled === true,
+    });
+}));
+
+/**
+ * PUT /admin/partial-fee-direct-collect
+ * Enable or disable direct partial fee collection school-wide.
+ * When enabled, accounts post partial payments immediately with no admin
+ * approval step. When disabled, each partial still needs admin approval.
+ */
+router.put('/partial-fee-direct-collect', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled boolean is required in request body' });
+    }
+
+    await ensurePartialFeeDirectCollectColumn();
+
+    await sql`
+        UPDATE schools
+        SET partial_fee_direct_collect_enabled = ${enabled}
+        WHERE id = ${req.schoolId}
+    `;
+
+    return sendSuccess(res, req.schoolId, {
+        enabled,
+        message: enabled
+            ? 'Accounts can now collect partial fees without admin approval'
+            : 'Partial fee collection now requires admin approval',
     });
 }));
 

@@ -239,7 +239,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
 
     const students = await sql`
       SELECT 
-        s.id, s.admission_no, s.pen_number, s.apar_number, s.admission_date, s.status_id,
+        s.id, s.admission_no, s.pen_number, s.apar_number, s.village, s.admission_date, s.status_id,
         p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id,
         st.code as status,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
@@ -340,7 +340,7 @@ router.get('/profile/me', requireAuth, async (req, res) => {
     // Reuse query from GET /:id
     const student = await sql`
       SELECT 
-        s.id, s.admission_no, s.apar_number, s.admission_date,
+        s.id, s.admission_no, s.apar_number, s.village, s.admission_date,
         p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
         st.code as status,
         -- Fetch Primary Email
@@ -483,7 +483,7 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
     const { id } = req.params;
     const student = await sql`
       SELECT 
-        s.id, s.admission_no, s.pen_number, s.apar_number,
+        s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
         s.status_id, s.category_id, s.religion_id, s.blood_group_id,
         to_char(s.admission_date, 'YYYY-MM-DD') as admission_date,
         p.first_name, p.middle_name, p.last_name, p.display_name,
@@ -540,7 +540,7 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
   try {
     const {
       first_name, middle_name = null, last_name, dob = null, gender_id,
-      admission_no, pen_number = null, apar_number = null, admission_date, status_id, category_id = null, religion_id = null, blood_group_id = null,
+      admission_no, pen_number = null, apar_number = null, village = null, admission_date, status_id, category_id = null, religion_id = null, blood_group_id = null,
       email = null, phone = null,
       password = null, role_code = null, // For User Creation
       class_id = null, section_id = null, academic_year_id = null, // For Initial Enrollment
@@ -590,14 +590,14 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
       // 2. Create Student
       const [student] = await sql`
         INSERT INTO students (
-          school_id, person_id, admission_no, pen_number, apar_number, admission_date, status_id, 
+          school_id, person_id, admission_no, pen_number, apar_number, village, admission_date, status_id,
           category_id, religion_id, blood_group_id
         )
         VALUES (
-          ${req.schoolId}, ${person.id}, ${admission_no}, ${normalizedPenNumber}, ${apar_number ?? null}, ${admission_date}, ${status_id},
+          ${req.schoolId}, ${person.id}, ${admission_no}, ${normalizedPenNumber}, ${apar_number ?? null}, ${village ?? null}, ${admission_date}, ${status_id},
           ${category_id}, ${religion_id}, ${blood_group_id}
         )
-        RETURNING id, person_id, admission_no, pen_number, apar_number, admission_date, status_id, category_id, religion_id, blood_group_id, school_id, created_at, updated_at
+        RETURNING id, person_id, admission_no, pen_number, apar_number, village, admission_date, status_id, category_id, religion_id, blood_group_id, school_id, created_at, updated_at
       `;
 
       // 3. Contacts
@@ -757,7 +757,7 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     const { id } = req.params;
     const {
       first_name, middle_name, last_name, dob, gender_id,
-      admission_no, pen_number, apar_number, admission_date, status_id, category_id, religion_id, blood_group_id,
+      admission_no, pen_number, apar_number, village, admission_date, status_id, category_id, religion_id, blood_group_id,
       email, phone, password, role_code = null,
       class_id = null, section_id = null, academic_year_id = null,
       parents
@@ -854,6 +854,7 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
           admission_no = COALESCE(${admission_no ?? null}, admission_no),
           ${penAssignment}
           apar_number = COALESCE(${apar_number ?? null}, apar_number),
+          ${village !== undefined ? sql`village = ${blankToNull(village)},` : sql``}
           admission_date = COALESCE(${admission_date ?? null}, admission_date),
           status_id = COALESCE(${status_id ?? null}, status_id),
           category_id = COALESCE(${category_id ?? null}, category_id),

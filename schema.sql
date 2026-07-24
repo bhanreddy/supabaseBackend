@@ -3254,6 +3254,7 @@ CREATE TABLE IF NOT EXISTS students (
     category_id SMALLINT REFERENCES student_categories(id),
     religion_id SMALLINT REFERENCES religions(id),
     blood_group_id SMALLINT REFERENCES blood_groups(id),
+    village VARCHAR(100),
     status_id SMALLINT NOT NULL REFERENCES student_statuses(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

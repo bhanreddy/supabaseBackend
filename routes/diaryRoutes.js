@@ -273,6 +273,52 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
 }));
 
 /**
+ * GET /diary/sync-state
+ *
+ * Cheap change-probe for the parent app. Returns a fingerprint of the retention
+ * window for one class — the row count plus the newest timestamp in it — so the
+ * client can decide whether a full pull is worth it on a 2G connection.
+ *
+ * The pair is what makes it reliable. `last_updated_at` alone misses deletions
+ * (removing a row can lower the max, never raise it) and `count` alone misses
+ * edits; together they catch create, edit, delete, and delete+create in the same
+ * tick. Deletes are hard DELETEs here, so there are no tombstones to diff against
+ * and the count is the only signal that one happened.
+ *
+ * MUST stay above GET /:id — otherwise "sync-state" is captured as an :id param.
+ */
+router.get('/sync-state', requirePermission('diary.view'), asyncHandler(async (req, res) => {
+  const { class_section_id } = req.query;
+  if (!class_section_id) {
+    return sendSuccess(res, req.schoolId, { count: 0, last_updated_at: 0 });
+  }
+
+  const [state] = await sql`
+    SELECT
+      COUNT(*)::int AS count,
+      -- FLOOR, not a bare ::bigint cast. Postgres timestamps carry microseconds and
+      -- ::bigint rounds half-up, while the client derives its own fingerprint from
+      -- Date.getTime(), which truncates. On any row with a sub-millisecond fraction
+      -- above .5 the two would differ by 1ms and the probe would report "changed"
+      -- on every single call, re-syncing forever.
+      COALESCE(
+        FLOOR(EXTRACT(EPOCH FROM MAX(GREATEST(COALESCE(d.updated_at, d.created_at), d.created_at))) * 1000),
+        0
+      )::bigint AS last_updated_at
+    FROM diary_entries d
+    WHERE d.class_section_id = ${class_section_id}
+      AND d.school_id = ${req.schoolId}
+      AND d.entry_date >= (CURRENT_DATE - (${diaryRetentionOffsetDays}) * INTERVAL '1 day')
+  `;
+
+  res.set('Cache-Control', 'no-store');
+  return sendSuccess(res, req.schoolId, {
+    count: state?.count ?? 0,
+    last_updated_at: Number(state?.last_updated_at ?? 0),
+  });
+}));
+
+/**
  * GET /diary/:id
  * DR2: Ownership check via class_sections.school_id
  */

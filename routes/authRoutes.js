@@ -211,9 +211,9 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
   }
 
   const userInfo = await sql`
-    SELECT 
+    SELECT
       u.id as user_id, u.school_id, u.account_status,
-      u.is_temporary_password,
+      u.is_temporary_password, u.person_id,
       p.display_name, p.photo_url,
       r.code as role_code, r.name as role_name,
       (SELECT EXISTS(
@@ -274,6 +274,37 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
     console.error('[auth/validate-school-user] refreshUserAccessContexts failed:', ctxErr.message);
   }
 
+  // Resolve the class-section for this login, exactly as /auth/login and /auth/me do.
+  // This endpoint backs BOTH first login and every account switch/session restore, so
+  // omitting it left validatedUser.classId undefined for switched accounts — and the
+  // parent diary then queried its local DB with no class filter, showing one sibling's
+  // homework in the other sibling's portal.
+  let classSectionId = null;
+  if (dbUser.has_staff_profile && dbUser.staff_id) {
+    const cacheKey = `${dbUser.user_id}:${req.schoolId}`;
+    const hit = _authSectionCache.get(cacheKey);
+    if (hit && Date.now() < hit.expiresAt) {
+      classSectionId = hit.id;
+    } else {
+      const yearId = await getActiveAcademicYearIdForSchool(req.schoolId);
+      classSectionId = yearId ? await detectClassSectionForStaff(dbUser.staff_id, req.schoolId, yearId) : null;
+      _authSectionCache.set(cacheKey, { id: classSectionId, expiresAt: Date.now() + 5 * 60_000 });
+    }
+  } else if (dbUser.has_student_profile) {
+    const [enrollment] = await sql`
+      SELECT se.class_section_id
+      FROM student_enrollments se
+      JOIN students s ON se.student_id = s.id
+      WHERE s.person_id = ${dbUser.person_id}
+        AND s.school_id = ${req.schoolId}
+        AND se.school_id = ${req.schoolId}
+        AND se.status = 'active'
+        AND se.deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (enrollment) classSectionId = enrollment.class_section_id;
+  }
+
   // Map DB role codes to frontend-expected codes
   const roleCode = dbUser.role_code === 'accounts' ? 'accountant' : dbUser.role_code;
 
@@ -294,6 +325,8 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
     staffId: dbUser.staff_id || null,
     staff_code: dbUser.staff_code || null,
     admission_no: dbUser.admission_no || null,
+    class_section_id: classSectionId,
+    classId: classSectionId,
     requiresPasswordChange,
     portalContexts,
   });
