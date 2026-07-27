@@ -1242,6 +1242,100 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
 }));
 
 /**
+ * GET /results/exams/:id/hall-tickets?class_id=&section_id=
+ * Complete, academic-year-safe source data for one class/section hall-ticket
+ * batch. The PDF itself is rendered client-side so it can be downloaded on web
+ * and shared from native apps.
+ */
+router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const classId = String(req.query.class_id || '').trim();
+  const sectionId = String(req.query.section_id || '').trim();
+
+  if (!classId || !sectionId) {
+    return res.status(400).json({ error: 'class_id and section_id are required' });
+  }
+
+  const [exam] = await sql`
+    SELECT e.id, e.name, e.name_te, e.exam_type,
+           e.start_date::text AS start_date, e.end_date::text AS end_date,
+           e.academic_year_id, ay.code AS academic_year
+    FROM exams e
+    JOIN academic_years ay ON e.academic_year_id = ay.id
+    WHERE e.id = ${id}
+      AND e.school_id = ${req.schoolId}
+      AND e.deleted_at IS NULL
+  `;
+  if (!exam) {
+    return res.status(404).json({ error: 'Exam not found' });
+  }
+
+  const [classSection] = await sql`
+    SELECT cs.id, cs.class_id, cs.section_id,
+           c.name AS class_name, s.name AS section_name
+    FROM class_sections cs
+    JOIN classes c ON cs.class_id = c.id
+    JOIN sections s ON cs.section_id = s.id
+    WHERE cs.school_id = ${req.schoolId}
+      AND cs.academic_year_id = ${exam.academic_year_id}
+      AND cs.class_id = ${classId}
+      AND cs.section_id = ${sectionId}
+      AND cs.deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!classSection) {
+    return res.status(404).json({ error: 'Class and section are not mapped for this exam academic year' });
+  }
+
+  const papers = await sql`
+    SELECT
+      es.id, es.class_id, es.subject_id, es.exam_date::text AS exam_date,
+      es.start_time::text AS start_time, es.end_time::text AS end_time,
+      es.max_marks, es.passing_marks, es.syllabus,
+      c.name AS class_name,
+      s.name AS subject_name, s.name_te AS subject_name_te,
+      false AS has_marks, false AS has_teacher
+    FROM exam_subjects es
+    JOIN classes c ON es.class_id = c.id
+    JOIN subjects s ON es.subject_id = s.id
+    WHERE es.exam_id = ${id}
+      AND es.class_id = ${classId}
+      AND es.school_id = ${req.schoolId}
+      AND es.deleted_at IS NULL
+    ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, s.name
+  `;
+
+  if (papers.length === 0) {
+    return res.status(404).json({ error: 'No exam papers are scheduled for this class' });
+  }
+
+  const students = await sql`
+    SELECT
+      st.id,
+      p.display_name,
+      st.admission_no,
+      se.roll_number
+    FROM student_enrollments se
+    JOIN students st ON se.student_id = st.id
+    JOIN persons p ON st.person_id = p.id
+    WHERE se.school_id = ${req.schoolId}
+      AND se.class_section_id = ${classSection.id}
+      AND se.academic_year_id = ${exam.academic_year_id}
+      AND se.status = 'active'
+      AND se.deleted_at IS NULL
+      AND st.deleted_at IS NULL
+    ORDER BY se.roll_number NULLS LAST, p.display_name, st.admission_no
+  `;
+
+  return sendSuccess(res, req.schoolId, {
+    exam,
+    class_section: classSection,
+    papers,
+    students,
+  });
+}));
+
+/**
  * PATCH /results/exam-subjects/:id
  * Manual edit of one paper: date, session time, marks settings.
  */
