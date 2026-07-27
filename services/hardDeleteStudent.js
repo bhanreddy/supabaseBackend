@@ -200,6 +200,13 @@ async function runDeleteTransaction(tx, schoolId, studentId) {
       RETURNING ic.id
     ) SELECT count(*)::int AS count FROM deleted`);
 
+  await del('parent_visits', `
+    WITH deleted AS (
+      DELETE FROM public.parent_visits pv USING target_students ts
+      WHERE pv.student_id = ts.id AND pv.school_id = ${schoolId}
+      RETURNING pv.id
+    ) SELECT count(*)::int AS count FROM deleted`);
+
   // Complaints are kept (school record) but unlinked from the deleted student.
   const complaintUpdates = await tx`
     UPDATE public.complaints c SET raised_for_student_id = NULL

@@ -4184,6 +4184,37 @@ FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 -- 13. COMMUNICATION & SUPPORT
 
+CREATE TABLE IF NOT EXISTS parent_visits (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    student_id UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+    parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+    parent_name VARCHAR(150) NOT NULL,
+    relationship VARCHAR(50),
+    purpose TEXT NOT NULL,
+    notes TEXT,
+    visited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    recorded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ,
+    CONSTRAINT chk_parent_visit_name_not_blank CHECK (length(btrim(parent_name)) > 0),
+    CONSTRAINT chk_parent_visit_purpose_not_blank CHECK (length(btrim(purpose)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_parent_visits_school_date
+ON parent_visits(school_id, visited_at DESC) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_parent_visits_student_date
+ON parent_visits(school_id, student_id, visited_at DESC) WHERE deleted_at IS NULL;
+
+DROP TRIGGER IF EXISTS trg_parent_visits_updated ON parent_visits;
+CREATE TRIGGER trg_parent_visits_updated
+BEFORE UPDATE ON parent_visits
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+ALTER TABLE parent_visits ENABLE ROW LEVEL SECURITY;
+
 
 CREATE TABLE IF NOT EXISTS complaints (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -6873,7 +6904,7 @@ DECLARE tables_needing_policies TEXT[] := ARRAY[
   'fee_types', 'fee_structures', 'student_fees', 'fee_transactions',
   'receipts', 'receipt_items',
   'exams', 'exam_subjects', 'grading_scales', 'marks',
-  'complaints', 'leave_applications', 'diary_entries', 'periods',
+  'complaints', 'parent_visits', 'leave_applications', 'diary_entries', 'periods',
   'transport_routes', 'transport_stops', 'buses', 'student_transport', 'bus_locations',
   'hostel_blocks', 'hostel_rooms', 'hostel_allocations',
   'lms_courses', 'lms_materials',

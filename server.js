@@ -221,6 +221,7 @@ import paperforgeRouter from './routes/paperforge.routes.js';
 import paymentRouter from './routes/paymentRoutes.js';
 import meRouter from './routes/meRoutes.js';
 import messagesRouter from './routes/messagesRoutes.js';
+import parentVisitRouter from './routes/parentVisitRoutes.js';
 import { requireFeature } from './middleware/requireFeature.js';
 
 // Health check endpoint (requires school_id per multi-tenant contract)
@@ -308,6 +309,7 @@ app.use('/api/v1/ai', requireFeature('menu.ai_doubt_assist'), aiRouter);
 app.use('/api/v1/analytics', analyticsRouter);
 app.use('/api/v1/admin/analytics', adminAnalyticsRouter);
 app.use('/api/v1/admin/notifications', adminNotificationRoutes);
+app.use('/api/v1/admin/parent-visits', parentVisitRouter);
 app.use('/api/v1/admin/academic-year', academicYearUpgradeRouter);
 app.use('/api/v1/defaulters', defaulterRouter);
 app.use('/api/v1/invoices', invoicesRouter);

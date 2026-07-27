@@ -3,22 +3,8 @@ import sql from '../db.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const router = express.Router();
-
-const GEMINI_TIMEOUT_MS = 10_000;
-let _geminiModel = null;
-
-function getGeminiModel() {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
-    if (!_geminiModel) {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        _geminiModel = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
-    }
-    return _geminiModel;
-}
 
 /** OPT-19: cache net-balance for identical school + date window (5 min). */
 const _netBalanceCache = new Map();
@@ -283,49 +269,160 @@ router.get('/heatmap', requireAuth, asyncHandler(async (req, res) => {
  * GET /admin/analytics/talking-points/:id
  * AN3: student lookup and all stats scoped to school_id
  */
-function buildTeluguFallbackPoints({ studentName, attPct, subjects, complaintCount, recentScores }) {
+const COMMON_SUBJECT_NAMES_TE = new Map([
+    ['english', 'ఆంగ్లం'],
+    ['telugu', 'తెలుగు'],
+    ['hindi', 'హిందీ'],
+    ['mathematics', 'గణితం'],
+    ['maths', 'గణితం'],
+    ['math', 'గణితం'],
+    ['science', 'సైన్స్'],
+    ['social science', 'సాంఘిక శాస్త్రం'],
+    ['social studies', 'సాంఘిక శాస్త్రం'],
+    ['social', 'సాంఘిక శాస్త్రం'],
+    ['physics', 'భౌతిక శాస్త్రం'],
+    ['chemistry', 'రసాయన శాస్త్రం'],
+    ['biology', 'జీవ శాస్త్రం'],
+    ['computer science', 'కంప్యూటర్ సైన్స్'],
+    ['computers', 'కంప్యూటర్ సైన్స్'],
+    ['environmental science', 'పర్యావరణ శాస్త్రం'],
+    ['evs', 'పర్యావరణ శాస్త్రం'],
+    ['sanskrit', 'సంస్కృతం'],
+    ['general knowledge', 'సాధారణ జ్ఞానం'],
+    ['gk', 'సాధారణ జ్ఞానం'],
+]);
+
+function subjectNameTe(subject) {
+    const translated = String(subject.subject_name_te || '').trim();
+    if (translated) return translated;
+    const original = String(subject.subject_name || '').trim();
+    return COMMON_SUBJECT_NAMES_TE.get(original.toLowerCase()) || original || 'తెలియని విషయం';
+}
+
+function roundOne(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.round(number * 10) / 10 : null;
+}
+
+function formatPct(value) {
+    const number = roundOne(value);
+    return number == null ? 'డేటా లేదు' : `${number}%`;
+}
+
+/**
+ * Build only from calculated database facts. Generative text was deliberately
+ * removed here: it could alter counts, mix marks from unrelated subjects, and
+ * return English despite a Telugu prompt.
+ */
+export function buildVerifiedTeluguPoints({
+    attendance,
+    exams,
+    weakSubjects,
+    complaints,
+    parentVisits,
+}) {
     const points = [];
-    const failedList = subjects && subjects !== 'ఏదీ లేదు' ? subjects : null;
-    const scoreLine = recentScores.length > 0
-        ? `ఇటీవలి పరీక్షల స్కోర్లు: ${recentScores.join('%, ')}%.`
-        : '';
+    const totalDays = Number(attendance?.total_days) || 0;
+    const fullPresentDays = Number(attendance?.full_present_days) || 0;
+    const halfDays = Number(attendance?.half_days) || 0;
+    const absentDays = Number(attendance?.absent_days) || 0;
+    const effectivePresentDays = roundOne(attendance?.effective_present_days) || 0;
+    const attendancePct = totalDays > 0 ? roundOne((effectivePresentDays / totalDays) * 100) : null;
 
-    if (failedList) {
+    if (totalDays > 0) {
+        const halfDayDetail = halfDays > 0
+            ? ` ఇందులో ${halfDays} అర్ధదినాల వల్ల లెక్కించిన హాజరు ${effectivePresentDays} రోజులు.`
+            : '';
+        const action = attendancePct < 75
+            ? 'హాజరు తక్కువగా ఉంది; గైర్హాజరు కారణాలు తెలుసుకొని వారపు హాజరు ప్రణాళిక అమలు చేయాలి.'
+            : attendancePct < 85
+                ? 'హాజరులో మెరుగుదల అవసరం; ప్రతి వారం హాజరును తల్లిదండ్రులతో సమీక్షించాలి.'
+                : 'హాజరు స్థిరంగా ఉంది; ఇదే క్రమాన్ని కొనసాగించాలి.';
         points.push(
-            `${studentName} ${failedList} విషయాలలో బలహీనంగా ఉన్నారు. ఇంటి వద్ద అదనపు సహాయం మరియు ట్యూషన్ ప్లాన్ చేయాలి. ${scoreLine}`.trim(),
+            `గత అరవై రోజుల నమోదులో మొత్తం ${totalDays} పాఠశాల రోజులలో ${fullPresentDays} పూర్తి రోజులు హాజరు, ${absentDays} రోజులు గైర్హాజరు.${halfDayDetail} మొత్తం హాజరు శాతం ${attendancePct}%. ${action}`,
         );
     } else {
         points.push(
-            `${studentName} అన్ని విషయాలలో స్థిరమైన విద్యా రికార్డ్ కలిగి ఉన్నారు. తల్లిదండ్రులు ప్రోత్సాహం కొనసాగించాలి. ${scoreLine}`.trim(),
+            'గత అరవై రోజుల హాజరు నమోదు అందుబాటులో లేదు; హాజరు శాతాన్ని ఊహించకుండా, ముందుగా హాజరు నమోదులు పూర్తయ్యాయో లేదో పరిశీలించాలి.',
         );
     }
 
-    const att = parseFloat(attPct);
-    if (att < 75) {
+    const latestExam = exams?.[0];
+    const previousExam = exams?.[1];
+    if (latestExam && previousExam) {
+        const latestPct = roundOne(latestExam.avg_pct);
+        const previousPct = roundOne(previousExam.avg_pct);
+        const delta = latestPct - previousPct;
+        const trendText = delta > 0.5
+            ? `${Math.abs(roundOne(delta))} శాతం పాయింట్లు మెరుగయ్యారు`
+            : delta < -0.5
+                ? `${Math.abs(roundOne(delta))} శాతం పాయింట్లు తగ్గారు`
+                : 'గణనీయమైన మార్పు లేదు';
         points.push(
-            `గమనిక: గత 60 రోజులలో హాజరు ${attPct}% మాత్రమే — ఇది పాఠశాల ప్రమాణాల కంటే చాలా తక్కువ. రోజువారీ హాజరు పట్టిక పర్యవేక్షించి, అవసరమైతే కౌన్సిలింగ్ చేయాలి.`,
+            `మునుపటి పరీక్ష “${previousExam.exam_name_te || previousExam.exam_name}”లో సగటు ${formatPct(previousPct)}, తాజా పరీక్ష “${latestExam.exam_name_te || latestExam.exam_name}”లో ${formatPct(latestPct)}; అందువల్ల ${trendText}. తదుపరి పరీక్షకు ఇదే విధంగా పరీక్షల వారీ సగటును పోల్చాలి.`,
         );
-    } else if (att < 85) {
+    } else if (latestExam) {
         points.push(
-            `హాజరు ${attPct}% — కొంత మెరుగుదల అవసరం. స్కూల్‌కు సమయానికి రావడం మరియు క్లాస్‌లో క్రమశిక్షణ పాటించడం గురించి తల్లిదండ్రులతో చర్చించండి.`,
+            `తాజా పరీక్ష “${latestExam.exam_name_te || latestExam.exam_name}”లో సగటు ${formatPct(latestExam.avg_pct)}. మెరుగుదల ఉందో లేదో చెప్పడానికి మరో మునుపటి పరీక్ష ఫలితం అవసరం; ప్రస్తుతం తప్పుడు పోలిక చేయలేదు.`,
         );
     } else {
         points.push(
-            `హాజరు ${attPct}% — మంచి స్థిరత. ఈ అలవాటును కొనసాగించమని తల్లిదండ్రులకు ప్రోత్సహించండి.`,
+            'పరీక్ష మార్కులు నమోదు కాలేదు; విద్యా మెరుగుదల లేదా తగ్గుదల గురించి నిర్ణయం చెప్పడానికి కనీసం రెండు పరీక్షల ఫలితాలు నమోదు చేయాలి.',
         );
     }
 
+    if (Array.isArray(weakSubjects) && weakSubjects.length > 0) {
+        const subjectDetails = weakSubjects.map((subject) => {
+            const name = subjectNameTe(subject);
+            const currentPct = formatPct(subject.current_pct);
+            if (subject.is_absent) return `${name}లో పరీక్షకు గైర్హాజరు`;
+            if (subject.previous_pct == null) return `${name}లో ${currentPct} (మునుపటి మార్కు లేదు)`;
+            const delta = roundOne(Number(subject.current_pct) - Number(subject.previous_pct));
+            const comparison = delta > 0.5
+                ? `మునుపటి కంటే ${Math.abs(delta)} పాయింట్లు మెరుగుదల`
+                : delta < -0.5
+                    ? `మునుపటి కంటే ${Math.abs(delta)} పాయింట్లు తగ్గుదల`
+                    : 'మునుపటి స్థాయిలోనే';
+            return `${name}లో ${currentPct} (${comparison})`;
+        });
+        points.push(
+            `తాజా పరీక్ష ఆధారంగా ప్రత్యేక శ్రద్ధ అవసరమైన విషయాలు: ${subjectDetails.join('; ')}. ఈ విషయాలకు వారానికి ఒక లక్ష్య పునశ్చరణ మరియు చిన్న పరీక్ష పెట్టాలి.`,
+        );
+    } else if (latestExam) {
+        points.push(
+            'తాజా పరీక్షలో ఉత్తీర్ణత మార్కులకు దిగువన లేదా యాభై శాతం కంటే తక్కువగా ఉన్న విషయం కనిపించలేదు; అయినా విషయాల వారీ పురోగతిని తదుపరి పరీక్షలో మళ్లీ పోల్చాలి.',
+        );
+    }
+
+    const complaintCount = Number(complaints?.behaviour_count) || 0;
+    const openComplaintCount = Number(complaints?.open_behaviour_count) || 0;
+    const seriousComplaintCount = Number(complaints?.serious_behaviour_count) || 0;
     if (complaintCount > 0) {
         points.push(
-            `ఇటీవల ${complaintCount} ప్రవర్తన సంబంధిత ఫిర్యాదులు నమోదయ్యాయి. ఇంటి వద్ద మరియు పాఠశాలలో సంయుక్త చర్యా ప్రణాళిక (మార్గదర్శకత్వం + పర్యవేక్షణ) అవసరం.`,
+            `గత ఆరు నెలల్లో ప్రవర్తనకు సంబంధించిన ${complaintCount} క్రమశిక్షణ ఫిర్యాదులు నమోదయ్యాయి; వాటిలో పరిష్కారం కానివి ${openComplaintCount}, అధిక ప్రాధాన్యంతో నమోదైనవి ${seriousComplaintCount}. ఫిర్యాదులలో కనిపించే పునరావృత కారణంపై ఉపాధ్యాయుడు–తల్లిదండ్రి సంయుక్త కార్యాచరణ నిర్ణయించి, రెండు వారాల తర్వాత సమీక్షించాలి.`,
         );
     } else {
         points.push(
-            'ప్రవర్తన పరంగా ప్రశంసనీయమైన రికార్డ్ ఉంది. విద్యా లక్ష్యాలపై దృష్టి పెట్టడానికి ఇది మంచి అవకాశం.',
+            'గత ఆరు నెలల నమోదుల ప్రకారం ప్రవర్తన ఫిర్యాదులు లేవు; ఇది ఫిర్యాదు రికార్డు ఆధారంగా మాత్రమే చెప్పిన విషయం, కాబట్టి తరగతి ఉపాధ్యాయుడి ప్రత్యక్ష అభిప్రాయాన్ని కూడా అడగాలి.',
         );
     }
 
-    return points.slice(0, 4);
+    const visitCount = Number(parentVisits?.total_count) || 0;
+    if (visitCount > 0) {
+        const latestVisit = parentVisits?.last_visited_on
+            ? ` చివరి సందర్శన తేదీ ${parentVisits.last_visited_on}.`
+            : '';
+        points.push(
+            `ఈ విద్యార్థి గురించి తల్లిదండ్రులు ఇప్పటివరకు ${visitCount} సార్లు పాఠశాలను సందర్శించారు.${latestVisit} ఈ సమావేశంలో గత సందర్శనలో నిర్ణయించిన చర్యలు అమలయ్యాయో లేదో నమోదు చేయాలి.`,
+        );
+    } else {
+        points.push(
+            'ఈ విద్యార్థి గురించి తల్లిదండ్రుల పాఠశాల సందర్శన ఇంకా నమోదు కాలేదు; ఈ సమావేశాన్ని మొదటి సందర్శనగా నమోదు చేసి చర్చించిన చర్యలను భద్రపరచాలి.',
+        );
+    }
+
+    return points;
 }
 
 router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => {
@@ -352,125 +449,200 @@ router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => 
 
     if (!student) return res.status(404).json({ error: 'Student not found' });
 
-    const [[complaintStats], failedSubjects, [attendance], recentMarks] = await Promise.all([
+    const [[complaintStats], [attendance], examSummaries, [parentVisitStats]] = await Promise.all([
         sql`
-        SELECT COUNT(*)::int as count
+        SELECT
+            COUNT(*)::int AS total_count,
+            COUNT(*) FILTER (WHERE status IN ('open', 'in_progress'))::int AS open_count,
+            COUNT(*) FILTER (
+                WHERE lower(COALESCE(category, '')) = 'disciplinary'
+            )::int AS behaviour_count,
+            COUNT(*) FILTER (
+                WHERE lower(COALESCE(category, '')) = 'disciplinary'
+                  AND status IN ('open', 'in_progress')
+            )::int AS open_behaviour_count,
+            COUNT(*) FILTER (
+                WHERE lower(COALESCE(category, '')) = 'disciplinary'
+                  AND priority IN ('high', 'urgent')
+            )::int AS serious_behaviour_count
         FROM complaints
         WHERE raised_for_student_id = ${student.id}
           AND school_id = ${schoolId}
+          AND deleted_at IS NULL
           AND created_at > CURRENT_DATE - INTERVAL '6 months'
     `,
         sql`
-        SELECT sub.name
-        FROM marks m
-        JOIN exam_subjects es ON m.exam_subject_id = es.id
-        JOIN subjects sub ON es.subject_id = sub.id
-        JOIN student_enrollments se ON m.student_enrollment_id = se.id
-        JOIN students s ON se.student_id = s.id
-        WHERE se.student_id = ${student.id}
-          AND s.school_id = ${schoolId}
-          AND m.marks_obtained < 35
-        ORDER BY m.created_at DESC
-        LIMIT 5
-    `,
-        sql`
         SELECT
-            COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day'))::FLOAT / NULLIF(COUNT(*), 0) * 100 as pct
+            COUNT(*)::int AS total_days,
+            COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))::int AS full_present_days,
+            COUNT(*) FILTER (WHERE da.status = 'half_day')::int AS half_days,
+            COUNT(*) FILTER (WHERE da.status = 'absent')::int AS absent_days,
+            (
+                COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+                + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+            )::float AS effective_present_days
         FROM daily_attendance da
         JOIN student_enrollments se ON da.student_enrollment_id = se.id
         JOIN students s ON se.student_id = s.id
         WHERE se.student_id = ${student.id}
           AND s.school_id = ${schoolId}
+          AND da.deleted_at IS NULL
           AND da.attendance_date > CURRENT_DATE - INTERVAL '60 days'
     `,
         sql`
-        SELECT (m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::INT as pct
+        SELECT
+            e.id AS exam_id,
+            e.name AS exam_name,
+            e.name_te AS exam_name_te,
+            COALESCE(e.end_date, e.start_date, MAX(m.created_at)::date) AS exam_date,
+            ROUND(AVG(
+                CASE WHEN m.is_absent THEN 0
+                     ELSE m.marks_obtained::numeric / NULLIF(es.max_marks, 0) * 100
+                END
+            ), 1)::float AS avg_pct
         FROM marks m
         JOIN exam_subjects es ON m.exam_subject_id = es.id
+        JOIN exams e ON es.exam_id = e.id
         JOIN student_enrollments se ON m.student_enrollment_id = se.id
         JOIN students s ON se.student_id = s.id
         WHERE se.student_id = ${student.id}
           AND s.school_id = ${schoolId}
-        ORDER BY m.created_at DESC
-        LIMIT 5
+          AND m.school_id = ${schoolId}
+          AND es.deleted_at IS NULL
+          AND e.deleted_at IS NULL
+          AND e.status <> 'cancelled'
+        GROUP BY e.id, e.name, e.name_te, e.end_date, e.start_date
+        ORDER BY exam_date DESC NULLS LAST, MAX(m.created_at) DESC
+        LIMIT 2
+    `,
+        sql`
+        SELECT
+            COUNT(*)::int AS total_count,
+            TO_CHAR(MAX(visited_at) AT TIME ZONE 'Asia/Kolkata', 'DD-MM-YYYY') AS last_visited_on
+        FROM parent_visits
+        WHERE student_id = ${student.id}
+          AND school_id = ${schoolId}
+          AND deleted_at IS NULL
     `,
     ]);
 
-    const attPct = attendance && attendance.pct ? attendance.pct.toFixed(1) : '100.0';
-    const failedNames = failedSubjects.length > 0
-        ? [...new Set(failedSubjects.map(f => f.name))].join(', ')
-        : 'ఏదీ లేదు';
-    const recentScores = (recentMarks || [])
-        .map(r => r.pct)
-        .filter(v => v != null);
+    const latestExamId = examSummaries[0]?.exam_id || null;
+    const weakSubjects = latestExamId
+        ? await sql`
+            SELECT
+                sub.name AS subject_name,
+                sub.name_te AS subject_name_te,
+                m.is_absent,
+                ROUND(
+                    CASE WHEN m.is_absent THEN 0
+                         ELSE m.marks_obtained::numeric / NULLIF(es.max_marks, 0) * 100
+                    END,
+                    1
+                )::float AS current_pct,
+                previous.previous_pct
+            FROM marks m
+            JOIN exam_subjects es ON m.exam_subject_id = es.id
+            JOIN subjects sub ON es.subject_id = sub.id
+            JOIN student_enrollments se ON m.student_enrollment_id = se.id
+            LEFT JOIN LATERAL (
+                SELECT ROUND(
+                    CASE WHEN pm.is_absent THEN 0
+                         ELSE pm.marks_obtained::numeric / NULLIF(pes.max_marks, 0) * 100
+                    END,
+                    1
+                )::float AS previous_pct
+                FROM marks pm
+                JOIN exam_subjects pes ON pm.exam_subject_id = pes.id
+                JOIN exams pe ON pes.exam_id = pe.id
+                JOIN student_enrollments pse ON pm.student_enrollment_id = pse.id
+                WHERE pse.student_id = ${student.id}
+                  AND pm.school_id = ${schoolId}
+                  AND pes.subject_id = es.subject_id
+                  AND pe.id <> ${latestExamId}
+                  AND pe.status <> 'cancelled'
+                  AND pe.deleted_at IS NULL
+                  AND pes.deleted_at IS NULL
+                ORDER BY COALESCE(pe.end_date, pe.start_date, pm.created_at::date) DESC, pm.created_at DESC
+                LIMIT 1
+            ) previous ON TRUE
+            WHERE se.student_id = ${student.id}
+              AND m.school_id = ${schoolId}
+              AND es.exam_id = ${latestExamId}
+              AND es.deleted_at IS NULL
+              AND (
+                  m.is_absent
+                  OR m.marks_obtained < es.passing_marks
+                  OR (m.marks_obtained::numeric / NULLIF(es.max_marks, 0) * 100) < 50
+              )
+            ORDER BY current_pct ASC
+            LIMIT 4
+        `
+        : [];
 
-    const prompt = `
-మీరు తెలంగాణలోని ఒక పాఠశాలలో సీనియర్ విద్యా సలహాదారు (Academic Counselor).
-తల్లిదండ్రుల సమావేశం (Parent-Teacher Meeting) కోసం ${student.display_name} గురించి 4 వృత్తిపరమైన మాట్లాడే అంశాలు (talking points) తెలుగులో రాయండి.
+    const effectivePresentDays = roundOne(attendance?.effective_present_days) || 0;
+    const totalDays = Number(attendance?.total_days) || 0;
+    const attendancePct = totalDays > 0
+        ? roundOne((effectivePresentDays / totalDays) * 100)
+        : null;
+    const latestExam = examSummaries[0] || null;
+    const previousExam = examSummaries[1] || null;
+    const examDelta = latestExam && previousExam
+        ? roundOne(Number(latestExam.avg_pct) - Number(previousExam.avg_pct))
+        : null;
+    const resultTrend = examDelta == null
+        ? 'insufficient_data'
+        : examDelta > 0.5
+            ? 'improved'
+            : examDelta < -0.5
+                ? 'declined'
+                : 'unchanged';
 
-విద్యార్థి వివరాలు:
-- పేరు: ${student.display_name}
-- అడ్మిషన్ నం: ${student.admission_no}
-- తరగతి: ${student.class_name || 'తెలియదు'}
-- గత 60 రోజుల హాజరు: ${attPct}%
-- ఫెయిల్ అయిన విషయాలు: ${failedNames}
-- గత 6 నెలల ప్రవర్తన ఫిర్యాదులు: ${complaintStats.count}
-- ఇటీవలి 5 పరీక్ష స్కోర్లు (%): ${recentScores.length > 0 ? recentScores.join(', ') : 'డేటా లేదు'}
+    const points = buildVerifiedTeluguPoints({
+        attendance,
+        exams: examSummaries,
+        weakSubjects,
+        complaints: complaintStats,
+        parentVisits: parentVisitStats,
+    });
 
-సూచనలు:
-1. అన్ని అంశాలను తెలుగు లిపిలో మాత్రమే రాయండి (English అక్షరాలు వాడకండి).
-2. తల్లిదండ్రులకు అర్థమయ్యే సరళమైన, గౌరవప్రదమైన భాష వాడండి.
-3. ప్రతి అంశం ఒక పూర్తి వాక్యం — విశ్లేషణ + సూచన/చర్యా ప్రణాళిక ఉండాలి.
-4. హాజరు, విద్యా స్థితి, ప్రవర్తన — ఈ మూడు అంశాలపై దృష్టి పెట్టండి.
-5. నిరాశాజనకంగా కాకుండా, నిజాయితీగా మరియు ప్రోత్సాహకరంగా రాయండి.
-6. JSON ARRAY మాత్రమే తిరిగి ఇవ్వండి. Markdown లేదు.
-   ఉదాహరణ: ["అంశం 1", "అంశం 2", "అంశం 3", "అంశం 4"]
-`;
-
-    let points = [];
-    let source = 'ai';
-    try {
-        const model = getGeminiModel();
-
-        const result = await Promise.race([
-            model.generateContent(prompt),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Gemini timeout')), GEMINI_TIMEOUT_MS)
-            ),
-        ]);
-        const responseText = result.response.text().trim();
-
-        const start = responseText.indexOf('[');
-        const end = responseText.lastIndexOf(']');
-
-        if (start === -1 || end === -1 || end < start) {
-            throw new Error('No JSON array found in response.');
-        }
-
-        const jsonStr = responseText.substring(start, end + 1);
-        points = JSON.parse(jsonStr);
-
-        if (!Array.isArray(points) || points.length === 0) {
-            throw new Error('Parsed result is not a non-empty array');
-        }
-
-        points = points
-            .map(p => String(p).trim())
-            .filter(Boolean)
-            .slice(0, 5);
-    } catch (aiError) {
-        console.error('AI Insights Error:', aiError.message);
-        source = 'fallback';
-        points = buildTeluguFallbackPoints({
-            studentName: student.display_name,
-            attPct,
-            subjects: failedNames,
-            complaintCount: complaintStats.count,
-            recentScores,
-        });
-    }
-
-    return sendSuccess(res, req.schoolId, { points, source });
+    return sendSuccess(res, req.schoolId, {
+        points,
+        source: 'calculated',
+        language: 'te',
+        summary: {
+            attendance: {
+                total_days: totalDays,
+                present_days: effectivePresentDays,
+                full_present_days: Number(attendance?.full_present_days) || 0,
+                half_days: Number(attendance?.half_days) || 0,
+                absent_days: Number(attendance?.absent_days) || 0,
+                percentage: attendancePct,
+            },
+            complaints: {
+                total: Number(complaintStats?.total_count) || 0,
+                open: Number(complaintStats?.open_count) || 0,
+                behaviour: Number(complaintStats?.behaviour_count) || 0,
+                open_behaviour: Number(complaintStats?.open_behaviour_count) || 0,
+                serious: Number(complaintStats?.serious_behaviour_count) || 0,
+            },
+            parent_visits: {
+                total: Number(parentVisitStats?.total_count) || 0,
+                last_visited_on: parentVisitStats?.last_visited_on || null,
+            },
+            result: {
+                trend: resultTrend,
+                change_points: examDelta,
+                latest_exam: latestExam,
+                previous_exam: previousExam,
+                weak_subjects: weakSubjects.map((subject) => ({
+                    name: subjectNameTe(subject),
+                    current_pct: roundOne(subject.current_pct),
+                    previous_pct: roundOne(subject.previous_pct),
+                    is_absent: Boolean(subject.is_absent),
+                })),
+            },
+        },
+    });
 }));
 
 /**
