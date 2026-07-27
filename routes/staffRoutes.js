@@ -28,6 +28,75 @@ const stripSalary = (row) => {
   return rest;
 };
 
+/**
+ * SuperAdmin first-admin seed historically created person + user + admin role
+ * without a `staff` row. Manage Staff only queries `staff`, so those admins were
+ * invisible. Heal missing rows on list so existing tenants recover automatically.
+ */
+async function ensureAdminStaffRows(schoolId) {
+  await sql`
+    INSERT INTO staff_designations (school_id, name)
+    SELECT DISTINCT u.school_id, 'Administrator'
+    FROM users u
+    JOIN user_roles ur
+      ON ur.user_id = u.id
+     AND ur.school_id = u.school_id
+     AND ur.deleted_at IS NULL
+    JOIN roles r
+      ON r.id = ur.role_id
+     AND r.code = 'admin'
+     AND r.school_id = u.school_id
+    WHERE u.school_id = ${schoolId}
+      AND u.person_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM staff st
+        WHERE st.person_id = u.person_id
+          AND st.school_id = u.school_id
+          AND st.deleted_at IS NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM staff_designations sd
+        WHERE sd.school_id = u.school_id
+          AND sd.name = 'Administrator'
+      )
+  `;
+
+  await sql`
+    INSERT INTO staff (school_id, person_id, staff_code, joining_date, status_id, designation_id)
+    SELECT
+      u.school_id,
+      u.person_id,
+      'ADM-' || UPPER(SUBSTRING(REPLACE(u.person_id::text, '-', ''), 1, 8)),
+      CURRENT_DATE,
+      1,
+      COALESCE(
+        (SELECT sd.id FROM staff_designations sd
+         WHERE sd.school_id = u.school_id AND sd.name = 'Administrator' LIMIT 1),
+        (SELECT sd.id FROM staff_designations sd
+         WHERE sd.school_id = u.school_id AND sd.name = 'Principal' LIMIT 1),
+        (SELECT sd.id FROM staff_designations sd
+         WHERE sd.school_id = u.school_id ORDER BY sd.id LIMIT 1)
+      )
+    FROM users u
+    JOIN user_roles ur
+      ON ur.user_id = u.id
+     AND ur.school_id = u.school_id
+     AND ur.deleted_at IS NULL
+    JOIN roles r
+      ON r.id = ur.role_id
+     AND r.code = 'admin'
+     AND r.school_id = u.school_id
+    WHERE u.school_id = ${schoolId}
+      AND u.person_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM staff st
+        WHERE st.person_id = u.person_id
+          AND st.school_id = u.school_id
+          AND st.deleted_at IS NULL
+      )
+  `;
+}
+
 let accountsStaffCreationColumnReady = false;
 
 async function ensureAccountsStaffCreationColumn() {
@@ -171,6 +240,9 @@ router.get('/', requirePermission('staff.view'), asyncHandler(async (req, res) =
   const safeLimit = Math.min(200, Math.max(1, parseInt(String(limit), 10) || 50));
   const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
   const offset = (pageNum - 1) * safeLimit;
+
+  // Backfill staff rows for admins seeded without one (SuperAdmin first-admin).
+  await ensureAdminStaffRows(req.schoolId);
 
   // school_id is always taken from the JWT (req.schoolId), never from the client.
   const hasSearch = typeof search === 'string' && search.trim() !== '';

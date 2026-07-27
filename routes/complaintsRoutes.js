@@ -13,7 +13,7 @@ async function assertCanRaiseComplaintForStudent(req, raised_for_student_id) {
   if (isAdmin) return null;
 
   const [enrollment] = await sql`
-    SELECT cs.class_teacher_id
+    SELECT se.class_section_id, cs.class_teacher_id
     FROM student_enrollments se
     JOIN class_sections cs ON se.class_section_id = cs.id AND cs.school_id = ${req.schoolId}
     WHERE se.student_id = ${raised_for_student_id}
@@ -30,11 +30,47 @@ async function assertCanRaiseComplaintForStudent(req, raised_for_student_id) {
   const [staff] = await sql`
     SELECT id FROM staff
     WHERE person_id = ${req.user.person_id} AND school_id = ${req.schoolId}
+      AND deleted_at IS NULL
     LIMIT 1
   `;
 
-  if (!staff || enrollment.class_teacher_id !== staff.id) {
-    return { status: 403, error: 'Only the Class Teacher can raise complaints for this student' };
+  if (!staff) {
+    return { status: 403, error: 'Only assigned teachers can raise complaints for this student' };
+  }
+
+  // Homeroom class teacher can always raise complaints for their students.
+  if (enrollment.class_teacher_id === staff.id) {
+    return null;
+  }
+
+  // Match GET /teachers/me/classes: subject teachers assigned via timetable_slots
+  // OR class_subjects can also raise complaints for students in those classes.
+  // class_section_id is already school-scoped via the enrollment query above.
+  const [teaches] = await sql`
+    SELECT (
+      EXISTS (
+        SELECT 1
+        FROM timetable_slots ts
+        WHERE ts.class_section_id = ${enrollment.class_section_id}
+          AND ts.teacher_id = ${staff.id}
+          AND ts.deleted_at IS NULL
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM class_subjects csub
+        WHERE csub.class_section_id = ${enrollment.class_section_id}
+          AND csub.teacher_id = ${staff.id}
+          AND csub.school_id = ${req.schoolId}
+          AND csub.deleted_at IS NULL
+      )
+    ) AS ok
+  `;
+
+  if (!teaches?.ok) {
+    return {
+      status: 403,
+      error: 'Only the Class Teacher or a teacher assigned to this class can raise complaints for this student',
+    };
   }
 
   return null;
@@ -181,7 +217,7 @@ router.get('/:id', requirePermission('complaints.view'), asyncHandler(async (req
 
 /**
  * POST /complaints/bulk
- * File the same complaint for multiple students (class teacher bulk action).
+ * File the same complaint for multiple students (class teacher / assigned teacher bulk action).
  */
 router.post('/bulk', requirePermission('complaints.create'), asyncHandler(async (req, res) => {
   const { title, description, category, priority, raised_for_student_ids } = req.body;

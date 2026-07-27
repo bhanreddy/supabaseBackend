@@ -310,8 +310,14 @@ AS $$
 DECLARE
     v_class_section_id UUID;
     v_class_teacher_id UUID;
+    v_school_id INTEGER;
     v_is_admin BOOLEAN;
+    v_is_class_teacher BOOLEAN;
     v_is_p1_teacher BOOLEAN;
+    v_is_afternoon_teacher BOOLEAN;
+    v_lunch_sort INTEGER;
+    v_afternoon_period INTEGER;
+    v_marker_person_id UUID;
 BEGIN
     -- 1. Basic Date Validation (must be within enrollment period)
     IF NOT EXISTS (
@@ -324,15 +330,18 @@ BEGIN
         RAISE EXCEPTION 'Invalid Attendance: Student is not active in this enrollment on %', NEW.attendance_date;
     END IF;
 
-    -- 2. Authorization Check (marked_by must be Class Teacher, Admin, or Period 1 Teacher)
+    -- 2. Authorization Check (marked_by must be Class Teacher, Admin,
+    --    Period 1 Teacher, or first-period-after-lunch Teacher)
     IF NEW.marked_by IS NOT NULL THEN
-        -- Get Class Section and Class Teacher
-        SELECT se.class_section_id, cs.class_teacher_id INTO v_class_section_id, v_class_teacher_id
+        SELECT se.class_section_id, cs.class_teacher_id, cs.school_id
+          INTO v_class_section_id, v_class_teacher_id, v_school_id
         FROM student_enrollments se
         JOIN class_sections cs ON se.class_section_id = cs.id
         WHERE se.id = NEW.student_enrollment_id;
 
-        -- Check if Admin
+        SELECT person_id INTO v_marker_person_id
+        FROM users WHERE id = NEW.marked_by;
+
         SELECT EXISTS (
             SELECT 1 FROM user_roles ur
             JOIN roles r ON ur.role_id = r.id
@@ -340,24 +349,54 @@ BEGIN
         ) INTO v_is_admin;
 
         IF NOT v_is_admin THEN
-            -- Check if Period 1 Teacher for today
+            SELECT EXISTS (
+                SELECT 1 FROM staff s
+                WHERE s.id = v_class_teacher_id
+                  AND s.person_id = v_marker_person_id
+            ) INTO v_is_class_teacher;
+
             SELECT EXISTS (
                 SELECT 1 FROM timetable_slots ts
                 JOIN staff s ON ts.teacher_id = s.id
                 WHERE ts.class_section_id = v_class_section_id
                   AND ts.period_number = 1
-                  AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)
+                  AND s.person_id = v_marker_person_id
                   AND ts.deleted_at IS NULL
             ) INTO v_is_p1_teacher;
 
-            IF NOT v_is_p1_teacher AND v_class_teacher_id IS NOT NULL THEN
-                IF NOT EXISTS (
-                    SELECT 1 FROM staff s
-                    WHERE s.id = v_class_teacher_id
-                      AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)
-                ) THEN
-                    RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, or Admin can mark attendance';
-                END IF;
+            SELECT COALESCE(
+                (SELECT sort_order FROM periods
+                  WHERE school_id = v_school_id AND name ILIKE '%lunch%'
+                  ORDER BY sort_order DESC LIMIT 1),
+                (SELECT sort_order FROM periods
+                  WHERE school_id = v_school_id AND is_break = true
+                  ORDER BY (end_time - start_time) DESC, start_time LIMIT 1),
+                (SELECT MIN(sort_order) - 1 FROM periods
+                  WHERE school_id = v_school_id
+                    AND COALESCE(is_break, false) = false
+                    AND start_time >= TIME '13:00')
+            ) INTO v_lunch_sort;
+
+            SELECT p.sort_order INTO v_afternoon_period
+            FROM periods p
+            WHERE p.school_id = v_school_id
+              AND COALESCE(p.is_break, false) = false
+              AND (v_lunch_sort IS NULL OR p.sort_order > v_lunch_sort)
+            ORDER BY p.sort_order
+            LIMIT 1;
+
+            SELECT EXISTS (
+                SELECT 1 FROM timetable_slots ts
+                JOIN staff s ON ts.teacher_id = s.id
+                WHERE ts.class_section_id = v_class_section_id
+                  AND v_afternoon_period IS NOT NULL
+                  AND ts.period_number = v_afternoon_period
+                  AND s.person_id = v_marker_person_id
+                  AND ts.deleted_at IS NULL
+            ) INTO v_is_afternoon_teacher;
+
+            IF NOT (v_is_class_teacher OR v_is_p1_teacher OR v_is_afternoon_teacher) THEN
+                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, first period after lunch Teacher, or Admin can mark attendance';
             END IF;
         END IF;
     END IF;
@@ -2104,14 +2143,22 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION validate_attendance_entry()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+SET search_path = public
+AS $$
 DECLARE
     v_class_section_id UUID;
     v_class_teacher_id UUID;
+    v_school_id INTEGER;
     v_is_admin BOOLEAN;
+    v_is_class_teacher BOOLEAN;
     v_is_p1_teacher BOOLEAN;
+    v_is_afternoon_teacher BOOLEAN;
+    v_lunch_sort INTEGER;
+    v_afternoon_period INTEGER;
+    v_marker_person_id UUID;
 BEGIN
-    -- 1. Basic Date Validation 
+    -- 1. Basic Date Validation
     IF NOT EXISTS (
         SELECT 1 FROM student_enrollments
         WHERE id = NEW.student_enrollment_id
@@ -2122,12 +2169,16 @@ BEGIN
         RAISE EXCEPTION 'Invalid Attendance: Student is not active in this enrollment on %', NEW.attendance_date;
     END IF;
 
-    -- 2. Authorization Check
+    -- 2. Authorization Check (Class Teacher, Admin, Period 1, or first-after-lunch)
     IF NEW.marked_by IS NOT NULL THEN
-        SELECT se.class_section_id, cs.class_teacher_id INTO v_class_section_id, v_class_teacher_id
+        SELECT se.class_section_id, cs.class_teacher_id, cs.school_id
+          INTO v_class_section_id, v_class_teacher_id, v_school_id
         FROM student_enrollments se
         JOIN class_sections cs ON se.class_section_id = cs.id
         WHERE se.id = NEW.student_enrollment_id;
+
+        SELECT person_id INTO v_marker_person_id
+        FROM users WHERE id = NEW.marked_by;
 
         SELECT EXISTS (
             SELECT 1 FROM user_roles ur
@@ -2137,22 +2188,53 @@ BEGIN
 
         IF NOT v_is_admin THEN
             SELECT EXISTS (
+                SELECT 1 FROM staff s
+                WHERE s.id = v_class_teacher_id
+                  AND s.person_id = v_marker_person_id
+            ) INTO v_is_class_teacher;
+
+            SELECT EXISTS (
                 SELECT 1 FROM timetable_slots ts
                 JOIN staff s ON ts.teacher_id = s.id
                 WHERE ts.class_section_id = v_class_section_id
                   AND ts.period_number = 1
-                  AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)
+                  AND s.person_id = v_marker_person_id
                   AND ts.deleted_at IS NULL
             ) INTO v_is_p1_teacher;
 
-            IF NOT v_is_p1_teacher AND v_class_teacher_id IS NOT NULL THEN
-                IF NOT EXISTS (
-                    SELECT 1 FROM staff s
-                    WHERE s.id = v_class_teacher_id
-                      AND s.person_id = (SELECT person_id FROM users WHERE id = NEW.marked_by)
-                ) THEN
-                    RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, or Admin can mark attendance';
-                END IF;
+            SELECT COALESCE(
+                (SELECT sort_order FROM periods
+                  WHERE school_id = v_school_id AND name ILIKE '%lunch%'
+                  ORDER BY sort_order DESC LIMIT 1),
+                (SELECT sort_order FROM periods
+                  WHERE school_id = v_school_id AND is_break = true
+                  ORDER BY (end_time - start_time) DESC, start_time LIMIT 1),
+                (SELECT MIN(sort_order) - 1 FROM periods
+                  WHERE school_id = v_school_id
+                    AND COALESCE(is_break, false) = false
+                    AND start_time >= TIME '13:00')
+            ) INTO v_lunch_sort;
+
+            SELECT p.sort_order INTO v_afternoon_period
+            FROM periods p
+            WHERE p.school_id = v_school_id
+              AND COALESCE(p.is_break, false) = false
+              AND (v_lunch_sort IS NULL OR p.sort_order > v_lunch_sort)
+            ORDER BY p.sort_order
+            LIMIT 1;
+
+            SELECT EXISTS (
+                SELECT 1 FROM timetable_slots ts
+                JOIN staff s ON ts.teacher_id = s.id
+                WHERE ts.class_section_id = v_class_section_id
+                  AND v_afternoon_period IS NOT NULL
+                  AND ts.period_number = v_afternoon_period
+                  AND s.person_id = v_marker_person_id
+                  AND ts.deleted_at IS NULL
+            ) INTO v_is_afternoon_teacher;
+
+            IF NOT (v_is_class_teacher OR v_is_p1_teacher OR v_is_afternoon_teacher) THEN
+                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, first period after lunch Teacher, or Admin can mark attendance';
             END IF;
         END IF;
     END IF;
@@ -2570,6 +2652,33 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION get_next_certificate_serial(
+  p_school_id INTEGER,
+  p_cert_type TEXT,
+  p_cert_year INTEGER
+) RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_type TEXT := upper(trim(p_cert_type));
+  v_seq_name TEXT;
+  v_n BIGINT;
+BEGIN
+  IF v_type NOT IN ('TC', 'BONAFIDE') THEN
+    RAISE EXCEPTION 'Invalid certificate type: %', p_cert_type;
+  END IF;
+  IF p_cert_year IS NULL OR p_cert_year < 2000 OR p_cert_year > 2100 THEN
+    RAISE EXCEPTION 'Invalid certificate year: %', p_cert_year;
+  END IF;
+
+  v_seq_name := lower(v_type) || '_cert_seq_school_' || p_school_id || '_' || p_cert_year;
+  EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I START 1', v_seq_name);
+  EXECUTE format('SELECT nextval(%L)', v_seq_name) INTO v_n;
+
+  RETURN v_type || '/' || p_cert_year || '/' || lpad(v_n::text, 3, '0');
+END;
+$$;
+
 
 
 CREATE TABLE IF NOT EXISTS schools (
@@ -2705,6 +2814,7 @@ BEGIN
     ('expenses.approve', 'Approve Expenses'),
     ('payroll.process', 'Process Payroll'),
     ('academic_year.upgrade', 'Upgrade Academic Year'),
+    ('certificates.issue', 'Issue Certificates'),
     -- RBAC & Segregation-of-Duties (Phase 1)
     ('refund.create', 'Create Refunds'),
     ('salary.view', 'View Salary'),
@@ -2805,7 +2915,8 @@ BEGIN
       'fees.view', 'fees.manage', 'fees.collect', 'transactions.view',
       'receipts.generate', 'reports.financial', 'notices.view', 'staff.view',
       'staff.create', 'staff.edit', 'staff.delete', 'dashboard.view', 'academics.view',
-      'students.view', 'students.create', 'students.edit', 'students.delete'
+      'students.view', 'students.create', 'students.edit', 'students.delete',
+      'certificates.issue'
     )
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp
@@ -3284,6 +3395,27 @@ DROP TRIGGER IF EXISTS trg_students_updated ON students;
 CREATE TRIGGER trg_students_updated
 BEFORE UPDATE ON students
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Issued certificates (TC / Bonafide) — used by admin + accounts portals
+CREATE TABLE IF NOT EXISTS public.issued_certificates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id INTEGER NOT NULL REFERENCES public.schools(id) ON DELETE CASCADE,
+  student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE RESTRICT,
+  type TEXT NOT NULL CHECK (type IN ('TC', 'BONAFIDE')),
+  serial_no TEXT NOT NULL,
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  data JSONB,
+  issued_by UUID REFERENCES public.users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_issued_certificates_school_serial UNIQUE (school_id, serial_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_issued_certificates_school_id
+  ON public.issued_certificates(school_id);
+CREATE INDEX IF NOT EXISTS idx_issued_certificates_student_id
+  ON public.issued_certificates(student_id);
+CREATE INDEX IF NOT EXISTS idx_issued_certificates_issued_at
+  ON public.issued_certificates(school_id, issued_at DESC);
 
 -- 7. PARENTS
 CREATE TABLE IF NOT EXISTS parents (

@@ -202,6 +202,7 @@ import analyticsRouter from './routes/analyticsRoutes.js';
 import adminAnalyticsRouter from './routes/adminAnalyticsRoutes.js';
 import adminNotificationRoutes from './routes/adminNotificationRoutes.js';
 import invoicesRouter from './routes/invoicesRoutes.js';
+import certificatesRouter from './routes/certificatesRoutes.js';
 import expensesRouter from './routes/expensesRoutes.js';
 import refundRouter from './routes/refundRoutes.js';
 import approvalRouter from './routes/approvalRoutes.js';
@@ -266,6 +267,8 @@ app.get('/', (req, res) => {
             hostel: '/api/v1/hostel',
             events: '/api/v1/events',
             lms: '/api/v1/lms',
+            invoices: '/api/v1/invoices',
+            certificates: '/api/v1/certificates',
             health: '/api/v1/health',
             messages: '/api/v1/messages'
         }
@@ -308,6 +311,7 @@ app.use('/api/v1/admin/notifications', adminNotificationRoutes);
 app.use('/api/v1/admin/academic-year', academicYearUpgradeRouter);
 app.use('/api/v1/defaulters', defaulterRouter);
 app.use('/api/v1/invoices', invoicesRouter);
+app.use('/api/v1/certificates', certificatesRouter);
 app.use('/api/v1/expenses', expensesRouter);
 app.use('/api/v1/refunds', refundRouter);
 app.use('/api/v1/approvals', approvalRouter);

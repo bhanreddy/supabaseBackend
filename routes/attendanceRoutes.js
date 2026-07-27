@@ -48,22 +48,35 @@ function resolveSession(raw) {
 }
 
 /**
- * The end time of the school's lunch break (fallback 13:00). The "first period
- * after lunch" is the earliest teaching slot starting at/after this time.
+ * sort_order of the first teaching period after lunch.
+ * Slots store period_number = periods.sort_order, so matching by period_number
+ * is more reliable than comparing slot start_time to lunch end (slot times can
+ * drift, and a default 13:00 cutoff misses Period 6 when lunch ends at 12:45).
  */
-function lunchEndTime(schoolId) {
+function firstAfternoonPeriodNumber(schoolId) {
   return sql`
-    COALESCE(
-      -- Prefer an explicitly-named lunch period,
-      (SELECT end_time FROM periods
-        WHERE school_id = ${schoolId} AND name ILIKE '%lunch%'
-        ORDER BY end_time DESC LIMIT 1),
-      -- else the longest break of the day (the midday break, whatever it's named),
-      (SELECT end_time FROM periods
-        WHERE school_id = ${schoolId} AND is_break = true
-        ORDER BY (end_time - start_time) DESC, start_time LIMIT 1),
-      -- else a sane default.
-      TIME '13:00'
+    (
+      SELECT p.sort_order
+      FROM periods p
+      WHERE p.school_id = ${schoolId}
+        AND COALESCE(p.is_break, false) = false
+        AND p.sort_order > COALESCE(
+          -- Prefer an explicitly-named lunch period
+          (SELECT sort_order FROM periods
+            WHERE school_id = ${schoolId} AND name ILIKE '%lunch%'
+            ORDER BY sort_order DESC LIMIT 1),
+          -- else the longest break (midday break, whatever it's named)
+          (SELECT sort_order FROM periods
+            WHERE school_id = ${schoolId} AND is_break = true
+            ORDER BY (end_time - start_time) DESC, start_time LIMIT 1),
+          -- else treat periods starting at/after 13:00 as afternoon
+          (SELECT MIN(sort_order) - 1 FROM periods
+            WHERE school_id = ${schoolId}
+              AND COALESCE(is_break, false) = false
+              AND start_time >= TIME '13:00')
+        )
+      ORDER BY p.sort_order
+      LIMIT 1
     )
   `;
 }
@@ -84,21 +97,15 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
     // Afternoon belongs to the teacher of the FIRST period after lunch. Strict:
     // no class-teacher fallback (that's what made the morning class reappear here).
     const [row] = await exec`
-      WITH first_after_lunch AS (
-        SELECT DISTINCT ON (ts.class_section_id, ts.day_of_week)
-               ts.class_section_id, ts.day_of_week, ts.teacher_id
-        FROM timetable_slots ts
-        WHERE ts.academic_year_id = ${yearId}
-          AND ts.school_id = ${schoolId}
-          AND ts.deleted_at IS NULL
-          AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
-          AND ts.start_time >= ${lunchEndTime(schoolId)}
-        ORDER BY ts.class_section_id, ts.day_of_week, ts.start_time
-      )
-      SELECT class_section_id AS id
-      FROM first_after_lunch
-      WHERE teacher_id = ${staffId}
-      ORDER BY day_of_week
+      SELECT ts.class_section_id AS id
+      FROM timetable_slots ts
+      JOIN class_sections cs ON cs.id = ts.class_section_id AND cs.school_id = ${schoolId}
+      WHERE ts.teacher_id = ${staffId}
+        AND ts.academic_year_id = ${yearId}
+        AND ts.period_number = ${firstAfternoonPeriodNumber(schoolId)}
+        AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
+        AND ts.deleted_at IS NULL
+      ORDER BY ts.class_section_id
       LIMIT 1
     `;
     return row?.id || null;
@@ -106,15 +113,15 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
 
   // Morning → the class where they teach period 1.
   const [row] = await exec`
-    SELECT class_section_id AS id
-    FROM timetable_slots
-    WHERE teacher_id = ${staffId}
-      AND academic_year_id = ${yearId}
-      AND period_number = 1
-      AND school_id = ${schoolId}
-      AND LOWER(day_of_week::text) = ${dayOfWeek}
-      AND deleted_at IS NULL
-    ORDER BY class_section_id
+    SELECT ts.class_section_id AS id
+    FROM timetable_slots ts
+    JOIN class_sections cs ON cs.id = ts.class_section_id AND cs.school_id = ${schoolId}
+    WHERE ts.teacher_id = ${staffId}
+      AND ts.academic_year_id = ${yearId}
+      AND ts.period_number = 1
+      AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
+      AND ts.deleted_at IS NULL
+    ORDER BY ts.class_section_id
     LIMIT 1
   `;
   if (row) return row.id;
@@ -139,21 +146,15 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
 async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId, session, dayOfWeek }) {
   if (session === 'afternoon') {
     const [row] = await exec`
-      WITH first_after_lunch AS (
-        SELECT DISTINCT ON (ts.class_section_id, ts.day_of_week)
-               ts.class_section_id, ts.day_of_week, ts.teacher_id
-        FROM timetable_slots ts
-        WHERE ts.class_section_id = ${classSectionId}
-          AND ts.school_id = ${schoolId}
-          AND ts.deleted_at IS NULL
-          AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
-          AND ts.start_time >= ${lunchEndTime(schoolId)}
-        ORDER BY ts.class_section_id, ts.day_of_week, ts.start_time
-      )
-      SELECT 1 AS ok FROM first_after_lunch WHERE teacher_id = ${staffId}
-      UNION ALL
       SELECT 1 AS ok FROM class_sections
         WHERE id = ${classSectionId} AND school_id = ${schoolId} AND class_teacher_id = ${staffId}
+      UNION ALL
+      SELECT 1 AS ok FROM timetable_slots ts
+        WHERE ts.class_section_id = ${classSectionId}
+          AND ts.teacher_id = ${staffId}
+          AND ts.period_number = ${firstAfternoonPeriodNumber(schoolId)}
+          AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
+          AND ts.deleted_at IS NULL
       LIMIT 1
     `;
     return !!row;
@@ -164,7 +165,7 @@ async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId,
       WHERE cs.id = ${classSectionId} AND cs.school_id = ${schoolId} AND cs.class_teacher_id = ${staffId}
     UNION ALL
     SELECT 1 AS ok FROM timetable_slots ts
-      WHERE ts.class_section_id = ${classSectionId} AND ts.school_id = ${schoolId}
+      WHERE ts.class_section_id = ${classSectionId}
         AND ts.teacher_id = ${staffId} AND ts.period_number = 1
         AND LOWER(ts.day_of_week::text) = ${dayOfWeek}
         AND ts.deleted_at IS NULL
