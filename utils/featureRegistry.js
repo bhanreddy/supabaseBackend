@@ -29,9 +29,9 @@ export const FEATURE_REGISTRY = [
   { key: 'quick.transport',       label: 'Transport',       group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.science_projects',label: 'Science Projects',group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.profile',         label: 'Profile',         group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
-  // topbar
-  { key: 'topbar.diary',          label: 'Diary',           group: 'topbar',        default_enabled: true, data_bearing: true,  toggleable: true },
-  { key: 'topbar.lms',            label: 'LMS',             group: 'topbar',        default_enabled: true, data_bearing: true,  toggleable: true },
+  // Relocated quick actions (stable keys retained for existing overrides and API guards)
+  { key: 'topbar.diary',          label: 'Diary',           group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
+  { key: 'topbar.lms',            label: 'LMS',             group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   // home
   { key: 'home.todays_snapshot',  label: "Today's Snapshot (attendance)", group: 'home', default_enabled: true, data_bearing: true, toggleable: true },
   { key: 'home.academic_advisor', label: 'Academic Advisor',group: 'home',          default_enabled: true, data_bearing: true,  toggleable: true },

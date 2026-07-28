@@ -227,14 +227,27 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     let orderBy;
     switch (sort_by) {
       case 'roll_number':
-        orderBy = sql`se.roll_number ${direction}, p.first_name ASC`;
+        orderBy = sql`
+          se.roll_number ${direction} NULLS LAST,
+          LOWER(BTRIM(COALESCE(p.first_name, ''))) ASC,
+          LOWER(BTRIM(COALESCE(p.middle_name, ''))) ASC,
+          LOWER(BTRIM(COALESCE(p.last_name, ''))) ASC,
+          s.admission_no ASC,
+          s.id ASC
+        `;
         break;
       case 'admission_no':
-        orderBy = sql`s.admission_no ${direction}`;
+        orderBy = sql`s.admission_no ${direction}, s.id ASC`;
         break;
       case 'name':
       default:
-        orderBy = sql`p.first_name ${direction}, p.last_name ${direction}`;
+        orderBy = sql`
+          LOWER(BTRIM(COALESCE(p.first_name, ''))) ${direction},
+          LOWER(BTRIM(COALESCE(p.middle_name, ''))) ${direction},
+          LOWER(BTRIM(COALESCE(p.last_name, ''))) ${direction},
+          s.admission_no ${direction},
+          s.id ASC
+        `;
     }
 
     const students = await sql`
@@ -535,8 +548,6 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
 
 // Insert new Student with optional User and Enrollment
 router.post('/', requirePermission('students.create'), async (req, res) => {
-  let recalcParams = null;
-
   try {
     const {
       first_name, middle_name = null, last_name, dob = null, gender_id,
@@ -546,8 +557,6 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
       class_id = null, section_id = null, academic_year_id = null, // For Initial Enrollment
       parents // Array of { first_name, last_name, relation, phone, occupation, is_primary }
     } = req.body;
-
-    // RecalcParams already declared above
 
     // Basic Validation
     if (!first_name || !admission_no || !admission_date || !status_id || !gender_id || !class_id || !section_id) {
@@ -659,7 +668,6 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
 
       // 5b. Resolve Class Section
       let targetClassSectionId = null;
-      let nextRoll = null;
 
       if (enrollmentStatus === 'active') {
         const [cs] = await sql`
@@ -671,17 +679,6 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
         `;
 
         targetClassSectionId = cs.id;
-
-        // 5c. Insert Enrollment with Roll Number
-        // Calculate Next Roll Number
-        const [rollData] = await sql`
-          SELECT COALESCE(MAX(roll_number), 0) + 1 as next_roll
-          FROM student_enrollments
-          WHERE class_section_id = ${targetClassSectionId} AND school_id = ${req.schoolId}
-          AND academic_year_id = ${targetAcademicYearId}
-          AND deleted_at IS NULL
-        `;
-        nextRoll = rollData ? rollData.next_roll : 1;
       }
 
       // Insert Enrollment Record (Even if pending/failed)
@@ -691,7 +688,7 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
 
       await sql`
         INSERT INTO student_enrollments (school_id, student_id, class_section_id, academic_year_id, status, start_date, roll_number)
-        VALUES (${req.schoolId}, ${student.id}, ${targetClassSectionId}, ${targetAcademicYearId}, ${enrollmentStatus}, ${admission_date}, ${nextRoll})
+        VALUES (${req.schoolId}, ${student.id}, ${targetClassSectionId}, ${targetAcademicYearId}, ${enrollmentStatus}, ${admission_date}, NULL)
       `;
 
       // 6. Create Parents
@@ -699,15 +696,6 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
 
       return student;
     });
-
-    if (recalcParams) {
-      // Run Recalculation on committed data
-      try {
-        await sql`SELECT recalculate_section_rolls(${recalcParams.classSectionId}, ${recalcParams.academicYearId})`;
-      } catch (e) {
-
-      }
-    }
 
     sendSuccess(res, req.schoolId, {
       message: 'Student created successfully',
@@ -909,21 +897,11 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
           const oldClassSectionId = currentEnrollment?.class_section_id ?? null;
           const oldAcademicYearId = currentEnrollment?.academic_year_id ?? targetAcademicYearId;
 
-          const [rollData] = await sql`
-            SELECT COALESCE(MAX(roll_number), 0) + 1 AS next_roll
-            FROM student_enrollments
-            WHERE class_section_id = ${targetCs.id}
-              AND school_id = ${req.schoolId}
-              AND academic_year_id = ${targetAcademicYearId}
-              AND deleted_at IS NULL
-          `;
-          const nextRoll = rollData?.next_roll ?? 1;
-
           if (currentEnrollment) {
             const [updatedEnrollment] = await sql`
               UPDATE student_enrollments
               SET class_section_id = ${targetCs.id},
-                  roll_number = ${nextRoll}
+                  roll_number = NULL
               WHERE id = ${currentEnrollment.id}
                 AND student_id = ${id}
                 AND school_id = ${req.schoolId}
@@ -944,7 +922,7 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
               )
               VALUES (
                 ${req.schoolId}, ${id}, ${targetCs.id}, ${targetAcademicYearId},
-                'active', ${enrollmentStartDate}, ${nextRoll}
+                'active', ${enrollmentStartDate}, NULL
               )
               RETURNING id
             `;
@@ -962,6 +940,10 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
               academicYearId: oldAcademicYearId,
             });
           }
+          enrollmentRecalcTargets.push({
+            classSectionId: targetCs.id,
+            academicYearId: targetAcademicYearId,
+          });
         }
       }
 
@@ -999,7 +981,28 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
       return updatedStudent;
     });
 
+    if (first_name !== undefined || middle_name !== undefined || last_name !== undefined) {
+      const activeEnrollments = await sql`
+        SELECT DISTINCT class_section_id, academic_year_id
+        FROM student_enrollments
+        WHERE student_id = ${id}
+          AND school_id = ${req.schoolId}
+          AND status = 'active'
+          AND deleted_at IS NULL
+      `;
+      for (const enrollment of activeEnrollments) {
+        enrollmentRecalcTargets.push({
+          classSectionId: enrollment.class_section_id,
+          academicYearId: enrollment.academic_year_id,
+        });
+      }
+    }
+
+    const seenRecalcTargets = new Set();
     for (const target of enrollmentRecalcTargets) {
+      const targetKey = `${target.classSectionId}:${target.academicYearId}`;
+      if (seenRecalcTargets.has(targetKey)) continue;
+      seenRecalcTargets.add(targetKey);
       try {
         await sql`SELECT recalculate_section_rolls(${target.classSectionId}, ${target.academicYearId})`;
       } catch (recalcErr) {
@@ -1236,17 +1239,6 @@ router.post('/:id/enrollments', requirePermission('students.edit'), async (req, 
 
     if (existing) return res.status(400).json({ error: 'Student is already enrolled in this Academic Year' });
 
-    // Calculate Roll Number
-    const [rollData] = await sql`
-            SELECT COALESCE(MAX(roll_number), 0) + 1 as next_roll 
-            FROM student_enrollments 
-            WHERE class_section_id = ${cs.id} AND school_id = ${req.schoolId} 
-            AND academic_year_id = ${targetAcademicYearId}
-            AND deleted_at IS NULL
-        `;
-
-    const nextRoll = rollData ? rollData.next_roll : 1;
-
     // Create Enrollment
     const [enrollment] = await sql`
             INSERT INTO student_enrollments (
@@ -1255,12 +1247,23 @@ router.post('/:id/enrollments', requirePermission('students.edit'), async (req, 
             )
             VALUES (
                 ${req.schoolId}, ${id}, ${cs.id}, ${targetAcademicYearId}, 
-                'active', NOW(), ${nextRoll}
+                'active', NOW(), NULL
             )
             RETURNING *
         `;
 
-    sendSuccess(res, req.schoolId, { message: 'Enrollment created', enrollment }, 201);
+    await sql`SELECT recalculate_section_rolls(${cs.id}, ${targetAcademicYearId})`;
+    const [recalculatedEnrollment] = await sql`
+      SELECT *
+      FROM student_enrollments
+      WHERE id = ${enrollment.id}
+        AND school_id = ${req.schoolId}
+    `;
+
+    sendSuccess(res, req.schoolId, {
+      message: 'Enrollment created',
+      enrollment: recalculatedEnrollment ?? enrollment,
+    }, 201);
 
   } catch (error) {
     console.error('[POST /:id/enrollments] Error:', error.message, error.stack);

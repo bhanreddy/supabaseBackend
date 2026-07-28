@@ -252,12 +252,30 @@ RETURNS VOID
 SET search_path = public
 AS $$
 BEGIN
+    PERFORM pg_advisory_xact_lock(
+        hashtext(p_class_section_id::text),
+        hashtext(p_academic_year_id::text)
+    );
+
+    UPDATE student_enrollments
+    SET roll_number = NULL
+    WHERE class_section_id = p_class_section_id
+      AND academic_year_id = p_academic_year_id
+      AND status = 'active'
+      AND deleted_at IS NULL
+      AND roll_number IS NOT NULL;
+
     WITH ordered_students AS (
         SELECT 
             se.id AS enrollment_id,
             ROW_NUMBER() OVER (
-                ORDER BY p.first_name ASC, p.last_name ASC
-            ) as new_roll
+                ORDER BY
+                    LOWER(BTRIM(COALESCE(p.first_name, ''))) ASC,
+                    LOWER(BTRIM(COALESCE(p.middle_name, ''))) ASC,
+                    LOWER(BTRIM(COALESCE(p.last_name, ''))) ASC,
+                    s.admission_no ASC,
+                    s.id ASC
+            )::INTEGER as new_roll
         FROM student_enrollments se
         JOIN students s ON se.student_id = s.id
         JOIN persons p ON s.person_id = p.id
@@ -270,8 +288,7 @@ BEGIN
     UPDATE student_enrollments se
     SET roll_number = os.new_roll
     FROM ordered_students os
-    WHERE se.id = os.enrollment_id
-      AND se.roll_number IS DISTINCT FROM os.new_roll;
+    WHERE se.id = os.enrollment_id;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -295,8 +312,23 @@ CREATE OR REPLACE FUNCTION ensure_active_student_enrollment()
 RETURNS TRIGGER
 SET search_path = public
 AS $$
+DECLARE
+  should_validate BOOLEAN;
 BEGIN
-  IF EXISTS (SELECT 1 FROM students WHERE id = NEW.student_id AND deleted_at IS NOT NULL) THEN
+  IF TG_OP = 'INSERT' THEN
+    should_validate := TRUE;
+  ELSE
+    should_validate :=
+      NEW.student_id IS DISTINCT FROM OLD.student_id
+      OR NEW.class_section_id IS DISTINCT FROM OLD.class_section_id
+      OR NEW.academic_year_id IS DISTINCT FROM OLD.academic_year_id
+      OR (NEW.status = 'active' AND NEW.status IS DISTINCT FROM OLD.status);
+  END IF;
+
+  IF should_validate AND EXISTS (
+    SELECT 1 FROM students
+    WHERE id = NEW.student_id AND deleted_at IS NOT NULL
+  ) THEN
     RAISE EXCEPTION 'Cannot enroll a deleted student';
   END IF;
   RETURN NEW;
@@ -3554,12 +3586,16 @@ CREATE TABLE IF NOT EXISTS student_enrollments (
     CONSTRAINT no_enrollment_overlap EXCLUDE USING gist (
         student_id WITH =,
         daterange(start_date, end_date, '[]') WITH &&
-    ),
-    UNIQUE (school_id, class_section_id, academic_year_id, roll_number)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_student_enrollments_school_id ON student_enrollments(school_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_enrollment_roll_number
+ON student_enrollments (class_section_id, academic_year_id, roll_number)
+WHERE status = 'active'
+  AND deleted_at IS NULL
+  AND roll_number IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_active_enrollments
 ON student_enrollments(student_id)
@@ -3584,6 +3620,85 @@ DROP TRIGGER IF EXISTS trg_enroll_active_student ON student_enrollments;
 CREATE TRIGGER trg_enroll_active_student
 BEFORE INSERT OR UPDATE ON student_enrollments
 FOR EACH ROW EXECUTE FUNCTION ensure_active_student_enrollment();
+
+CREATE OR REPLACE FUNCTION recalculate_rolls_after_enrollment_change()
+RETURNS TRIGGER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM recalculate_section_rolls(OLD.class_section_id, OLD.academic_year_id);
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    PERFORM recalculate_section_rolls(OLD.class_section_id, OLD.academic_year_id);
+  END IF;
+  PERFORM recalculate_section_rolls(NEW.class_section_id, NEW.academic_year_id);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_recalculate_rolls_after_enrollment_change ON student_enrollments;
+CREATE TRIGGER trg_recalculate_rolls_after_enrollment_change
+AFTER INSERT OR DELETE OR UPDATE OF class_section_id, academic_year_id, status, deleted_at
+ON student_enrollments
+FOR EACH ROW EXECUTE FUNCTION recalculate_rolls_after_enrollment_change();
+
+CREATE OR REPLACE FUNCTION recalculate_rolls_after_student_name_change()
+RETURNS TRIGGER
+SET search_path = public
+AS $$
+DECLARE target RECORD;
+BEGIN
+  IF ROW(OLD.first_name, OLD.middle_name, OLD.last_name)
+     IS NOT DISTINCT FROM ROW(NEW.first_name, NEW.middle_name, NEW.last_name) THEN
+    RETURN NEW;
+  END IF;
+  FOR target IN
+    SELECT DISTINCT se.class_section_id, se.academic_year_id
+    FROM students s
+    JOIN student_enrollments se ON se.student_id = s.id
+    WHERE s.person_id = NEW.id
+      AND se.status = 'active'
+      AND se.deleted_at IS NULL
+  LOOP
+    PERFORM recalculate_section_rolls(target.class_section_id, target.academic_year_id);
+  END LOOP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_recalculate_rolls_after_student_name_change ON persons;
+CREATE TRIGGER trg_recalculate_rolls_after_student_name_change
+AFTER UPDATE OF first_name, middle_name, last_name ON persons
+FOR EACH ROW EXECUTE FUNCTION recalculate_rolls_after_student_name_change();
+
+CREATE OR REPLACE FUNCTION recalculate_rolls_after_student_delete_change()
+RETURNS TRIGGER
+SET search_path = public
+AS $$
+DECLARE target RECORD;
+BEGIN
+  IF OLD.deleted_at IS NOT DISTINCT FROM NEW.deleted_at THEN
+    RETURN NEW;
+  END IF;
+  FOR target IN
+    SELECT DISTINCT se.class_section_id, se.academic_year_id
+    FROM student_enrollments se
+    WHERE se.student_id = NEW.id
+      AND se.status = 'active'
+      AND se.deleted_at IS NULL
+  LOOP
+    PERFORM recalculate_section_rolls(target.class_section_id, target.academic_year_id);
+  END LOOP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_recalculate_rolls_after_student_delete_change ON students;
+CREATE TRIGGER trg_recalculate_rolls_after_student_delete_change
+AFTER UPDATE OF deleted_at ON students
+FOR EACH ROW EXECUTE FUNCTION recalculate_rolls_after_student_delete_change();
 
 -- 9. ATTENDANCE
 

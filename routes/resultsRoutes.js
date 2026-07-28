@@ -524,7 +524,7 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
     marks = await sql`
       SELECT 
         m.id, m.marks_obtained, m.is_absent, m.remarks,
-        s.id as student_id, s.admission_no,
+        s.id as student_id, s.admission_no, se.roll_number,
         p.display_name as student_name,
         sub.name as subject_name,
         es.max_marks, es.passing_marks
@@ -539,12 +539,12 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
         AND es.exam_id = ${examId}
         AND es.subject_id = ${subject_id}
         AND se.status = 'active'
-      ORDER BY p.display_name
+      ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
     `;
   } else {
     marks = await sql`
       SELECT 
-        s.id as student_id, s.admission_no,
+        s.id as student_id, s.admission_no, se.roll_number,
         p.display_name as student_name,
         json_agg(json_build_object(
           'subject', sub.name,
@@ -563,8 +563,8 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
         AND se.status = 'active'
         AND s.deleted_at IS NULL
         AND s.school_id = ${req.schoolId}
-      GROUP BY s.id, s.admission_no, p.display_name
-      ORDER BY p.display_name
+      GROUP BY s.id, s.admission_no, se.roll_number, p.display_name
+      ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
     `;
   }
 

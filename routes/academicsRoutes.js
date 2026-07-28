@@ -428,6 +428,7 @@ router.get('/class-sections/:id/students', requirePermission('academics.view'), 
     SELECT
       s.id, s.admission_no,
       p.first_name, p.last_name, p.display_name, p.photo_url,
+      se.roll_number,
       se.status as enrollment_status, se.start_date, se.end_date
     FROM student_enrollments se
     JOIN students s ON se.student_id = s.id
@@ -436,7 +437,7 @@ router.get('/class-sections/:id/students', requirePermission('academics.view'), 
       AND se.status = 'active'
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
-    ORDER BY p.first_name, p.last_name
+    ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
   return sendSuccess(res, req.schoolId, students);

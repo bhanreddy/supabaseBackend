@@ -194,7 +194,7 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
     attendance = await sql`
       SELECT
         da.id, da.attendance_date, da.status, da.morning_status, da.afternoon_status, da.marked_at,
-        s.id as student_id, s.admission_no,
+        s.id as student_id, s.admission_no, se.roll_number,
         p.display_name as student_name, p.photo_url,
         marker.display_name as marked_by_name
       FROM student_enrollments se
@@ -213,7 +213,7 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
         AND s.deleted_at IS NULL
         AND s.school_id = ${req.schoolId}
         ${lastSyncedAt ? sql`AND (da.updated_at >= ${lastSyncedAt} OR da.marked_at >= ${lastSyncedAt})` : sql``}
-      ORDER BY p.display_name
+      ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
       LIMIT ${classListLimit}
     `;
   } else if (student_id && from_date && to_date) {
@@ -755,7 +755,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
   // Get all students in the class with their attendance status for the date
   const students = await sql`
     SELECT 
-      s.id as student_id, s.admission_no,
+      s.id as student_id, s.admission_no, se.roll_number,
       p.display_name as student_name, p.photo_url,
       se.id as enrollment_id,
       da.id as attendance_id, da.status, da.morning_status, da.afternoon_status, da.marked_at
@@ -771,7 +771,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
       AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
-    ORDER BY p.display_name
+    ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
   // Get class info
