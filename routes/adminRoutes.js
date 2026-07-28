@@ -1347,6 +1347,186 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
 }));
 
 /**
+ * GET /admin/app-adoption
+ *
+ * Reports whether each active school account has registered an active mobile
+ * device. This is intentionally described as "detected", not "downloaded":
+ * app-store downloads that were never opened are not observable.
+ */
+router.get('/app-adoption', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    const schoolId = req.schoolId;
+    const page = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(10, Number.parseInt(String(req.query.limit || '25'), 10) || 25));
+    const offset = (page - 1) * limit;
+    const search = String(req.query.search || '').trim();
+    const role = String(req.query.role || 'all').trim().toLowerCase();
+    const status = String(req.query.status || 'all').trim().toLowerCase();
+
+    if (!['all', 'detected', 'not_detected'].includes(status)) {
+        return res.status(400).json({ error: 'status must be all, detected, or not_detected' });
+    }
+
+    const searchPattern = `%${search}%`;
+    const searchFilter = search
+        ? sql`AND (
+            p.display_name ILIKE ${searchPattern}
+            OR COALESCE(contact.email, '') ILIKE ${searchPattern}
+            OR COALESCE(contact.phone, '') ILIKE ${searchPattern}
+            OR COALESCE(student_info.admission_no, '') ILIKE ${searchPattern}
+          )`
+        : sql``;
+    const roleFilter = role !== 'all'
+        ? sql`AND EXISTS (
+            SELECT 1
+            FROM user_roles ur_filter
+            JOIN roles r_filter
+              ON r_filter.id = ur_filter.role_id
+             AND r_filter.school_id = ${schoolId}
+             AND r_filter.deleted_at IS NULL
+            WHERE ur_filter.user_id = u.id
+              AND ur_filter.school_id = ${schoolId}
+              AND ur_filter.deleted_at IS NULL
+              AND r_filter.code = ${role}
+          )`
+        : sql``;
+    const statusFilter = status === 'detected'
+        ? sql`AND COALESCE(device_info.device_count, 0) > 0`
+        : status === 'not_detected'
+            ? sql`AND COALESCE(device_info.device_count, 0) = 0`
+            : sql``;
+
+    const baseFrom = sql`
+        FROM users u
+        JOIN persons p
+          ON p.id = u.person_id
+         AND p.school_id = ${schoolId}
+         AND p.deleted_at IS NULL
+        LEFT JOIN LATERAL (
+            SELECT
+                MAX(pc.contact_value) FILTER (WHERE pc.contact_type = 'email' AND pc.is_primary) AS email,
+                MAX(pc.contact_value) FILTER (WHERE pc.contact_type = 'phone' AND pc.is_primary) AS phone
+            FROM person_contacts pc
+            WHERE pc.person_id = p.id
+              AND pc.school_id = ${schoolId}
+              AND pc.deleted_at IS NULL
+        ) contact ON true
+        LEFT JOIN LATERAL (
+            SELECT ARRAY_AGG(DISTINCT r.code ORDER BY r.code) AS roles
+            FROM user_roles ur
+            JOIN roles r
+              ON r.id = ur.role_id
+             AND r.school_id = ${schoolId}
+             AND r.deleted_at IS NULL
+            WHERE ur.user_id = u.id
+              AND ur.school_id = ${schoolId}
+              AND ur.deleted_at IS NULL
+        ) role_info ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*)::int AS device_count,
+                MAX(COALESCE(ud.last_used_at, ud.updated_at, ud.created_at)) AS last_detected_at,
+                ARRAY_AGG(DISTINCT ud.platform ORDER BY ud.platform) AS platforms
+            FROM user_devices ud
+            WHERE ud.user_id = u.id
+              AND ud.school_id = ${schoolId}
+              AND ud.is_active = true
+        ) device_info ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                s.admission_no,
+                c.name AS class_name,
+                sec.name AS section_name
+            FROM students s
+            LEFT JOIN student_enrollments se
+              ON se.student_id = s.id
+             AND se.school_id = ${schoolId}
+             AND se.status = 'active'
+             AND se.deleted_at IS NULL
+            LEFT JOIN class_sections cs
+              ON cs.id = se.class_section_id
+             AND cs.school_id = ${schoolId}
+             AND cs.deleted_at IS NULL
+            LEFT JOIN classes c
+              ON c.id = cs.class_id
+             AND c.school_id = ${schoolId}
+             AND c.deleted_at IS NULL
+            LEFT JOIN sections sec
+              ON sec.id = cs.section_id
+             AND sec.school_id = ${schoolId}
+             AND sec.deleted_at IS NULL
+            WHERE s.person_id = p.id
+              AND s.school_id = ${schoolId}
+              AND s.deleted_at IS NULL
+            ORDER BY se.start_date DESC NULLS LAST
+            LIMIT 1
+        ) student_info ON true
+        WHERE u.school_id = ${schoolId}
+          AND u.deleted_at IS NULL
+          AND u.account_status = 'active'
+          ${searchFilter}
+          ${roleFilter}
+    `;
+
+    const [summaryRows, rows] = await Promise.all([
+        sql`
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE COALESCE(device_info.device_count, 0) > 0)::int AS detected,
+                COUNT(*) FILTER (WHERE COALESCE(device_info.device_count, 0) = 0)::int AS not_detected
+            ${baseFrom}
+        `,
+        sql`
+            SELECT
+                u.id AS user_id,
+                p.display_name,
+                p.photo_url,
+                contact.email,
+                contact.phone,
+                COALESCE(role_info.roles, ARRAY[]::text[]) AS roles,
+                u.last_login_at,
+                u.created_at AS account_created_at,
+                student_info.admission_no,
+                student_info.class_name,
+                student_info.section_name,
+                COALESCE(device_info.device_count, 0)::int AS device_count,
+                device_info.last_detected_at,
+                COALESCE(device_info.platforms, ARRAY[]::text[]) AS platforms,
+                (COALESCE(device_info.device_count, 0) > 0) AS app_detected
+            ${baseFrom}
+            ${statusFilter}
+            ORDER BY
+                (COALESCE(device_info.device_count, 0) = 0) DESC,
+                p.display_name ASC,
+                u.id ASC
+            LIMIT ${limit}
+            OFFSET ${offset}
+        `,
+    ]);
+
+    const summary = summaryRows[0] || { total: 0, detected: 0, not_detected: 0 };
+    const filteredTotal = status === 'detected'
+        ? summary.detected
+        : status === 'not_detected'
+            ? summary.not_detected
+            : summary.total;
+
+    return sendSuccess(res, schoolId, {
+        users: rows,
+        summary: {
+            total: Number(summary.total || 0),
+            detected: Number(summary.detected || 0),
+            not_detected: Number(summary.not_detected || 0),
+        },
+        meta: {
+            page,
+            limit,
+            total: Number(filteredTotal || 0),
+            total_pages: Math.max(1, Math.ceil(Number(filteredTotal || 0) / limit)),
+        },
+    });
+}));
+
+/**
  * GET /admin/translation-health
  * Admin diagnostic for the EN↔TE translation pipeline used by diary, notices
  * and complaints. Reports cumulative engine counters and (unless ?probe=false)

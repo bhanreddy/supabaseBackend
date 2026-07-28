@@ -316,6 +316,7 @@ function formatPct(value) {
  * return English despite a Telugu prompt.
  */
 export function buildVerifiedTeluguPoints({
+    appStatus,
     attendance,
     exams,
     weakSubjects,
@@ -323,6 +324,17 @@ export function buildVerifiedTeluguPoints({
     parentVisits,
 }) {
     const points = [];
+    const activeDeviceCount = Number(appStatus?.device_count) || 0;
+    const studentDeviceCount = Number(appStatus?.student_device_count) || 0;
+    const parentDeviceCount = Number(appStatus?.parent_device_count) || 0;
+    const deviceLabel = activeDeviceCount === 1 ? 'పరికరం' : 'పరికరాలు';
+
+    points.push(
+        activeDeviceCount > 0
+            ? `యాప్ స్థితి: ఇన్‌స్టాల్ చేసినట్లు గుర్తించబడింది. విద్యార్థి లేదా అనుసంధానించిన తల్లిదండ్రుల ఖాతాల్లో ${activeDeviceCount} యాక్టివ్ ${deviceLabel} నమోదయ్యాయి (విద్యార్థి: ${studentDeviceCount}, తల్లిదండ్రులు: ${parentDeviceCount}).`
+            : 'యాప్ స్థితి: ఇన్‌స్టాల్ చేసినట్లు గుర్తించబడలేదు. విద్యార్థి మరియు అనుసంధానించిన తల్లిదండ్రుల ఖాతాల్లో యాక్టివ్ పరికర నమోదు లేదు.',
+    );
+
     const totalDays = Number(attendance?.total_days) || 0;
     const fullPresentDays = Number(attendance?.full_present_days) || 0;
     const halfDays = Number(attendance?.half_days) || 0;
@@ -449,7 +461,7 @@ router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => 
 
     if (!student) return res.status(404).json({ error: 'Student not found' });
 
-    const [[complaintStats], [attendance], examSummaries, [parentVisitStats]] = await Promise.all([
+    const [[complaintStats], [attendance], examSummaries, [parentVisitStats], [appStatus]] = await Promise.all([
         sql`
         SELECT
             COUNT(*)::int AS total_count,
@@ -523,6 +535,55 @@ router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => 
         WHERE student_id = ${student.id}
           AND school_id = ${schoolId}
           AND deleted_at IS NULL
+    `,
+        sql`
+        WITH linked_accounts AS (
+            SELECT
+                u.id AS user_id,
+                'student'::text AS account_type
+            FROM students s
+            JOIN users u
+              ON u.person_id = s.person_id
+             AND u.school_id = ${schoolId}
+             AND u.deleted_at IS NULL
+             AND u.account_status = 'active'
+            WHERE s.id = ${student.id}
+              AND s.school_id = ${schoolId}
+              AND s.deleted_at IS NULL
+
+            UNION ALL
+
+            SELECT
+                u.id AS user_id,
+                'parent'::text AS account_type
+            FROM student_parents sp
+            JOIN parents par
+              ON par.id = sp.parent_id
+             AND par.school_id = ${schoolId}
+             AND par.deleted_at IS NULL
+            JOIN users u
+              ON u.person_id = par.person_id
+             AND u.school_id = ${schoolId}
+             AND u.deleted_at IS NULL
+             AND u.account_status = 'active'
+            WHERE sp.student_id = ${student.id}
+              AND sp.school_id = ${schoolId}
+              AND sp.deleted_at IS NULL
+        )
+        SELECT
+            COUNT(DISTINCT ud.id)::int AS device_count,
+            COUNT(DISTINCT ud.id) FILTER (
+                WHERE linked_accounts.account_type = 'student'
+            )::int AS student_device_count,
+            COUNT(DISTINCT ud.id) FILTER (
+                WHERE linked_accounts.account_type = 'parent'
+            )::int AS parent_device_count,
+            MAX(COALESCE(ud.last_used_at, ud.updated_at, ud.created_at)) AS last_detected_at
+        FROM linked_accounts
+        LEFT JOIN user_devices ud
+          ON ud.user_id = linked_accounts.user_id
+         AND ud.school_id = ${schoolId}
+         AND ud.is_active = true
     `,
     ]);
 
@@ -598,6 +659,7 @@ router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => 
                 : 'unchanged';
 
     const points = buildVerifiedTeluguPoints({
+        appStatus,
         attendance,
         exams: examSummaries,
         weakSubjects,
@@ -610,6 +672,13 @@ router.get('/talking-points/:id', requireAuth, asyncHandler(async (req, res) => 
         source: 'calculated',
         language: 'te',
         summary: {
+            app: {
+                detected: Number(appStatus?.device_count) > 0,
+                device_count: Number(appStatus?.device_count) || 0,
+                student_device_count: Number(appStatus?.student_device_count) || 0,
+                parent_device_count: Number(appStatus?.parent_device_count) || 0,
+                last_detected_at: appStatus?.last_detected_at || null,
+            },
             attendance: {
                 total_days: totalDays,
                 present_days: effectivePresentDays,

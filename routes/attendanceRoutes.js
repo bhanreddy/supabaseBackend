@@ -208,6 +208,7 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
       WHERE se.class_section_id = ${class_section_id}
         AND se.school_id = ${req.schoolId}
         AND se.status = 'active'
+        AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
         AND se.deleted_at IS NULL
         AND s.deleted_at IS NULL
         AND s.school_id = ${req.schoolId}
@@ -340,9 +341,28 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
       WHERE se.class_section_id = ${class_section_id}
         AND se.school_id = ${req.schoolId}
         AND se.status = 'active'
+        AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
         AND se.deleted_at IS NULL
         AND se.student_id = ANY(${sql.array(studentIds)}::uuid[])
     `;
+    if (enrollments.length !== studentIds.length) {
+      const validStudentIds = new Set(enrollments.map((e) => String(e.student_id)));
+      const rejectedStudentIds = studentIds.filter((studentId) => !validStudentIds.has(studentId));
+      const rejectedStudents = await tx`
+        SELECT p.display_name
+        FROM students s
+        JOIN persons p ON p.id = s.person_id
+        WHERE s.id = ANY(${sql.array(rejectedStudentIds)}::uuid[])
+          AND s.school_id = ${req.schoolId}
+        ORDER BY p.display_name
+      `;
+      const names = rejectedStudents.map((student) => student.display_name).join(', ');
+      const error = new Error(
+        `${names || 'One or more students'} cannot be submitted for the selected date. Unmark ${rejectedStudents.length === 1 ? 'that student' : 'those students'} and submit the remaining attendance.`
+      );
+      error.status = 409;
+      throw error;
+    }
     const eMap = new Map(enrollments.map((e) => [String(e.student_id), e.enrollment_id]));
     const envIds = [];
     const statuses = [];
@@ -671,6 +691,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
     WHERE se.class_section_id = ${classSection.id}
       AND se.school_id = ${req.schoolId}
       AND se.status = 'active'
+      AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
@@ -747,6 +768,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
     WHERE se.class_section_id = ${classSectionId}
       AND se.school_id = ${req.schoolId}
       AND se.status = 'active'
+      AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
     ORDER BY p.display_name
