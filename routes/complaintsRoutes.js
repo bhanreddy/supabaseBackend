@@ -138,14 +138,18 @@ router.get('/', requirePermission('complaints.view'), asyncHandler(async (req, r
       SELECT 
         c.id, c.ticket_no, c.title, c.title_te, c.description, c.description_te, c.category, c.priority, c.status,
         c.resolution, c.resolution_te,
-        c.created_at, c.resolved_at,
+        c.created_at, c.resolved_at, c.raised_for_student_id,
         raiser.display_name as raised_by_name,
-        assignee.display_name as assigned_to_name
+        assignee.display_name as assigned_to_name,
+        sp.display_name as student_name,
+        s.admission_no as student_admission_no
       FROM complaints c
       JOIN users u ON c.raised_by = u.id
       JOIN persons raiser ON u.person_id = raiser.id
       LEFT JOIN users au ON c.assigned_to = au.id
       LEFT JOIN persons assignee ON au.person_id = assignee.id
+      LEFT JOIN students s ON c.raised_for_student_id = s.id
+      LEFT JOIN persons sp ON s.person_id = sp.id
       WHERE c.school_id = ${req.schoolId}
         ${status ? sql`AND c.status = ${status}` : sql``}
         ${category ? sql`AND c.category = ${category}` : sql``}
@@ -159,11 +163,15 @@ router.get('/', requirePermission('complaints.view'), asyncHandler(async (req, r
       SELECT 
         c.id, c.ticket_no, c.title, c.title_te, c.description, c.description_te, c.category, c.priority, c.status,
         c.resolution, c.resolution_te,
-        c.created_at, c.resolved_at,
-        raiser.display_name as raised_by_name
+        c.created_at, c.resolved_at, c.raised_for_student_id,
+        raiser.display_name as raised_by_name,
+        sp.display_name as student_name,
+        s.admission_no as student_admission_no
       FROM complaints c
       JOIN users u ON c.raised_by = u.id
       JOIN persons raiser ON u.person_id = raiser.id
+      LEFT JOIN students s ON c.raised_for_student_id = s.id
+      LEFT JOIN persons sp ON s.person_id = sp.id
       WHERE c.school_id = ${req.schoolId}
         AND (c.raised_by = ${req.user.internal_id} ${studentId ? sql`OR c.raised_for_student_id = ${studentId}` : sql``})
         ${status ? sql`AND c.status = ${status}` : sql``}
