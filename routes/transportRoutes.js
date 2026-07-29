@@ -2755,7 +2755,7 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
 
   const today = kolkataDate();
   const [trip] = await sql`
-    SELECT t.id, t.bus_id, t.status, t.trip_direction
+    SELECT t.id, t.bus_id, t.status, t.trip_direction, t.started_at
     FROM trips t
     WHERE t.route_id = ${assignment.route_id}
       AND t.school_id = ${schoolId}
@@ -2778,7 +2778,10 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
   const [locations, stopRows, segmentRows] = await Promise.all([
     sql`
       SELECT latitude, longitude, speed, heading, recorded_at
-      FROM bus_locations WHERE bus_id = ${trip.bus_id}
+      FROM bus_locations
+      WHERE school_id = ${schoolId}
+        AND bus_id = ${trip.bus_id}
+        AND recorded_at >= ${trip.started_at}
       ORDER BY recorded_at DESC LIMIT 1
     `,
     sql`
