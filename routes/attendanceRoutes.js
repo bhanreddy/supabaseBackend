@@ -92,7 +92,54 @@ function firstAfternoonPeriodNumber(schoolId) {
  * afternoon class, rather than wrongly reusing their morning class.
  * Returns the class_section_id (uuid) or null.
  */
-async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, session, dayOfWeek }) {
+async function detectSubstitutionClassForSession(
+  exec,
+  { staffId, yearId, schoolId, session, date }
+) {
+  const [row] = session === 'afternoon'
+    ? await exec`
+        SELECT ts.class_section_id AS id
+        FROM timetable_substitutions cover
+        JOIN timetable_slots ts ON ts.id = cover.timetable_slot_id
+        JOIN class_sections cs ON cs.id = ts.class_section_id AND cs.school_id = ${schoolId}
+        WHERE cover.school_id = ${schoolId}
+          AND cover.academic_year_id = ${yearId}
+          AND cover.substitution_date = ${date}
+          AND cover.substitute_teacher_id = ${staffId}
+          AND cover.period_number = ${firstAfternoonPeriodNumber(schoolId)}
+          AND cover.cancelled_at IS NULL
+        ORDER BY cover.created_at DESC
+        LIMIT 1
+      `
+    : await exec`
+        SELECT ts.class_section_id AS id
+        FROM timetable_substitutions cover
+        JOIN timetable_slots ts ON ts.id = cover.timetable_slot_id
+        JOIN class_sections cs ON cs.id = ts.class_section_id AND cs.school_id = ${schoolId}
+        WHERE cover.school_id = ${schoolId}
+          AND cover.academic_year_id = ${yearId}
+          AND cover.substitution_date = ${date}
+          AND cover.substitute_teacher_id = ${staffId}
+          AND cover.period_number = 1
+          AND cover.cancelled_at IS NULL
+        ORDER BY cover.created_at DESC
+        LIMIT 1
+      `;
+  return row?.id || null;
+}
+
+async function detectClassSectionForSession(
+  exec,
+  { staffId, yearId, schoolId, session, dayOfWeek, date }
+) {
+  // Exact-date cover duty takes precedence over the permanent timetable.
+  // Tomorrow this query naturally returns nothing and the normal teacher
+  // assignment resumes without a cleanup job.
+  const substitutionClass = await detectSubstitutionClassForSession(exec, {
+    staffId, yearId, schoolId, session, date,
+  });
+  if (substitutionClass) return substitutionClass;
+
   if (session === 'afternoon') {
     // Afternoon belongs to the teacher of the FIRST period after lunch. Strict:
     // no class-teacher fallback (that's what made the morning class reappear here).
@@ -138,12 +185,53 @@ async function detectClassSectionForSession(exec, { staffId, yearId, schoolId, s
   return staticRow?.id || null;
 }
 
+/** Exact-date capability granted by an active cover assignment. */
+async function isSubstitutionAuthorizedForSession(
+  exec,
+  { staffId, classSectionId, schoolId, session, date }
+) {
+  const [cover] = session === 'afternoon'
+    ? await exec`
+        SELECT 1 AS ok
+        FROM timetable_substitutions substitution
+        JOIN timetable_slots ts ON ts.id = substitution.timetable_slot_id
+        WHERE substitution.school_id = ${schoolId}
+          AND substitution.substitution_date = ${date}
+          AND substitution.substitute_teacher_id = ${staffId}
+          AND substitution.period_number = ${firstAfternoonPeriodNumber(schoolId)}
+          AND substitution.cancelled_at IS NULL
+          AND ts.class_section_id = ${classSectionId}
+        LIMIT 1
+      `
+    : await exec`
+        SELECT 1 AS ok
+        FROM timetable_substitutions substitution
+        JOIN timetable_slots ts ON ts.id = substitution.timetable_slot_id
+        WHERE substitution.school_id = ${schoolId}
+          AND substitution.substitution_date = ${date}
+          AND substitution.substitute_teacher_id = ${staffId}
+          AND substitution.period_number = 1
+          AND substitution.cancelled_at IS NULL
+          AND ts.class_section_id = ${classSectionId}
+        LIMIT 1
+      `;
+  return Boolean(cover);
+}
+
 /**
  * Is this teacher allowed to mark the given class section for the given session?
  *   morning   → static class teacher OR period-1 subject teacher
  *   afternoon → static class teacher OR first-period-after-lunch subject teacher
  */
-async function isAuthorizedForSession(exec, { staffId, classSectionId, schoolId, session, dayOfWeek }) {
+async function isAuthorizedForSession(
+  exec,
+  { staffId, classSectionId, schoolId, session, dayOfWeek, date }
+) {
+  const hasSubstitution = await isSubstitutionAuthorizedForSession(exec, {
+    staffId, classSectionId, schoolId, session, date,
+  });
+  if (hasSubstitution) return true;
+
   if (session === 'afternoon') {
     const [row] = await exec`
       SELECT 1 AS ok FROM class_sections
@@ -270,7 +358,7 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
  * Body: { class_section_id, date, attendance: [{ student_id, status }] }
  */
 // Mark attendance (bulk)
-router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, res) => {
+router.post('/', requireAuth, asyncHandler(async (req, res) => {
   let { class_section_id, date, attendance, records, session } = req.body;
   if (!attendance && records) attendance = records;
   const isAdmin = req.user?.roles.includes('admin');
@@ -298,7 +386,8 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
     const [currentYear] = await sql`SELECT id FROM academic_years WHERE now() BETWEEN start_date AND end_date AND school_id = ${req.schoolId} LIMIT 1`;
     if (staff && currentYear) {
       class_section_id = await detectClassSectionForSession(sql, {
-        staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
+        staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId,
+        session, dayOfWeek, date,
       });
     }
   }
@@ -311,8 +400,18 @@ router.post('/', requirePermission('attendance.mark'), asyncHandler(async (req, 
   //    Morning → class teacher / period-1 teacher.
   //    Afternoon → class teacher / first-period-after-lunch teacher.
   if (!isAdmin) {
+    const hasPermanentPermission = req.user.permissions.includes('attendance.mark');
+    const hasExactDateCover = staff && await isSubstitutionAuthorizedForSession(sql, {
+      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId,
+      session, date,
+    });
+    if (!hasPermanentPermission && !hasExactDateCover) {
+      return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+
     const authorized = staff && await isAuthorizedForSession(sql, {
-      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId, session, dayOfWeek,
+      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId,
+      session, dayOfWeek, date,
     });
     if (!authorized) {
       const who = session === 'afternoon'
@@ -663,15 +762,35 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   //    fallback → static class-teacher assignment.
   const session = resolveSession(req.query.session);
   const classSectionId = await detectClassSectionForSession(sql, {
-    staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
+    staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId,
+    session, dayOfWeek, date,
   });
-
   if (!classSectionId) {
     return res.status(404).json({
       error: session === 'afternoon'
         ? 'No class assigned to you for the first period after lunch this academic year'
         : 'No class assigned to you as a Class Teacher for the current academic year'
     });
+  }
+
+  // Users without permanent attendance permissions receive roster access only
+  // through an exact-date substitution for this class/session.
+  const hasPermanentAttendanceAccess =
+    req.user.roles.includes('admin') ||
+    req.user.permissions.includes('attendance.view') ||
+    req.user.permissions.includes('attendance.mark') ||
+    Boolean(req.staffPortalAccess?.admin_user_id);
+  if (!hasPermanentAttendanceAccess) {
+    const hasExactDateCover = await isSubstitutionAuthorizedForSession(sql, {
+      staffId: staff.id,
+      classSectionId,
+      schoolId: req.schoolId,
+      session,
+      date,
+    });
+    if (!hasExactDateCover) {
+      return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
   }
   const classSection = { id: classSectionId };
 
@@ -742,7 +861,8 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
         // fallback → static class-teacher assignment.
         const session = resolveSession(req.query.session);
         classSectionId = await detectClassSectionForSession(sql, {
-          staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId, session, dayOfWeek,
+          staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId,
+          session, dayOfWeek, date,
         }) || classSectionId;
       }
     }

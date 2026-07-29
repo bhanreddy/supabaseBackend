@@ -189,6 +189,8 @@ import noticesRouter from './routes/noticesRoutes.js';
 import leavesRouter from './routes/leavesRoutes.js';
 import diaryRouter from './routes/diaryRoutes.js';
 import timetableRouter from './routes/timetableRoutes.js';
+import substitutionRouter from './routes/substitutionRoutes.js';
+import studentPortfolioRouter from './routes/studentPortfolioRoutes.js';
 import transportRouter from './routes/transportRoutes.js';
 import transportFeeRouter from './routes/transportFeeRoutes.js';
 import transportImportRouter from './routes/transportImportRoutes.js';
@@ -264,6 +266,7 @@ app.get('/', (req, res) => {
             leaves: '/api/v1/leaves',
             diary: '/api/v1/diary',
             timetable: '/api/v1/timetable',
+            substitutions: '/api/v1/substitutions',
             transport: '/api/v1/transport',
             hostel: '/api/v1/hostel',
             events: '/api/v1/events',
@@ -281,6 +284,8 @@ app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/students', studentsRouter);
 app.use('/api/v1/student', studentDashboardRouter);
 app.use('/api/v1/teachers', teachersRouter);
+// Must precede /staff because staffRouter has a GET /:id catch-all.
+app.use('/api/v1/staff/student-portfolio', studentPortfolioRouter);
 app.use('/api/v1/staff', staffRouter);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/academics', academicsRouter);
@@ -297,6 +302,7 @@ app.use('/api/v1/notices', requireFeature('quick.announcements'), noticesRouter)
 app.use('/api/v1/leaves', leavesRouter);
 app.use('/api/v1/diary', requireFeature('topbar.diary'), diaryRouter);
 app.use('/api/v1/timetable', requireFeature('nav.time_table'), timetableRouter);
+app.use('/api/v1/substitutions', substitutionRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportImportRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportFeeRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportRouter);

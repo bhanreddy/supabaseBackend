@@ -5300,6 +5300,73 @@ CREATE INDEX IF NOT EXISTS idx_timetable_class ON timetable_slots(class_section_
 CREATE INDEX IF NOT EXISTS idx_timetable_teacher ON timetable_slots(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_slots_time_check ON timetable_slots(teacher_id, start_time, end_time); -- Updated for collision detection
 
+-- One-day substitutions decorate the permanent timetable for exactly one date.
+-- They are not copied into timetable_slots, so the regular teacher resumes
+-- automatically the following day while the substitution remains auditable.
+CREATE TABLE IF NOT EXISTS timetable_substitutions (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id             INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  academic_year_id      UUID NOT NULL REFERENCES academic_years(id) ON DELETE RESTRICT,
+  substitution_date     DATE NOT NULL,
+  timetable_slot_id     UUID NOT NULL REFERENCES timetable_slots(id) ON DELETE RESTRICT,
+  period_number         SMALLINT NOT NULL CHECK (period_number > 0),
+  absent_teacher_id     UUID NOT NULL REFERENCES staff(id) ON DELETE RESTRICT,
+  substitute_teacher_id UUID NOT NULL REFERENCES staff(id) ON DELETE RESTRICT,
+  reason                VARCHAR(500),
+  created_by            UUID REFERENCES users(id) ON DELETE SET NULL,
+  cancelled_by          UUID REFERENCES users(id) ON DELETE SET NULL,
+  cancelled_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_substitution_different_teachers
+    CHECK (absent_teacher_id <> substitute_teacher_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_timetable_substitution_slot_date_active
+  ON timetable_substitutions(school_id, substitution_date, timetable_slot_id)
+  WHERE cancelled_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_timetable_substitute_period_date_active
+  ON timetable_substitutions(school_id, substitution_date, substitute_teacher_id, period_number)
+  WHERE cancelled_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_timetable_substitution_date
+  ON timetable_substitutions(school_id, substitution_date);
+
+CREATE INDEX IF NOT EXISTS idx_timetable_substitution_teacher_date
+  ON timetable_substitutions(substitute_teacher_id, substitution_date)
+  WHERE cancelled_at IS NULL;
+
+DROP TRIGGER IF EXISTS trg_timetable_substitutions_updated ON timetable_substitutions;
+CREATE TRIGGER trg_timetable_substitutions_updated
+  BEFORE UPDATE ON timetable_substitutions
+  FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+ALTER TABLE timetable_substitutions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Substitutions: read own school" ON timetable_substitutions;
+CREATE POLICY "Substitutions: read own school"
+  ON timetable_substitutions FOR SELECT
+  USING (
+    auth.role() = 'service_role'
+    OR is_super_admin()
+    OR school_id = auth_school_id()
+  );
+
+DROP POLICY IF EXISTS "Substitutions: admin manage own school" ON timetable_substitutions;
+CREATE POLICY "Substitutions: admin manage own school"
+  ON timetable_substitutions FOR ALL
+  USING (
+    auth.role() = 'service_role'
+    OR is_super_admin()
+    OR (school_id = auth_school_id() AND auth_has_role(ARRAY['admin', 'principal']))
+  )
+  WITH CHECK (
+    auth.role() = 'service_role'
+    OR is_super_admin()
+    OR (school_id = auth_school_id() AND auth_has_role(ARRAY['admin', 'principal']))
+  );
+
 
 -- Financial & Course Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_complaints_assigned_to ON complaints(assigned_to);

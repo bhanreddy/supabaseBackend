@@ -13,6 +13,7 @@
     "audit:report": "node audit_tooling/generate_report.js",
     "audit:sync": "node audit_tooling/update_schema_sql.js",
     "db:verify": "node db.js",
+    "migrate:daily-substitutions": "node scripts/run_daily_substitutions_migration.js",
     "verify:rate-limit": "node scripts/verify-rate-limit.js"
   },
   "type": "module",

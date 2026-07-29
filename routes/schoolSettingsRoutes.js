@@ -3,6 +3,9 @@ import sql from '../db.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { singleSignatureUpload, handleAvatarMulterError } from '../middleware/avatarUpload.js';
+import { normalizePrincipalSignature } from '../utils/principalSignatureImage.js';
+import { uploadPrincipalSignature, removePrincipalSignature } from '../utils/schoolAssetStorage.js';
 
 const router = express.Router();
 
@@ -16,6 +19,7 @@ const SETTING_KEYS = [
   'school_tagline',
   'school_affiliation',
   'school_principal',
+  'principal_signature_url',
   'school_recognition',
   'school_medium',
   'school_board',
@@ -143,6 +147,64 @@ router.put(
       settings: buildSettingsPayload(rows, schoolRow),
     });
   })
+);
+
+// ── PATCH /school-settings/principal-signature ────────────────────────────────
+// One school-scoped signature used on generated documents such as hall tickets.
+router.patch(
+  '/principal-signature',
+  requireAuth,
+  requirePermission('admin.manage'),
+  singleSignatureUpload,
+  handleAvatarMulterError,
+  asyncHandler(async (req, res) => {
+    const schoolId = req.user.schoolId;
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({
+        error: 'No image provided. Attach an image under the "signature" field.',
+      });
+    }
+
+    try {
+      const { buffer } = await normalizePrincipalSignature(req.file.buffer);
+      const signatureUrl = await uploadPrincipalSignature(schoolId, buffer);
+
+      await sql`
+        INSERT INTO school_settings (school_id, key, value, updated_at)
+        VALUES (${schoolId}, 'principal_signature_url', ${signatureUrl}, now())
+        ON CONFLICT (school_id, key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+      `;
+
+      return sendSuccess(res, schoolId, {
+        message: 'Principal signature updated',
+        principal_signature_url: signatureUrl,
+      });
+    } catch (error) {
+      if (/not a valid image/i.test(error?.message || '')) {
+        return res.status(400).json({ error: 'The uploaded file is not a valid image.' });
+      }
+      throw error;
+    }
+  }),
+);
+
+router.delete(
+  '/principal-signature',
+  requireAuth,
+  requirePermission('admin.manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = req.user.schoolId;
+    await removePrincipalSignature(schoolId).catch(() => {});
+    await sql`
+      DELETE FROM school_settings
+      WHERE school_id = ${schoolId} AND key = 'principal_signature_url'
+    `;
+    return sendSuccess(res, schoolId, {
+      message: 'Principal signature removed',
+      principal_signature_url: null,
+    });
+  }),
 );
 
 export default router;

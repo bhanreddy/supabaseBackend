@@ -32,6 +32,8 @@ export const avatarUpload = multer({
 
 // Field name is "photo" — the app appends the picked image under this key.
 export const singleAvatarUpload = avatarUpload.single('photo');
+// School document assets use the same validated image envelope.
+export const singleSignatureUpload = avatarUpload.single('signature');
 
 export const handleAvatarMulterError = (err, req, res, next) => {
   if (!err) return next();

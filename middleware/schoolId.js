@@ -17,7 +17,11 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/transport(?:\/.*)?$/i,
   /^\/api\/v1\/settings\/upi\/?$/i,
   /^\/api\/settings\/upi\/?$/i,
-  /^\/api\/v1\/school-settings\/?$/i,
+  // School settings and every nested asset route (for example the multipart
+  // principal-signature upload) are admin-authenticated and must always use
+  // the tenant from the verified JWT. Multipart PATCH bodies have not been
+  // parsed when this middleware runs, so they cannot safely supply school_id.
+  /^\/api\/v1\/school-settings(?:\/.*)?$/i,
   /^\/api\/v1\/dcgd\/?$/i,
   /^\/api\/v1\/dcgd\/programs\/\d+\/content\/?$/i,
   /^\/api\/v1\/fees\/adjust\/?$/i,

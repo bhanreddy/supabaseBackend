@@ -1536,7 +1536,9 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         SELECT 
           sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.status,
           sf.due_date, sf.period_month, sf.period_year,
-          ft.name as fee_type,
+          fs.fee_type_id,
+          ft.name as fee_type, ft.name_te as fee_type_te, ft.code as fee_code,
+          ft.sort_order as fee_type_sort_order,
           (SELECT COUNT(*)::int FROM fee_adjustments fa WHERE fa.student_fee_id = sf.id) as adjustment_count
         FROM student_fees sf
         JOIN fee_structures fs ON sf.fee_structure_id = fs.id
@@ -1546,14 +1548,16 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           AND sf.deleted_at IS NULL
           AND fs.deleted_at IS NULL
           AND fs.academic_year_id = ${academic_year_id}
-        ORDER BY sf.due_date DESC
+        ORDER BY ft.sort_order ASC, sf.due_date ASC NULLS LAST, ft.name ASC, sf.id ASC
         LIMIT ${lim} OFFSET ${offset}
       `
         : await sql`
         SELECT 
           sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.status,
           sf.due_date, sf.period_month, sf.period_year,
-          ft.name as fee_type,
+          fs.fee_type_id,
+          ft.name as fee_type, ft.name_te as fee_type_te, ft.code as fee_code,
+          ft.sort_order as fee_type_sort_order,
           (SELECT COUNT(*)::int FROM fee_adjustments fa WHERE fa.student_fee_id = sf.id) as adjustment_count
         FROM student_fees sf
         JOIN fee_structures fs ON sf.fee_structure_id = fs.id
@@ -1563,14 +1567,16 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           AND sf.deleted_at IS NULL
           AND fs.deleted_at IS NULL
           AND fs.academic_year_id = ${academic_year_id}
-        ORDER BY sf.due_date DESC
+        ORDER BY ft.sort_order ASC, sf.due_date ASC NULLS LAST, ft.name ASC, sf.id ASC
       `;
     } else {
       fees = usePaging
         ? await sql`
         SELECT 
           sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.status,
-          sf.due_date, ft.name as fee_type, ay.code as academic_year,
+          sf.due_date, fs.fee_type_id,
+          ft.name as fee_type, ft.name_te as fee_type_te, ft.code as fee_code,
+          ft.sort_order as fee_type_sort_order, ay.code as academic_year,
           (SELECT COUNT(*)::int FROM fee_adjustments fa WHERE fa.student_fee_id = sf.id) as adjustment_count
         FROM student_fees sf
         JOIN fee_structures fs ON sf.fee_structure_id = fs.id
@@ -1580,13 +1586,15 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           AND sf.school_id = ${req.schoolId}
           AND sf.deleted_at IS NULL
           AND fs.deleted_at IS NULL
-        ORDER BY sf.due_date DESC
+        ORDER BY ft.sort_order ASC, sf.due_date ASC NULLS LAST, ft.name ASC, sf.id ASC
         LIMIT ${lim} OFFSET ${offset}
       `
         : await sql`
         SELECT 
           sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.status,
-          sf.due_date, ft.name as fee_type, ay.code as academic_year,
+          sf.due_date, fs.fee_type_id,
+          ft.name as fee_type, ft.name_te as fee_type_te, ft.code as fee_code,
+          ft.sort_order as fee_type_sort_order, ay.code as academic_year,
           (SELECT COUNT(*)::int FROM fee_adjustments fa WHERE fa.student_fee_id = sf.id) as adjustment_count
         FROM student_fees sf
         JOIN fee_structures fs ON sf.fee_structure_id = fs.id
@@ -1596,7 +1604,7 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
           AND sf.school_id = ${req.schoolId}
           AND sf.deleted_at IS NULL
           AND fs.deleted_at IS NULL
-        ORDER BY sf.due_date DESC
+        ORDER BY ft.sort_order ASC, sf.due_date ASC NULLS LAST, ft.name ASC, sf.id ASC
         LIMIT 20
       `;
     }

@@ -142,7 +142,8 @@ router.get('/', requirePermission('complaints.view'), asyncHandler(async (req, r
         raiser.display_name as raised_by_name,
         assignee.display_name as assigned_to_name,
         sp.display_name as student_name,
-        s.admission_no as student_admission_no
+        s.admission_no as student_admission_no,
+        sp.photo_url as student_photo_url
       FROM complaints c
       JOIN users u ON c.raised_by = u.id
       JOIN persons raiser ON u.person_id = raiser.id
@@ -166,7 +167,8 @@ router.get('/', requirePermission('complaints.view'), asyncHandler(async (req, r
         c.created_at, c.resolved_at, c.raised_for_student_id,
         raiser.display_name as raised_by_name,
         sp.display_name as student_name,
-        s.admission_no as student_admission_no
+        s.admission_no as student_admission_no,
+        sp.photo_url as student_photo_url
       FROM complaints c
       JOIN users u ON c.raised_by = u.id
       JOIN persons raiser ON u.person_id = raiser.id
@@ -197,7 +199,8 @@ router.get('/:id', requirePermission('complaints.view'), asyncHandler(async (req
       assignee.display_name as assigned_to_name,
       resolver.display_name as resolved_by_name,
       s.admission_no as student_admission_no,
-      sp.display_name as student_name
+      sp.display_name as student_name,
+      sp.photo_url as student_photo_url
     FROM complaints c
     JOIN users u ON c.raised_by = u.id
     JOIN persons raiser ON u.person_id = raiser.id
