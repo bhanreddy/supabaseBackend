@@ -1495,10 +1495,11 @@ router.post('/trips/:tripId/end', requireAuth, asyncHandler(async (req, res) => 
     RETURNING *
   `;
 
-  // Phase A: refresh the calibration gate for this route-leg
-  setImmediate(() => finalizeTripCalibration(req.schoolId, tripId));
+  // Refresh before acknowledging completion so the driver's next render sees
+  // this clean trip instead of remaining one trip behind.
+  const calibration = await finalizeTripCalibration(req.schoolId, tripId);
 
-  return sendSuccess(res, req.schoolId, { message: 'Trip ended', trip: ended });
+  return sendSuccess(res, req.schoolId, { message: 'Trip ended', trip: ended, calibration });
 }));
 
 /**
@@ -2562,8 +2563,8 @@ router.post('/driver/trip/:tripId/complete', requireAuth, asyncHandler(async (re
     RETURNING id, status, ended_at
   `;
 
-  // Phase A: refresh the calibration gate for this route-leg
-  setImmediate(() => finalizeTripCalibration(req.schoolId, tripId));
+  // Keep the completed trip and calibration progress synchronized.
+  const calibration = await finalizeTripCalibration(req.schoolId, tripId);
 
   setImmediate(async () => {
     try {
@@ -2613,6 +2614,7 @@ router.post('/driver/trip/:tripId/complete', requireAuth, asyncHandler(async (re
 
   return sendSuccess(res, req.schoolId, {
     ...completed,
+    calibration,
     status: mapTripUiStatus(completed.status),
     raw_status: completed.status,
     completed_at: completed.ended_at,

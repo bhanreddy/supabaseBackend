@@ -40,7 +40,7 @@ export const CALIBRATION = {
   MIN_SEGMENT_SECONDS: 5,
   MAX_SEGMENT_SECONDS: 3 * 3600,
   /** Clean trips required before a leg graduates to auto (geofence) mode. */
-  CLEAN_TRIPS_TO_CALIBRATE: 2,
+  CLEAN_TRIPS_TO_CALIBRATE: 4,
 };
 
 /** Fold trip_direction into a learning leg: afternoon and evening share one. */
@@ -241,13 +241,16 @@ export async function finalizeTripCalibration(schoolId, tripId, db = sql) {
                         AND ${geoAgg.n} >= ${stopsTotal}
         AND ${segAgg.n} >= ${segmentsTotal},
         updated_at = now()
-      RETURNING is_calibrated
+      RETURNING trip_direction, is_calibrated, stops_total, stops_calibrated,
+                segments_total, segments_learned, clean_trip_count, updated_at
     `;
     if (calibration?.is_calibrated) {
       logger.info({ event: 'transport_calibration_graduated', schoolId, routeId: trip.route_id, leg, tripId }, 'Transport leg calibrated');
     }
+    return calibration || null;
   } catch (err) {
     logger.error({ err, event: 'transport_calibration_finalize_failed', schoolId, tripId }, 'Transport calibration finalization failed');
+    return null;
   }
 }
 
@@ -260,13 +263,16 @@ export async function getLegCalibrationStatus(schoolId, routeId, tripDirection, 
     FROM route_leg_calibration
     WHERE school_id = ${schoolId} AND route_id = ${routeId} AND trip_direction = ${leg}
   `;
-  return row || {
-    trip_direction: leg,
-    is_calibrated: false,
-    stops_total: 0,
-    stops_calibrated: 0,
-    segments_total: 0,
-    segments_learned: 0,
-    clean_trip_count: 0,
+  return {
+    ...(row || {
+      trip_direction: leg,
+      is_calibrated: false,
+      stops_total: 0,
+      stops_calibrated: 0,
+      segments_total: 0,
+      segments_learned: 0,
+      clean_trip_count: 0,
+    }),
+    required_clean_trip_count: CALIBRATION.CLEAN_TRIPS_TO_CALIBRATE,
   };
 }

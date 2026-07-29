@@ -1,5 +1,6 @@
 /** Nightly Phase E maintenance. Every mutating query is explicitly tenant-scoped. */
 import sql from '../db.js';
+import { CALIBRATION } from './transportCalibrationService.js';
 
 export const RADIUS = Object.freeze({ SCALE: 0.4, MIN_METERS: 60, MAX_METERS: 200 });
 
@@ -68,7 +69,7 @@ export async function refreshLegCalibrationFlags(schoolId, db = sql) {
         segments_total = coverage.segments_total,
         segments_learned = coverage.segments_learned,
         -- A stop add/remove changes the execution graph.  Disarm the leg and
-        -- require two fresh clean runs; stale segment timing must not silently
+        -- require fresh clean runs; stale segment timing must not silently
         -- keep auto-geofencing enabled.
         clean_trip_count = CASE
           WHEN cal.stops_total <> coverage.stops_total
@@ -78,7 +79,7 @@ export async function refreshLegCalibrationFlags(schoolId, db = sql) {
             cal.stops_total <> coverage.stops_total
             OR cal.segments_total <> coverage.segments_total
           )
-          AND cal.clean_trip_count >= 2
+          AND cal.clean_trip_count >= ${CALIBRATION.CLEAN_TRIPS_TO_CALIBRATE}
           AND coverage.stops_total > 0
           AND coverage.stops_calibrated >= coverage.stops_total
           AND coverage.segments_learned >= coverage.segments_total,
