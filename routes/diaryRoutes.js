@@ -6,6 +6,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import fs from 'fs';
 import { resolveDiaryTextFields } from '../services/geminiTranslator.js';
+import { isDiarySyncRequest } from '../utils/diarySync.js';
 
 const router = express.Router();
 
@@ -70,7 +71,17 @@ async function validateDiaryTarget(schoolId, classSectionId, subjectId) {
  * DR1: All branches now filter by school_id via diary_entries.school_id
  */
 router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) => {
-  const { class_section_id, entry_date, from_date, to_date, subject_id, page = 1, limit = 20, updated_since } = req.query;
+  const {
+    class_section_id,
+    entry_date,
+    from_date,
+    to_date,
+    subject_id,
+    page = 1,
+    limit = 20,
+    updated_since,
+    is_sync,
+  } = req.query;
   const offset = (page - 1) * limit;
   const schoolId = req.schoolId;
 
@@ -78,11 +89,19 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
 
   let entries;
 
-  // Sync Logic (read-only): old rows are excluded by the date window below.
-  // Run periodic DELETE via pg_cron / scheduler, e.g.:
-  // DELETE FROM diary_entries WHERE entry_date < CURRENT_DATE - INTERVAL '15 days' AND school_id = $school;
-  if (updated_since && class_section_id) {
-    const sinceDate = new Date(parseInt(updated_since));
+  // Sync reads return the complete retained class snapshot. Do not filter this
+  // by the device's updated_since value: device clocks can be ahead of the
+  // server, and WatermelonDB can retain lastPulledAt after its local rows were
+  // cleared. A delta then returns [] forever even though diary rows exist.
+  //
+  // The retained dataset is only 15 days, so the full snapshot is bounded and
+  // lets both legacy (`updated_since`) and current (`is_sync`) clients repair
+  // themselves without a frontend release.
+  if (isDiarySyncRequest({
+    classSectionId: class_section_id,
+    updatedSince: updated_since,
+    isSync: is_sync,
+  })) {
     entries = await sql`
       SELECT
         d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
@@ -95,11 +114,10 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
       JOIN persons creator ON u.person_id = creator.id
       WHERE d.class_section_id = ${class_section_id} AND d.school_id = ${schoolId}
         AND d.entry_date >= (CURRENT_DATE - (${diaryRetentionOffsetDays}) * INTERVAL '1 day')
-        AND (d.updated_at > ${sinceDate} OR d.created_at > ${sinceDate})
-      ORDER BY d.updated_at DESC
+      ORDER BY d.entry_date DESC, d.updated_at DESC
     `;
-    logDebug(`[Diary] Sync found ${entries.length} entries`);
-    res.set('ETag', false);
+    logDebug(`[Diary] Sync snapshot found ${entries.length} entries`);
+    res.set('Cache-Control', 'no-store');
     return sendSuccess(res, req.schoolId, entries);
   }
 
