@@ -116,7 +116,7 @@ async function targetSlot(exec, { schoolId, slotId, date, lock = false }) {
       AND ts.academic_year_id = ${context.academicYearId}
       AND LOWER(ts.day_of_week::text) = ${context.timetableDay}
       AND ts.deleted_at IS NULL
-    ${lock ? sql`FOR UPDATE` : sql``}
+    ${lock ? sql`FOR UPDATE OF ts` : sql``}
   `;
   return { context, slot: slot || null };
 }
