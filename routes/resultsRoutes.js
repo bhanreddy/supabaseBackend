@@ -1585,16 +1585,58 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
     return sendSuccess(res, req.schoolId, []);
   }
 
+  const requestedAcademicYearId = String(req.query.academic_year_id || '').trim();
+  const [academicYear] = requestedAcademicYearId
+    ? await sql`
+        SELECT id
+        FROM academic_years
+        WHERE id = ${requestedAcademicYearId}
+          AND school_id = ${req.schoolId}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT id
+        FROM academic_years
+        WHERE school_id = ${req.schoolId}
+        ORDER BY
+          CASE WHEN CURRENT_DATE BETWEEN start_date AND end_date THEN 0 ELSE 1 END,
+          start_date DESC
+        LIMIT 1
+      `;
+  if (!academicYear) {
+    return res.status(404).json({ error: 'Academic year not found' });
+  }
+
   const rows = await sql`
+    WITH taught_subjects AS (
+      SELECT cs.class_id, csub.subject_id
+      FROM class_subjects csub
+      JOIN class_sections cs ON csub.class_section_id = cs.id
+      WHERE cs.class_id = ANY(${classIds})
+        AND cs.academic_year_id = ${academicYear.id}
+        AND cs.school_id = ${req.schoolId}
+        AND csub.school_id = ${req.schoolId}
+        AND csub.deleted_at IS NULL
+        AND cs.deleted_at IS NULL
+
+      UNION
+
+      SELECT cs.class_id, ts.subject_id
+      FROM timetable_slots ts
+      JOIN class_sections cs ON ts.class_section_id = cs.id
+      WHERE cs.class_id = ANY(${classIds})
+        AND cs.academic_year_id = ${academicYear.id}
+        AND ts.academic_year_id = ${academicYear.id}
+        AND cs.school_id = ${req.schoolId}
+        AND ts.school_id = ${req.schoolId}
+        AND ts.deleted_at IS NULL
+        AND cs.deleted_at IS NULL
+    )
     SELECT sub.id, sub.name, sub.name_te,
-           COUNT(DISTINCT cs.class_id)::int AS class_count
-    FROM class_subjects csub
-    JOIN class_sections cs ON csub.class_section_id = cs.id
-    JOIN subjects sub ON csub.subject_id = sub.id
-    WHERE cs.class_id = ANY(${classIds})
-      AND cs.school_id = ${req.schoolId}
-      AND csub.deleted_at IS NULL
-      AND cs.deleted_at IS NULL
+           COUNT(DISTINCT taught.class_id)::int AS class_count
+    FROM taught_subjects taught
+    JOIN subjects sub ON taught.subject_id = sub.id
+    WHERE sub.school_id = ${req.schoolId}
       AND sub.deleted_at IS NULL
     GROUP BY sub.id, sub.name, sub.name_te
     ORDER BY sub.name

@@ -347,6 +347,7 @@ DECLARE
     v_is_class_teacher BOOLEAN;
     v_is_p1_teacher BOOLEAN;
     v_is_afternoon_teacher BOOLEAN;
+    v_is_substitute_teacher BOOLEAN;
     v_lunch_sort INTEGER;
     v_afternoon_period INTEGER;
     v_marker_person_id UUID;
@@ -427,8 +428,24 @@ BEGIN
                   AND ts.deleted_at IS NULL
             ) INTO v_is_afternoon_teacher;
 
-            IF NOT (v_is_class_teacher OR v_is_p1_teacher OR v_is_afternoon_teacher) THEN
-                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, first period after lunch Teacher, or Admin can mark attendance';
+            SELECT EXISTS (
+                SELECT 1
+                FROM timetable_substitutions substitution
+                JOIN timetable_slots ts ON ts.id = substitution.timetable_slot_id
+                JOIN staff s ON s.id = substitution.substitute_teacher_id
+                WHERE substitution.school_id = v_school_id
+                  AND substitution.substitution_date = NEW.attendance_date
+                  AND substitution.cancelled_at IS NULL
+                  AND substitution.period_number IN (1, v_afternoon_period)
+                  AND ts.class_section_id = v_class_section_id
+                  AND s.person_id = v_marker_person_id
+            ) INTO v_is_substitute_teacher;
+
+            IF NOT (
+                v_is_class_teacher OR v_is_p1_teacher OR
+                v_is_afternoon_teacher OR v_is_substitute_teacher
+            ) THEN
+                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, attendance-session Teacher, Substitute Teacher, or Admin can mark attendance';
             END IF;
         END IF;
     END IF;
@@ -2186,6 +2203,7 @@ DECLARE
     v_is_class_teacher BOOLEAN;
     v_is_p1_teacher BOOLEAN;
     v_is_afternoon_teacher BOOLEAN;
+    v_is_substitute_teacher BOOLEAN;
     v_lunch_sort INTEGER;
     v_afternoon_period INTEGER;
     v_marker_person_id UUID;
@@ -2265,8 +2283,24 @@ BEGIN
                   AND ts.deleted_at IS NULL
             ) INTO v_is_afternoon_teacher;
 
-            IF NOT (v_is_class_teacher OR v_is_p1_teacher OR v_is_afternoon_teacher) THEN
-                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, Period 1 Teacher, first period after lunch Teacher, or Admin can mark attendance';
+            SELECT EXISTS (
+                SELECT 1
+                FROM timetable_substitutions substitution
+                JOIN timetable_slots ts ON ts.id = substitution.timetable_slot_id
+                JOIN staff s ON s.id = substitution.substitute_teacher_id
+                WHERE substitution.school_id = v_school_id
+                  AND substitution.substitution_date = NEW.attendance_date
+                  AND substitution.cancelled_at IS NULL
+                  AND substitution.period_number IN (1, v_afternoon_period)
+                  AND ts.class_section_id = v_class_section_id
+                  AND s.person_id = v_marker_person_id
+            ) INTO v_is_substitute_teacher;
+
+            IF NOT (
+                v_is_class_teacher OR v_is_p1_teacher OR
+                v_is_afternoon_teacher OR v_is_substitute_teacher
+            ) THEN
+                RAISE EXCEPTION 'Unauthorized: Only the assigned Class Teacher, attendance-session Teacher, Substitute Teacher, or Admin can mark attendance';
             END IF;
         END IF;
     END IF;

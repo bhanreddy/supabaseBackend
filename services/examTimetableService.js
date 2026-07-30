@@ -296,16 +296,38 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   }
   const classNames = new Map(classes.map((c) => [String(c.id), c.name]));
 
-  // Subjects each class actually teaches (union of its sections' mappings).
+  // Subjects each class actually teaches. Timetable slots are a valid source
+  // because the timetable editor intentionally allows ad-hoc assignments that
+  // may not have a matching class_subjects row.
   const subjectRows = await db`
-    SELECT DISTINCT cs.class_id, sub.id AS subject_id, sub.name AS subject_name
-    FROM class_subjects csub
-    JOIN class_sections cs ON csub.class_section_id = cs.id
-    JOIN subjects sub ON csub.subject_id = sub.id
-    WHERE cs.class_id = ANY(${params.class_ids})
-      AND cs.school_id = ${schoolId}
-      AND csub.deleted_at IS NULL
-      AND cs.deleted_at IS NULL
+    WITH taught_subjects AS (
+      SELECT cs.class_id, csub.subject_id
+      FROM class_subjects csub
+      JOIN class_sections cs ON csub.class_section_id = cs.id
+      WHERE cs.class_id = ANY(${params.class_ids})
+        AND cs.academic_year_id = ${exam.academic_year_id}
+        AND cs.school_id = ${schoolId}
+        AND csub.school_id = ${schoolId}
+        AND csub.deleted_at IS NULL
+        AND cs.deleted_at IS NULL
+
+      UNION
+
+      SELECT cs.class_id, ts.subject_id
+      FROM timetable_slots ts
+      JOIN class_sections cs ON ts.class_section_id = cs.id
+      WHERE cs.class_id = ANY(${params.class_ids})
+        AND cs.academic_year_id = ${exam.academic_year_id}
+        AND ts.academic_year_id = ${exam.academic_year_id}
+        AND cs.school_id = ${schoolId}
+        AND ts.school_id = ${schoolId}
+        AND ts.deleted_at IS NULL
+        AND cs.deleted_at IS NULL
+    )
+    SELECT DISTINCT taught.class_id, sub.id AS subject_id, sub.name AS subject_name
+    FROM taught_subjects taught
+    JOIN subjects sub ON taught.subject_id = sub.id
+    WHERE sub.school_id = ${schoolId}
       AND sub.deleted_at IS NULL
   `;
 

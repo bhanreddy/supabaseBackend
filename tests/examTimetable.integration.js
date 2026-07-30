@@ -34,6 +34,7 @@ async function run() {
       `;
       const [c1] = await tx`INSERT INTO classes (school_id, name) VALUES (${schoolId}, 'Class 6') RETURNING id`;
       const [c2] = await tx`INSERT INTO classes (school_id, name) VALUES (${schoolId}, 'Class 7') RETURNING id`;
+      const [c3] = await tx`INSERT INTO classes (school_id, name) VALUES (${schoolId}, 'Class 8') RETURNING id`;
       const [foreignClass] = await tx`INSERT INTO classes (school_id, name) VALUES (${otherSchool.id}, 'Class X') RETURNING id`;
       const [secA] = await tx`INSERT INTO sections (school_id, name) VALUES (${schoolId}, 'A') RETURNING id`;
       const [cs1] = await tx`
@@ -43,6 +44,10 @@ async function run() {
       const [cs2] = await tx`
         INSERT INTO class_sections (school_id, class_id, section_id, academic_year_id)
         VALUES (${schoolId}, ${c2.id}, ${secA.id}, ${year.id}) RETURNING id
+      `;
+      const [cs3] = await tx`
+        INSERT INTO class_sections (school_id, class_id, section_id, academic_year_id)
+        VALUES (${schoolId}, ${c3.id}, ${secA.id}, ${year.id}) RETURNING id
       `;
 
       const subjectIds = {};
@@ -58,6 +63,18 @@ async function run() {
       for (const subj of ['Math', 'English']) {
         await tx`INSERT INTO class_subjects (school_id, class_section_id, subject_id) VALUES (${schoolId}, ${cs2.id}, ${subjectIds[subj]})`;
       }
+      // Class 8 deliberately has no class_subjects rows. Its timetable is the
+      // only authoritative record that Science is taught there.
+      await tx`
+        INSERT INTO timetable_slots (
+          school_id, academic_year_id, class_section_id, day_of_week,
+          period_number, subject_id, start_time, end_time
+        )
+        VALUES (
+          ${schoolId}, ${year.id}, ${cs3.id}, 'monday',
+          1, ${subjectIds.Science}, '09:30', '10:15'
+        )
+      `;
 
       // Holiday on Tue 2026-07-21 — generator must skip it.
       await tx`
@@ -69,6 +86,30 @@ async function run() {
         INSERT INTO exams (school_id, name, academic_year_id, exam_type)
         VALUES (${schoolId}, 'Unit Test 1', ${year.id}, 'unit') RETURNING id
       `;
+
+      // ── Timetable-only subject fallback ───────────────────────────────
+      const [timetableOnlyExam] = await tx`
+        INSERT INTO exams (school_id, name, academic_year_id, exam_type)
+        VALUES (${schoolId}, 'Timetable Source Test', ${year.id}, 'unit') RETURNING id
+      `;
+      const timetableOnlyGen = await generateExamTimetable({
+        schoolId,
+        examId: timetableOnlyExam.id,
+        db: tx,
+        params: {
+          class_ids: [c3.id],
+          start_date: '2026-07-20',
+          end_date: '2026-07-25',
+        },
+      });
+      eq(timetableOnlyGen.inserted, 1, 'timetable-only subject is available to exam generation');
+      const [timetableOnlyPaper] = await tx`
+        SELECT class_id, subject_id
+        FROM exam_subjects
+        WHERE exam_id = ${timetableOnlyExam.id} AND deleted_at IS NULL
+      `;
+      eq(timetableOnlyPaper.class_id, c3.id, 'timetable-only paper uses the selected class');
+      eq(timetableOnlyPaper.subject_id, subjectIds.Science, 'timetable-only paper uses the scheduled subject');
 
       // ── Generate (aligned) ────────────────────────────────────────────
       const gen = await generateExamTimetable({
