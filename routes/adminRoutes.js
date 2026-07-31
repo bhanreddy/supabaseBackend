@@ -1322,11 +1322,66 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
         sql`
             SELECT
                 t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
-                p.display_name as student_name
+                t.received_by as received_by_id,
+                t.student_fee_id,
+                sf.student_id,
+                s.admission_no,
+                p.display_name as student_name,
+                enroll.class_name,
+                enroll.section_name,
+                father_info.father_name,
+                father_info.father_mobile,
+                r.receipt_no,
+                ft.name as fee_type,
+                ft.name_te as fee_type_te,
+                ay.code as academic_year,
+                receiver.display_name as received_by
             FROM fee_transactions t
             JOIN student_fees sf ON t.student_fee_id = sf.id
             JOIN students s ON sf.student_id = s.id
             JOIN persons p ON s.person_id = p.id
+            LEFT JOIN receipt_items ri ON ri.fee_transaction_id = t.id AND ri.school_id = ${schoolId}
+            LEFT JOIN receipts r ON r.id = ri.receipt_id AND r.school_id = ${schoolId}
+            LEFT JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+            LEFT JOIN fee_types ft ON fs.fee_type_id = ft.id
+            LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
+            LEFT JOIN users u ON t.received_by = u.id
+            LEFT JOIN persons receiver ON u.person_id = receiver.id
+            LEFT JOIN LATERAL (
+                SELECT c.name as class_name, sec.name as section_name
+                FROM student_enrollments se
+                JOIN class_sections cs ON se.class_section_id = cs.id
+                JOIN classes c ON cs.class_id = c.id
+                JOIN sections sec ON cs.section_id = sec.id
+                WHERE se.student_id = s.id AND se.status = 'active'
+                ORDER BY se.created_at DESC
+                LIMIT 1
+            ) enroll ON true
+            LEFT JOIN LATERAL (
+                SELECT
+                    pp.display_name as father_name,
+                    (
+                        SELECT pc.contact_value
+                        FROM person_contacts pc
+                        WHERE pc.person_id = pp.id
+                          AND pc.school_id = ${schoolId}
+                          AND pc.contact_type = 'phone'
+                          AND pc.deleted_at IS NULL
+                        ORDER BY pc.is_primary DESC, pc.created_at
+                        LIMIT 1
+                    ) as father_mobile
+                FROM student_parents sp
+                JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+                JOIN persons pp ON par.person_id = pp.id
+                LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+                WHERE sp.student_id = s.id
+                  AND sp.school_id = ${schoolId}
+                  AND sp.deleted_at IS NULL
+                ORDER BY
+                    CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+                    sp.created_at
+                LIMIT 1
+            ) father_info ON true
             WHERE s.school_id = ${schoolId}
               AND t.paid_at::DATE = ${targetDate}::DATE
               AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
