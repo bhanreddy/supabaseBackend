@@ -299,12 +299,14 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_BUS_APPROACHING: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
-        titleTemplate: '🚌 Bus Approaching',
-        titleTemplate_te: '🚌 బస్ సమీపిస్తోంది',
-        bodyTemplate: '🚌 School bus is approaching {{stopName}}. Please be ready.',
-        bodyTemplate_te: '🚌 పాఠశాల బస్ {{stopName}} సమీపిస్తోంది. దయచేసి సిద్ధంగా ఉండండి.',
+        // Dedicated channel: Android notification-channel sound is authoritative.
+        // The same full filename is used by APNs on iOS.
+        channelId: 'bus_confirmation',
+        sound: 'busconfirmation.wav',
+        titleTemplate: '🚌 Bus One Stop Away',
+        titleTemplate_te: '🚌 బస్ ఒక స్టాప్ దూరంలో ఉంది',
+        bodyTemplate: '🚌 School bus is one stop away from {{stopName}}. Please be ready.',
+        bodyTemplate_te: '🚌 పాఠశాల బస్ {{stopName}}కు ముందు స్టాప్ వద్ద ఉంది. దయచేసి సిద్ధంగా ఉండండి.',
         deepLink: '/Screen/busTracker',
         requiredParams: ['stopName']
     },

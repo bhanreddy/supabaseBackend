@@ -804,7 +804,7 @@ BEGIN
           AND receipt_group = NEW.receipt_group;
 
         IF v_receipt_id IS NULL THEN
-            v_receipt_no := 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');
+            v_receipt_no := get_next_receipt_no(NEW.school_id);
             INSERT INTO receipts (school_id, receipt_no, student_id, total_amount, issued_at, issued_by, remarks, receipt_group)
             VALUES (NEW.school_id, v_receipt_no, v_student_id, NEW.amount, NEW.paid_at, NEW.received_by, COALESCE(NEW.remarks, 'System Generated'), NEW.receipt_group)
             RETURNING id INTO v_receipt_id;
@@ -820,7 +820,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    v_receipt_no := 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');
+    v_receipt_no := get_next_receipt_no(NEW.school_id);
 
     INSERT INTO receipts (school_id, receipt_no, student_id, total_amount, issued_at, issued_by, remarks)
     VALUES (NEW.school_id, v_receipt_no, v_student_id, NEW.amount, NEW.paid_at, NEW.received_by, COALESCE(NEW.remarks, 'System Generated'))
@@ -2700,14 +2700,42 @@ END;
 $function$
 ;
 
-CREATE OR REPLACE FUNCTION get_next_receipt_no(p_school_id INTEGER) RETURNS TEXT AS $$
+CREATE OR REPLACE FUNCTION get_next_receipt_no(p_school_id INTEGER)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
 DECLARE
-  v_seq_name TEXT := 'receipt_no_seq_school_' || p_school_id;
+  v_next_number BIGINT;
 BEGIN
-  EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I START 1001', v_seq_name);
-  RETURN 'SCH' || p_school_id || '-RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL(v_seq_name)::TEXT, 5, '0');
+  IF p_school_id IS NULL THEN
+    RAISE EXCEPTION 'school_id is required to generate a receipt number';
+  END IF;
+
+  INSERT INTO receipt_number_counters AS counters (school_id, last_number, updated_at)
+  VALUES (
+    p_school_id,
+    GREATEST(
+      1001::BIGINT,
+      COALESCE((
+        SELECT MAX(SUBSTRING(r.receipt_no FROM '([0-9]+)$')::BIGINT) + 1
+        FROM receipts r
+        WHERE r.school_id = p_school_id
+          AND r.receipt_no ~ '[0-9]+$'
+      ), 1001::BIGINT)
+    ),
+    NOW()
+  )
+  ON CONFLICT (school_id) DO UPDATE
+  SET last_number = counters.last_number + 1,
+      updated_at = NOW()
+  RETURNING last_number INTO v_next_number;
+
+  RETURN 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-'
+    || LPAD(v_next_number::TEXT, 4, '0');
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 CREATE OR REPLACE FUNCTION get_next_complaint_ticket(p_school_id INTEGER) RETURNS TEXT AS $$
 DECLARE
@@ -2772,6 +2800,15 @@ ALTER TABLE schools ADD COLUMN IF NOT EXISTS accounts_staff_creation_enabled BOO
 ALTER TABLE schools ADD COLUMN IF NOT EXISTS partial_fee_payment_enabled BOOLEAN NOT NULL DEFAULT true;
 -- PaperForge access gate (additive, production-safe, default disabled)
 ALTER TABLE schools ADD COLUMN IF NOT EXISTS pf_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- Internal, transaction-safe receipt number state. Each school owns one row.
+CREATE TABLE IF NOT EXISTS receipt_number_counters (
+  school_id INTEGER PRIMARY KEY REFERENCES schools(id) ON DELETE CASCADE,
+  last_number BIGINT NOT NULL CHECK (last_number >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE receipt_number_counters ENABLE ROW LEVEL SECURITY;
 
 -- Schools are provisioned by the NexSyrus super admin via API.
 -- No school is seeded at schema level. Fresh DB starts empty.
@@ -3558,6 +3595,14 @@ CREATE INDEX IF NOT EXISTS idx_academic_years_school_id ON academic_years(school
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_academic_years_code_active ON academic_years(school_id, code) WHERE deleted_at IS NULL;
 
+ALTER TABLE students
+  ADD COLUMN IF NOT EXISTS exit_academic_year_id UUID REFERENCES academic_years(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS exit_date DATE;
+
+CREATE INDEX IF NOT EXISTS idx_students_exit_academic_year
+  ON students (school_id, exit_academic_year_id)
+  WHERE deleted_at IS NULL AND exit_academic_year_id IS NOT NULL;
+
 
 CREATE TABLE IF NOT EXISTS classes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -4162,7 +4207,8 @@ BEGIN
         WHERE id = r_trans.student_fee_id;
 
         -- Generate Receipt No
-        v_receipt_no := 'RCT-' || TO_CHAR(r_trans.paid_at, 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0');
+        v_receipt_no := 'RCT-' || TO_CHAR(r_trans.paid_at, 'YYYYMMDD') || '-'
+            || SUBSTRING(get_next_receipt_no(r_trans.school_id) FROM '([0-9]+)$');
 
         -- Insert Receipt
         INSERT INTO receipts (

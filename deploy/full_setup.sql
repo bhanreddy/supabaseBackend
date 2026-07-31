@@ -339,6 +339,14 @@ CREATE TABLE IF NOT EXISTS academic_years (
     )
 );
 
+ALTER TABLE students
+  ADD COLUMN IF NOT EXISTS exit_academic_year_id UUID REFERENCES academic_years(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS exit_date DATE;
+
+CREATE INDEX IF NOT EXISTS idx_students_exit_academic_year
+  ON students (exit_academic_year_id)
+  WHERE deleted_at IS NULL AND exit_academic_year_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS classes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(50) NOT NULL UNIQUE,

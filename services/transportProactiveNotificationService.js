@@ -2,9 +2,9 @@
  * Transport live tracking v2 — Phase D proactive parent notifications.
  *
  * The location-ingest route invokes running-late evaluation in a setImmediate
- * callback. Stop transition owners invoke departure evaluation only after an
- * atomic pending/arrived -> completed claim succeeds. Both evaluators re-check
- * the calibrated live-trip gate and scope every read/write by school_id.
+ * callback. Stop transition owners invoke next-stop evaluation after an atomic
+ * reach claim, with completion as a fallback; departure evaluation runs only
+ * after completion. All evaluators scope every read/write by school_id.
  */
 import sql from '../db.js';
 import { normalizeLeg } from './transportCalibrationService.js';
@@ -128,6 +128,96 @@ async function notificationDependencies(overrides = {}) {
     sendTransportNotification:
       overrides.sendTransportNotification || notificationService.sendTransportNotification,
   };
+}
+
+/**
+ * Notify parents assigned to the next stop when the bus reaches the stop
+ * immediately before it. trip_stop_status.stop_order is already stored in the
+ * actual execution order, including reverse/evening trips.
+ *
+ * approach_notified_at is shared with the GPS-proximity fallback, so whichever
+ * path claims the next stop first sends the only approaching notification for
+ * that stop during this trip.
+ */
+export async function notifyParentsAtNextStop(
+  schoolId,
+  tripId,
+  precedingStopId,
+  db = sql,
+  dependencies = {},
+) {
+  try {
+    if (!schoolId || !tripId || !precedingStopId) {
+      return { notified: false, reason: 'invalid_input' };
+    }
+
+    const [nextStop] = await db`
+      SELECT t.route_id, next_tss.id AS trip_stop_status_id,
+             next_tss.stop_id, next_stop.name AS stop_name
+      FROM trips t
+      JOIN trip_stop_status preceding_tss
+        ON preceding_tss.trip_id = t.id
+        AND preceding_tss.school_id = ${schoolId}
+        AND preceding_tss.stop_id = ${precedingStopId}
+        AND preceding_tss.status IN ('arrived', 'completed')
+      JOIN trip_stop_status next_tss
+        ON next_tss.trip_id = t.id
+        AND next_tss.school_id = ${schoolId}
+        AND next_tss.stop_order = preceding_tss.stop_order + 1
+        AND next_tss.status = 'pending'
+      JOIN transport_stops next_stop
+        ON next_stop.id = next_tss.stop_id
+        AND next_stop.school_id = ${schoolId}
+        AND next_stop.route_id = t.route_id
+        AND next_stop.deleted_at IS NULL
+      WHERE t.id = ${tripId}
+        AND t.school_id = ${schoolId}
+        AND t.status IN ('active', 'in_progress')
+      LIMIT 1
+    `;
+    if (!nextStop) return { notified: false, reason: 'no_next_pending_stop' };
+
+    const [claimed] = await db`
+      UPDATE trip_stop_status
+      SET approach_notified_at = NOW()
+      WHERE id = ${nextStop.trip_stop_status_id}
+        AND school_id = ${schoolId}
+        AND trip_id = ${tripId}
+        AND status = 'pending'
+        AND approach_notified_at IS NULL
+      RETURNING id
+    `;
+    if (!claimed) return { notified: false, reason: 'already_notified' };
+
+    const notify = await notificationDependencies(dependencies);
+    const studentIds = await notify.getStudentIdsAtStop(
+      schoolId,
+      nextStop.route_id,
+      nextStop.stop_id,
+      db,
+    );
+    if (!studentIds.length) return {
+      notified: false,
+      reason: 'no_students',
+      stopId: nextStop.stop_id,
+    };
+
+    await notify.sendTransportNotification(
+      studentIds,
+      'TRANSPORT_BUS_APPROACHING',
+      { stopName: nextStop.stop_name },
+      schoolId,
+      db,
+    );
+    return {
+      notified: true,
+      students: studentIds.length,
+      stopId: nextStop.stop_id,
+    };
+  } catch (error) {
+    console.error('[Transport Notify] next-stop evaluation error:', error);
+    return { notified: false, reason: 'error' };
+  }
 }
 
 /**

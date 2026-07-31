@@ -192,6 +192,7 @@ async function fetchFinancials(range, schoolId) {
         FROM students
         WHERE created_at >= ${start}
           AND deleted_at IS NULL
+          AND status_id = 1
           AND school_id = ${schoolId}
     `,
         sql`

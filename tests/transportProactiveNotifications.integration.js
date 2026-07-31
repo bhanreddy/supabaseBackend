@@ -9,6 +9,7 @@ import sql from '../db.js';
 import {
   evaluateRunningLate,
   notifyBoardingStopDeparted,
+  notifyParentsAtNextStop,
 } from '../services/transportProactiveNotificationService.js';
 
 const ROLLBACK = Symbol('phase-d-rollback');
@@ -93,8 +94,8 @@ async function run() {
         INSERT INTO trip_stop_status
           (school_id, trip_id, stop_id, stop_order, status, arrival_time, departure_time)
         VALUES
-          (${fixture.school_id}, ${trip.id}, ${previousStop.id}, 1, 'completed',
-           NOW() - INTERVAL '16 minutes', NOW() - INTERVAL '15 minutes'),
+          (${fixture.school_id}, ${trip.id}, ${previousStop.id}, 1, 'arrived',
+           NOW() - INTERVAL '16 minutes', NULL),
           (${fixture.school_id}, ${trip.id}, ${fixture.stop_id}, 2, 'pending', NULL, NULL)
       `;
 
@@ -198,6 +199,31 @@ async function run() {
       `;
       assert.ok(claimedTrip.late_notified_at);
       assertions += 1;
+
+      const approachPushes = [];
+      const approach = await notifyParentsAtNextStop(
+        fixture.school_id,
+        trip.id,
+        previousStop.id,
+        tx,
+        {
+          getStudentIdsAtStop: async () => [fixture.student_id],
+          sendTransportNotification: async (
+            studentIds,
+            eventKey,
+            templateVars,
+            schoolId,
+          ) => approachPushes.push({ studentIds, eventKey, templateVars, schoolId }),
+        },
+      );
+      assert.equal(approach.notified, true);
+      assert.equal(approach.stopId, fixture.stop_id);
+      assert.equal(approachPushes.length, 1);
+      assert.equal(approachPushes[0].eventKey, 'TRANSPORT_BUS_APPROACHING');
+      assert.deepEqual(approachPushes[0].studentIds, [fixture.student_id]);
+      assert.ok(approachPushes[0].templateVars.stopName);
+      assert.equal(approachPushes[0].schoolId, fixture.school_id);
+      assertions += 7;
 
       const [completedStop] = await tx`
         UPDATE trip_stop_status

@@ -7,6 +7,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { isPreviousAcademicYear } from '../utils/academicYearCompare.js';
 import { getActiveAcademicYearCode } from '../services/defaulterCarryForward.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
+import { generateReceiptNo } from '../services/receiptNumberService.js';
 
 const router = express.Router();
 
@@ -63,13 +64,6 @@ function buildArrearsReminderMessage(student, customMessage) {
 
   const yearText = years.length > 0 ? years.join('; ') : 'previous academic year(s)';
   return `Outstanding previous-year fee balance of ${formatInr(student.total_balance)} (${yearText}). Please clear at the earliest.`;
-}
-
-async function generateReceiptNo(tx, schoolId) {
-  const [row] = await tx`
-    SELECT 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0') AS receipt_no
-  `;
-  return row?.receipt_no;
 }
 
 /**

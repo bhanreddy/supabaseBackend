@@ -9,6 +9,7 @@ import {
   getStudentTransportDue,
   getTransportPaidTotal,
 } from '../services/transportFeeService.js';
+import { generateReceiptNo } from '../services/receiptNumberService.js';
 
 const router = express.Router();
 
@@ -22,13 +23,6 @@ const accountsGuard = [
 
 function isUniqueViolation(err) {
   return err?.code === '23505';
-}
-
-async function generateReceiptNo(tx) {
-  const [row] = await tx`
-    SELECT 'RCT-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || LPAD(NEXTVAL('receipt_no_seq')::TEXT, 4, '0') AS receipt_no
-  `;
-  return row?.receipt_no;
 }
 
 async function validateRouteStopOwnership(routeId, stopId, schoolId) {
@@ -455,7 +449,7 @@ router.post(
           RETURNING *
         `;
 
-        const receiptNo = await generateReceiptNo(tx);
+        const receiptNo = await generateReceiptNo(tx, schoolId);
         const receiptRemarks = remarks || `Transport fee — ${due.route_name} / ${due.stop_name} (${yearCode})`;
 
         const [receipt] = await tx`

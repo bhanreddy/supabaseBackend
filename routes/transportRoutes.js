@@ -22,6 +22,7 @@ import { computeLearnedEta, segKey } from '../services/transportEtaService.js';
 import {
   evaluateRunningLate,
   notifyBoardingStopDeparted,
+  notifyParentsAtNextStop,
 } from '../services/transportProactiveNotificationService.js';
 import {
   ingestLocationBatch,
@@ -1377,6 +1378,8 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
     isMocked: !!is_mocked,
   }));
 
+  setImmediate(() => notifyParentsAtNextStop(req.schoolId, tripId, stopId));
+
   return sendSuccess(res, req.schoolId, { message: 'Arrived at stop', stop: updated });
 }));
 
@@ -1413,7 +1416,10 @@ router.post('/trips/:tripId/stops/:stopId/complete', requireAuth, asyncHandler(a
   `;
   if (!updated) return res.status(409).json({ error: 'Stop was already completed' });
 
-  setImmediate(() => notifyBoardingStopDeparted(req.schoolId, tripId, stopId));
+  setImmediate(() => Promise.allSettled([
+    notifyBoardingStopDeparted(req.schoolId, tripId, stopId),
+    notifyParentsAtNextStop(req.schoolId, tripId, stopId),
+  ]));
 
   return sendSuccess(res, req.schoolId, { message: 'Stop completed', stop: updated });
 }));
@@ -2489,43 +2495,10 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
     isMocked: !!is_mocked,
   }));
 
-  setImmediate(() => notifyBoardingStopDeparted(req.schoolId, tripId, stopId));
-
-  const [nextStopRow] = await sql`
-    SELECT ts.id, ts.name
-    FROM trip_stop_status tss
-    JOIN transport_stops ts ON ts.id = tss.stop_id AND ts.school_id = ${req.schoolId}
-    WHERE tss.trip_id = ${tripId}
-      AND tss.school_id = ${req.schoolId}
-      AND tss.stop_order = ${targetStop.stop_order + 1}
-    LIMIT 1
-  `;
-  const nextStop = nextStopRow || null;
-
-  if (nextStop) {
-    const notifySchoolId = req.schoolId;
-    const routeId = trip.route_id;
-    // Claim approach_notified_at so the GPS-proximity path can't double-send.
-    sql`
-      UPDATE trip_stop_status SET approach_notified_at = NOW()
-      WHERE trip_id = ${tripId}
-        AND stop_id = ${nextStop.id}
-        AND school_id = ${notifySchoolId}
-        AND approach_notified_at IS NULL
-      RETURNING id
-    `
-      .then(([claimed]) => {
-        if (!claimed) return null;
-        return getTransportStudentIdsAtStop(notifySchoolId, routeId, nextStop.id)
-          .then((studentIds) => sendTransportNotification(
-            studentIds,
-            'TRANSPORT_BUS_APPROACHING',
-            { stopName: nextStop.name },
-            notifySchoolId,
-          ));
-      })
-      .catch((err) => console.error('[Transport Notify] stop reach error:', err));
-  }
+  setImmediate(() => Promise.allSettled([
+    notifyBoardingStopDeparted(req.schoolId, tripId, stopId),
+    notifyParentsAtNextStop(req.schoolId, tripId, stopId),
+  ]));
 
   return sendSuccess(res, req.schoolId, {
     ...stopStatus,

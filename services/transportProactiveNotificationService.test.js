@@ -3,8 +3,10 @@ import test from 'node:test';
 import {
   calculateProjectedDelayMinutes,
   isRunningLate,
+  notifyParentsAtNextStop,
   projectDelayAtStop,
 } from './transportProactiveNotificationService.js';
+import { NotificationEventConfig } from './notificationEventConfig.js';
 
 test('calculateProjectedDelayMinutes returns positive and negative schedule variance', () => {
   assert.equal(calculateProjectedDelayMinutes({
@@ -97,4 +99,58 @@ test('projectDelayAtStop refuses an incomplete learned schedule', () => {
     segments: { 'stop-a->stop-b': { ewma_seconds: 600 } },
     targetStopId: 'not-on-trip',
   }), null);
+});
+
+test('notifyParentsAtNextStop claims and alerts parents assigned to the following stop', async () => {
+  const queries = [];
+  const db = async (strings, ...values) => {
+    const query = strings.join('?');
+    queries.push({ query, values });
+    if (query.includes('SELECT t.route_id')) {
+      return [{
+        route_id: 'route-1',
+        trip_stop_status_id: 'trip-stop-2',
+        stop_id: 'stop-2',
+        stop_name: 'Market Road',
+      }];
+    }
+    if (query.includes('UPDATE trip_stop_status')) return [{ id: 'trip-stop-2' }];
+    throw new Error(`Unexpected query: ${query}`);
+  };
+
+  const pushes = [];
+  const result = await notifyParentsAtNextStop(
+    'school-1',
+    'trip-1',
+    'stop-1',
+    db,
+    {
+      getStudentIdsAtStop: async (schoolId, routeId, stopId, receivedDb) => {
+        assert.equal(schoolId, 'school-1');
+        assert.equal(routeId, 'route-1');
+        assert.equal(stopId, 'stop-2');
+        assert.equal(receivedDb, db);
+        return ['student-1'];
+      },
+      sendTransportNotification: async (...args) => pushes.push(args),
+    },
+  );
+
+  assert.deepEqual(result, { notified: true, students: 1, stopId: 'stop-2' });
+  assert.equal(queries.length, 2);
+  assert.ok(queries[0].query.includes("preceding_tss.status IN ('arrived', 'completed')"));
+  assert.ok(queries[0].query.includes('next_tss.stop_order = preceding_tss.stop_order + 1'));
+  assert.ok(queries[1].query.includes('approach_notified_at IS NULL'));
+  assert.deepEqual(pushes, [[
+    ['student-1'],
+    'TRANSPORT_BUS_APPROACHING',
+    { stopName: 'Market Road' },
+    'school-1',
+    db,
+  ]]);
+});
+
+test('bus approaching uses the dedicated confirmation sound and channel', () => {
+  assert.equal(NotificationEventConfig.TRANSPORT_BUS_APPROACHING.sound, 'busconfirmation.wav');
+  assert.equal(NotificationEventConfig.TRANSPORT_BUS_APPROACHING.channelId, 'bus_confirmation');
 });

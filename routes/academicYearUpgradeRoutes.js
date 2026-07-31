@@ -392,9 +392,26 @@ router.post('/upgrade', upgradeGuard, asyncHandler(async (req, res) => {
       if (studentsToGraduate.length > 0) {
         await tx`
           UPDATE students
-          SET status_id = 2, updated_at = NOW()
+          SET status_id = 2,
+              exit_academic_year_id = ${fromYear.id},
+              exit_date = ${today},
+              updated_at = NOW()
           WHERE id = ANY(${studentsToGraduate})
             AND school_id = ${schoolId}
+        `;
+        await tx`
+          UPDATE student_transport
+          SET is_active = FALSE
+          WHERE student_id = ANY(${studentsToGraduate})
+            AND school_id = ${schoolId}
+            AND is_active = TRUE
+        `;
+        await tx`
+          UPDATE hostel_allocations
+          SET is_active = FALSE, vacated_at = COALESCE(vacated_at, NOW())
+          WHERE student_id = ANY(${studentsToGraduate})
+            AND school_id = ${schoolId}
+            AND is_active = TRUE
         `;
       }
 

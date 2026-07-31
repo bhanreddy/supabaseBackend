@@ -224,7 +224,11 @@ router.get('/dashboard-stats', requireAuth, asyncHandler(async (req, res) => {
         [todayDiaryCount],
     ] = await Promise.all([
         sql`
-        SELECT COUNT(*)::int as count FROM students WHERE deleted_at IS NULL AND school_id = ${schoolId}
+        SELECT COUNT(*)::int as count
+        FROM students
+        WHERE deleted_at IS NULL
+          AND status_id = 1
+          AND school_id = ${schoolId}
     `,
         sql`
         SELECT COUNT(*)::int as count FROM staff WHERE status_id = 1 AND deleted_at IS NULL AND school_id = ${schoolId}

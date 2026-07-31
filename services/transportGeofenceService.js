@@ -19,7 +19,10 @@
  */
 import sql from '../db.js';
 import { normalizeLeg, recordArrivalCalibration } from './transportCalibrationService.js';
-import { notifyBoardingStopDeparted } from './transportProactiveNotificationService.js';
+import {
+  notifyBoardingStopDeparted,
+  notifyParentsAtNextStop,
+} from './transportProactiveNotificationService.js';
 import logger from '../utils/logger.js';
 
 export const GEOFENCE = {
@@ -106,12 +109,10 @@ export async function evaluateGeofence(schoolId, busId, fix, db = sql) {
           RETURNING stop_id
         `;
         if (claimed) {
-          setImmediate(() => notifyBoardingStopDeparted(
-            schoolId,
-            trip.id,
-            claimed.stop_id,
-            db,
-          ));
+          setImmediate(() => Promise.allSettled([
+            notifyBoardingStopDeparted(schoolId, trip.id, claimed.stop_id, db),
+            notifyParentsAtNextStop(schoolId, trip.id, claimed.stop_id, db),
+          ]));
         }
       }
       return; // one transition per fix; don't also arrive the next stop
@@ -166,6 +167,12 @@ export async function evaluateGeofence(schoolId, busId, fix, db = sql) {
         `;
         if (claimed) {
           logger.info({ event: 'transport_geofence_auto_arrival', schoolId, busId, tripId: trip.id, stopId: next.stop_id }, 'Transport geofence auto-arrival');
+          setImmediate(() => notifyParentsAtNextStop(
+            schoolId,
+            trip.id,
+            next.stop_id,
+            db,
+          ));
           // Keep learning segment times in auto mode (geo excluded by source).
           recordArrivalCalibration({
             schoolId,

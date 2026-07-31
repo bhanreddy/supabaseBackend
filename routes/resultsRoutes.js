@@ -1313,6 +1313,7 @@ router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHand
     SELECT
       st.id,
       p.display_name,
+      p.photo_url,
       st.admission_no,
       se.roll_number
     FROM student_enrollments se

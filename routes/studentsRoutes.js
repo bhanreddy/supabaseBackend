@@ -195,7 +195,16 @@ async function syncStudentParents(sql, schoolId, studentId, parents) {
 // Get all students
 router.get('/', requirePermission('students.view'), async (req, res) => {
   try {
-    const { search, page = 1, class_id, section_id, status_id, sort_by = 'name', sort_order = 'asc' } = req.query;
+    const {
+      search,
+      page = 1,
+      class_id,
+      section_id,
+      status_id,
+      lifecycle,
+      sort_by = 'name',
+      sort_order = 'asc',
+    } = req.query;
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20));
     const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
     const offset = (pageNum - 1) * limit;
@@ -210,6 +219,12 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     }
     if (status_id) {
       whereClause = sql`${whereClause} AND s.status_id = ${status_id}`;
+    } else if (lifecycle === 'active') {
+      whereClause = sql`${whereClause} AND s.status_id = 1`;
+    } else if (lifecycle === 'archived') {
+      // Passed-out and withdrawn students remain fully retained, but live in
+      // the archive instead of operational student lists.
+      whereClause = sql`${whereClause} AND s.status_id IN (2, 3)`;
     }
     if (search && String(search).trim() !== '') {
       const term = `%${String(search).trim()}%`;
@@ -253,6 +268,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     const students = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village, s.admission_date, s.status_id,
+        s.exit_academic_year_id, s.exit_date, exit_year.code AS exit_academic_year,
         p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id,
         st.code as status,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
@@ -276,12 +292,29 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
             'section_id', sec.id,
             'id', se.id,
             'academic_year', ay.code,
-            'academic_year_id', ay.id
+            'academic_year_id', ay.id,
+            'status', se.status,
+            'start_date', se.start_date,
+            'end_date', se.end_date
         ) as current_enrollment
       FROM students s
       JOIN persons p ON s.person_id = p.id
       JOIN student_statuses st ON s.status_id = st.id
-      LEFT JOIN student_enrollments se ON s.id = se.student_id AND se.status = 'active' AND se.deleted_at IS NULL
+      LEFT JOIN academic_years exit_year ON exit_year.id = s.exit_academic_year_id
+      LEFT JOIN LATERAL (
+        SELECT candidate.*
+        FROM student_enrollments candidate
+        JOIN academic_years candidate_year ON candidate_year.id = candidate.academic_year_id
+        WHERE candidate.student_id = s.id
+          AND candidate.school_id = ${req.schoolId}
+          AND candidate.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
+          candidate_year.start_date DESC,
+          candidate.start_date DESC,
+          candidate.created_at DESC
+        LIMIT 1
+      ) se ON TRUE
       LEFT JOIN class_sections cs ON se.class_section_id = cs.id
       LEFT JOIN classes c ON cs.class_id = c.id
       LEFT JOIN sections sec ON cs.section_id = sec.id
@@ -295,7 +328,20 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       SELECT count(*)::int as total
       FROM students s
       JOIN persons p ON s.person_id = p.id
-      LEFT JOIN student_enrollments se ON s.id = se.student_id AND se.status = 'active' AND se.deleted_at IS NULL
+      LEFT JOIN LATERAL (
+        SELECT candidate.*
+        FROM student_enrollments candidate
+        JOIN academic_years candidate_year ON candidate_year.id = candidate.academic_year_id
+        WHERE candidate.student_id = s.id
+          AND candidate.school_id = ${req.schoolId}
+          AND candidate.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
+          candidate_year.start_date DESC,
+          candidate.start_date DESC,
+          candidate.created_at DESC
+        LIMIT 1
+      ) se ON TRUE
       LEFT JOIN class_sections cs ON se.class_section_id = cs.id
       LEFT JOIN classes c ON cs.class_id = c.id
       LEFT JOIN sections sec ON cs.section_id = sec.id
@@ -321,7 +367,19 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
 // Get student statuses
 router.get('/statuses', requirePermission('students.view'), async (req, res) => {
   try {
-    const statuses = await sql`SELECT id, code as name FROM student_statuses ORDER BY id`;
+    const statuses = await sql`
+      SELECT
+        id,
+        code,
+        CASE
+          WHEN code = 'graduated' THEN 'Passed Out'
+          WHEN code = 'withdrawn' THEN 'Withdrawn'
+          WHEN code = 'active' THEN 'Active'
+          ELSE INITCAP(REPLACE(code, '_', ' '))
+        END AS name
+      FROM student_statuses
+      ORDER BY id
+    `;
     sendSuccess(res, req.schoolId, statuses);
   } catch (error) {
 
@@ -354,6 +412,8 @@ router.get('/profile/me', requireAuth, async (req, res) => {
     const student = await sql`
       SELECT 
         s.id, s.admission_no, s.apar_number, s.village, s.admission_date,
+        s.exit_academic_year_id, s.exit_date,
+        (SELECT code FROM academic_years WHERE id = s.exit_academic_year_id) AS exit_academic_year,
         p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
         st.code as status,
         -- Fetch Primary Email
@@ -383,6 +443,9 @@ router.get('/profile/me', requireAuth, async (req, res) => {
                 'class_section_id', cs.id,
                 'academic_year', ay.code,
                 'academic_year_id', ay.id,
+                'status', se.status,
+                'start_date', se.start_date,
+                'end_date', se.end_date,
                 'class_teacher', (
                     SELECT p_t.display_name 
                     FROM staff st_t
@@ -395,7 +458,14 @@ router.get('/profile/me', requireAuth, async (req, res) => {
             JOIN classes c ON cs.class_id = c.id
             JOIN sections sec ON cs.section_id = sec.id
             JOIN academic_years ay ON se.academic_year_id = ay.id
-            WHERE se.student_id = s.id AND se.status = 'active'
+            WHERE se.student_id = s.id
+              AND se.school_id = ${req.schoolId}
+              AND se.deleted_at IS NULL
+            ORDER BY
+              CASE WHEN se.status = 'active' THEN 0 ELSE 1 END,
+              ay.start_date DESC,
+              se.start_date DESC,
+              se.created_at DESC
             LIMIT 1
         ) as current_enrollment,
         -- Parents
@@ -498,6 +568,8 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
         s.status_id, s.category_id, s.religion_id, s.blood_group_id,
+        s.exit_academic_year_id, to_char(s.exit_date, 'YYYY-MM-DD') AS exit_date,
+        (SELECT code FROM academic_years WHERE id = s.exit_academic_year_id) AS exit_academic_year,
         to_char(s.admission_date, 'YYYY-MM-DD') as admission_date,
         p.first_name, p.middle_name, p.last_name, p.display_name,
         to_char(p.dob, 'YYYY-MM-DD') as dob,
@@ -518,14 +590,24 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
                 'section_id', sec.id,
                 'class_section_id', cs.id,
                 'academic_year', ay.code,
-                'academic_year_id', ay.id
+                'academic_year_id', ay.id,
+                'status', se.status,
+                'start_date', se.start_date,
+                'end_date', se.end_date
             )
             FROM student_enrollments se
             JOIN class_sections cs ON se.class_section_id = cs.id
             JOIN classes c ON cs.class_id = c.id
             JOIN sections sec ON cs.section_id = sec.id
             JOIN academic_years ay ON se.academic_year_id = ay.id
-            WHERE se.student_id = s.id AND se.status = 'active'
+            WHERE se.student_id = s.id
+              AND se.school_id = ${req.schoolId}
+              AND se.deleted_at IS NULL
+            ORDER BY
+              CASE WHEN se.status = 'active' THEN 0 ELSE 1 END,
+              ay.start_date DESC,
+              se.start_date DESC,
+              se.created_at DESC
             LIMIT 1
         ) as current_enrollment,
         ${PARENTS_SUBQUERY}
@@ -561,6 +643,11 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
     // Basic Validation
     if (!first_name || !admission_no || !admission_date || !status_id || !gender_id || !class_id || !section_id) {
       return res.status(400).json({ error: 'Missing required fields: First Name, Admission No, Status, Gender, Class, and Section are mandatory.' });
+    }
+    if (Number(status_id) !== 1) {
+      return res.status(400).json({
+        error: 'New students must be enrolled as Active. Use Edit Student later to mark a student as Passed Out or Withdrawn.',
+      });
     }
 
     const normalizedMiddleName = normalizeOptionalName(middle_name);
@@ -763,7 +850,7 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     // Ownership check must short-circuit as 404, not throw into catch/500.
     const [student] = await sql`
       SELECT 
-        s.id, s.person_id,
+        s.id, s.person_id, s.status_id, s.exit_academic_year_id, s.exit_date,
         u.id as user_id,
         (SELECT contact_value FROM person_contacts pc 
          WHERE pc.person_id = s.person_id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as current_email,
@@ -778,6 +865,21 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
+
+    const requestedStatusId = status_id ?? student.status_id;
+    const [targetStudentStatus] = await sql`
+      SELECT id, code, is_terminal
+      FROM student_statuses
+      WHERE id = ${requestedStatusId}
+      LIMIT 1
+    `;
+    if (!targetStudentStatus) {
+      return res.status(400).json({ error: 'Invalid student status.' });
+    }
+    const targetIsActive = targetStudentStatus.code === 'active';
+    const terminalEnrollmentStatus = targetStudentStatus.code === 'graduated'
+      ? 'completed'
+      : 'withdrawn';
 
     const personId = student.person_id;
     let authUserId = student.user_id;
@@ -799,8 +901,48 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     }
 
     const enrollmentRecalcTargets = [];
+    let retainedActiveEnrollmentId = null;
+    const lifecycleDate = new Date().toISOString().slice(0, 10);
 
     const result = await sql.begin(async (sql) => {
+
+      let resolvedLifecycleAcademicYearId = academic_year_id || null;
+      if (resolvedLifecycleAcademicYearId) {
+        const [ownedAcademicYear] = await sql`
+          SELECT id
+          FROM academic_years
+          WHERE id = ${resolvedLifecycleAcademicYearId}
+            AND school_id = ${req.schoolId}
+            AND deleted_at IS NULL
+        `;
+        if (!ownedAcademicYear) {
+          throw new Error('The selected academic year does not belong to this school.');
+        }
+      }
+      if (!targetIsActive && !resolvedLifecycleAcademicYearId) {
+        const [exitEnrollment] = await sql`
+          SELECT academic_year_id
+          FROM student_enrollments
+          WHERE student_id = ${id}
+            AND school_id = ${req.schoolId}
+            AND deleted_at IS NULL
+          ORDER BY
+            CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+            end_date DESC NULLS LAST,
+            start_date DESC,
+            created_at DESC
+          LIMIT 1
+        `;
+        resolvedLifecycleAcademicYearId = student.exit_academic_year_id || exitEnrollment?.academic_year_id || null;
+      }
+      if (!targetIsActive && !resolvedLifecycleAcademicYearId) {
+        throw new Error('Select the academic year in which the student passed out or withdrew.');
+      }
+      const resolvedExitDate = targetIsActive
+        ? null
+        : (Number(student.status_id) !== Number(requestedStatusId) || !student.exit_date
+          ? lifecycleDate
+          : student.exit_date);
 
       // 2. Update Person
       // middle_name / last_name use direct assignment (not COALESCE) so clearing to empty
@@ -845,6 +987,8 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
           ${village !== undefined ? sql`village = ${blankToNull(village)},` : sql``}
           admission_date = COALESCE(${admission_date ?? null}, admission_date),
           status_id = COALESCE(${status_id ?? null}, status_id),
+          exit_academic_year_id = ${targetIsActive ? null : resolvedLifecycleAcademicYearId},
+          exit_date = ${resolvedExitDate},
           category_id = COALESCE(${category_id ?? null}, category_id),
           religion_id = COALESCE(${religion_id ?? null}, religion_id),
           blood_group_id = COALESCE(${blood_group_id ?? null}, blood_group_id)
@@ -857,9 +1001,11 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
         throw Object.assign(new Error('Student not found or update failed.'), { code: 'STUDENT_UPDATE_FAILED' });
       }
 
-      // 3b. Update active enrollment when class/section changes
+      // 3b. Keep the student lifecycle and enrollment lifecycle in sync. The
+      // selected academic year becomes the retained exit year for terminal
+      // students, so historical certificates remain accurate.
       if (class_id && section_id) {
-        let targetAcademicYearId = academic_year_id;
+        let targetAcademicYearId = resolvedLifecycleAcademicYearId;
         if (!targetAcademicYearId) {
           const [ay] = await sql`
             SELECT id FROM academic_years
@@ -882,69 +1028,156 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
         `;
 
         const [currentEnrollment] = await sql`
-          SELECT se.id, se.class_section_id, se.academic_year_id, se.roll_number
+          SELECT se.id, se.class_section_id, se.academic_year_id, se.roll_number, se.status, se.end_date
           FROM student_enrollments se
           WHERE se.student_id = ${id}
             AND se.school_id = ${req.schoolId}
             AND se.academic_year_id = ${targetAcademicYearId}
-            AND se.status = 'active'
             AND se.deleted_at IS NULL
+          ORDER BY CASE WHEN se.status = 'active' THEN 0 ELSE 1 END, se.created_at DESC
+          LIMIT 1
         `;
 
-        if (currentEnrollment?.class_section_id === targetCs.id) {
-          // Already enrolled in this class-section for the academic year — no-op
-        } else {
-          const oldClassSectionId = currentEnrollment?.class_section_id ?? null;
-          const oldAcademicYearId = currentEnrollment?.academic_year_id ?? targetAcademicYearId;
+        const desiredEnrollmentStatus = targetIsActive ? 'active' : terminalEnrollmentStatus;
+        const oldClassSectionId = currentEnrollment?.class_section_id ?? null;
+        const oldAcademicYearId = currentEnrollment?.academic_year_id ?? targetAcademicYearId;
 
-          if (currentEnrollment) {
-            const [updatedEnrollment] = await sql`
-              UPDATE student_enrollments
-              SET class_section_id = ${targetCs.id},
-                  roll_number = NULL
-              WHERE id = ${currentEnrollment.id}
-                AND student_id = ${id}
-                AND school_id = ${req.schoolId}
-                AND academic_year_id = ${targetAcademicYearId}
-              RETURNING id
-            `;
-            if (!updatedEnrollment) {
-              throw Object.assign(
-                new Error('Failed to update student enrollment for the selected class and section.'),
-                { code: 'ENROLLMENT_UPDATE_FAILED' }
-              );
-            }
-          } else {
-            const enrollmentStartDate = admission_date ?? updatedStudent.admission_date;
-            const [newEnrollment] = await sql`
-              INSERT INTO student_enrollments (
-                school_id, student_id, class_section_id, academic_year_id, status, start_date, roll_number
-              )
-              VALUES (
-                ${req.schoolId}, ${id}, ${targetCs.id}, ${targetAcademicYearId},
-                'active', ${enrollmentStartDate}, NULL
-              )
-              RETURNING id
-            `;
-            if (!newEnrollment) {
-              throw Object.assign(
-                new Error('Failed to create student enrollment for the selected class and section.'),
-                { code: 'ENROLLMENT_CREATE_FAILED' }
-              );
-            }
+        if (targetIsActive && currentEnrollment?.status !== 'active') {
+          const [differentActiveEnrollment] = await sql`
+            SELECT id
+            FROM student_enrollments
+            WHERE student_id = ${id}
+              AND school_id = ${req.schoolId}
+              AND status = 'active'
+              AND deleted_at IS NULL
+              ${currentEnrollment ? sql`AND id <> ${currentEnrollment.id}` : sql``}
+            LIMIT 1
+          `;
+          if (differentActiveEnrollment) {
+            throw new Error('The selected academic year does not match the current active enrollment. Use Academic Year Upgrade to promote the student.');
           }
+        }
 
-          if (oldClassSectionId && oldClassSectionId !== targetCs.id) {
-            enrollmentRecalcTargets.push({
-              classSectionId: oldClassSectionId,
-              academicYearId: oldAcademicYearId,
-            });
+        if (currentEnrollment) {
+          const [updatedEnrollment] = await sql`
+            UPDATE student_enrollments
+            SET class_section_id = ${targetCs.id},
+                status = ${desiredEnrollmentStatus},
+                end_date = ${targetIsActive ? null : (currentEnrollment.end_date || resolvedExitDate)},
+                roll_number = CASE
+                  WHEN class_section_id = ${targetCs.id} THEN roll_number
+                  ELSE NULL
+                END,
+                updated_at = NOW()
+            WHERE id = ${currentEnrollment.id}
+              AND student_id = ${id}
+              AND school_id = ${req.schoolId}
+            RETURNING id
+          `;
+          if (!updatedEnrollment) {
+            throw Object.assign(
+              new Error('Failed to update student enrollment for the selected class, section, and academic year.'),
+              { code: 'ENROLLMENT_UPDATE_FAILED' }
+            );
           }
+          if (targetIsActive) retainedActiveEnrollmentId = updatedEnrollment.id;
+        } else if (targetIsActive) {
+          const [newEnrollment] = await sql`
+            INSERT INTO student_enrollments (
+              school_id, student_id, class_section_id, academic_year_id,
+              status, start_date, end_date, roll_number
+            )
+            VALUES (
+              ${req.schoolId}, ${id}, ${targetCs.id}, ${targetAcademicYearId},
+              ${desiredEnrollmentStatus}, ${lifecycleDate},
+              ${targetIsActive ? null : resolvedExitDate}, NULL
+            )
+            RETURNING id
+          `;
+          if (!newEnrollment) {
+            throw Object.assign(
+              new Error('Failed to create student enrollment for the selected class, section, and academic year.'),
+              { code: 'ENROLLMENT_CREATE_FAILED' }
+            );
+          }
+          retainedActiveEnrollmentId = newEnrollment.id;
+        }
+
+        if (oldClassSectionId && oldClassSectionId !== targetCs.id) {
           enrollmentRecalcTargets.push({
-            classSectionId: targetCs.id,
-            academicYearId: targetAcademicYearId,
+            classSectionId: oldClassSectionId,
+            academicYearId: oldAcademicYearId,
           });
         }
+        enrollmentRecalcTargets.push({
+          classSectionId: targetCs.id,
+          academicYearId: targetAcademicYearId,
+        });
+      }
+
+      const otherActiveEnrollments = (!targetIsActive || retainedActiveEnrollmentId)
+        ? await sql`
+            SELECT id, class_section_id, academic_year_id
+            FROM student_enrollments
+            WHERE student_id = ${id}
+              AND school_id = ${req.schoolId}
+              AND status = 'active'
+              AND deleted_at IS NULL
+              ${retainedActiveEnrollmentId
+                ? sql`AND id <> ${retainedActiveEnrollmentId}`
+                : sql``}
+          `
+        : [];
+
+      if (otherActiveEnrollments.length > 0) {
+        const closingStatus = targetIsActive ? 'completed' : terminalEnrollmentStatus;
+        const closingIds = otherActiveEnrollments.map((enrollment) => enrollment.id);
+        await sql`
+          UPDATE student_enrollments
+          SET status = ${closingStatus}, end_date = CURRENT_DATE, updated_at = NOW()
+          WHERE id = ANY(${closingIds})
+            AND school_id = ${req.schoolId}
+        `;
+        for (const enrollment of otherActiveEnrollments) {
+          enrollmentRecalcTargets.push({
+            classSectionId: enrollment.class_section_id,
+            academicYearId: enrollment.academic_year_id,
+          });
+        }
+      }
+
+      if (targetIsActive && Number(student.status_id) !== Number(requestedStatusId) && !retainedActiveEnrollmentId) {
+        const [activeEnrollment] = await sql`
+          SELECT id
+          FROM student_enrollments
+          WHERE student_id = ${id}
+            AND school_id = ${req.schoolId}
+            AND status = 'active'
+            AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (!activeEnrollment) {
+          throw new Error('Class, section, and academic year are required when reactivating a student.');
+        }
+      }
+
+      if (!targetIsActive) {
+        // Operational assignments are ended, never deleted. Historical fees,
+        // attendance, results, documents, and enrollment rows remain intact.
+        await sql`
+          UPDATE student_transport
+          SET is_active = FALSE
+          WHERE student_id = ${id}
+            AND school_id = ${req.schoolId}
+            AND is_active = TRUE
+        `;
+        await sql`
+          UPDATE hostel_allocations
+          SET is_active = FALSE, vacated_at = COALESCE(vacated_at, NOW())
+          WHERE student_id = ${id}
+            AND school_id = ${req.schoolId}
+            AND is_active = TRUE
+        `;
       }
 
       // 4. Update Contacts 
@@ -1094,7 +1327,9 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     }
 
     sendSuccess(res, req.schoolId, {
-      message: 'Student updated successfully',
+      message: targetIsActive
+        ? 'Student updated successfully'
+        : `Student marked as ${targetStudentStatus.code === 'graduated' ? 'Passed Out' : 'Withdrawn'}. All historical data has been retained.`,
       student: result,
       ...(authUpdateResult && { authUpdate: authUpdateResult })
     });
@@ -1114,6 +1349,11 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     if (error.code === '23505') {
       return res.status(409).json({
         error: 'Roll number conflict in the target class-section. Please retry the update.',
+      });
+    }
+    if (error.code === '23P01') {
+      return res.status(409).json({
+        error: 'This academic year overlaps another enrollment. Choose the latest enrollment year before reactivating the student.',
       });
     }
     if (error.code === '42703' && String(error.message).includes('pen_number')) {
