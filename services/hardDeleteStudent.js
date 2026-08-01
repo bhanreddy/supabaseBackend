@@ -19,7 +19,117 @@ import sql, { supabaseAdmin } from '../db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function runDeleteTransaction(tx, schoolId, studentId) {
+function validateDeleteTarget(schoolId, studentId) {
+  const sid = typeof schoolId === 'number' ? schoolId : Number(schoolId);
+  if (!Number.isInteger(sid) || sid <= 0) throw new Error('Invalid schoolId');
+  if (typeof studentId !== 'string' || !UUID_RE.test(studentId)) throw new Error('Invalid studentId');
+  return sid;
+}
+
+function normalizeFeePreview(row = {}) {
+  const feeRecordCount = Number(row.fee_record_count ?? 0);
+  const paymentTransactionCount = Number(row.payment_transaction_count ?? 0);
+  const receiptCount = Number(row.receipt_count ?? 0);
+  const relatedFinancialRecordCount = Number(row.related_financial_record_count ?? 0);
+
+  return {
+    has_fee_records: feeRecordCount > 0
+      || paymentTransactionCount > 0
+      || receiptCount > 0
+      || relatedFinancialRecordCount > 0,
+    fee_record_count: feeRecordCount,
+    active_fee_record_count: Number(row.active_fee_record_count ?? 0),
+    payment_transaction_count: paymentTransactionCount,
+    receipt_count: receiptCount,
+    related_financial_record_count: relatedFinancialRecordCount,
+    total_due: Number(row.total_due ?? 0),
+    total_discount: Number(row.total_discount ?? 0),
+    total_paid: Number(row.total_paid ?? 0),
+    balance: Number(row.balance ?? 0),
+  };
+}
+
+async function queryFeePreview(db, schoolId, studentId) {
+  const [row] = await db`
+    SELECT
+      (SELECT COUNT(*)::int
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS fee_record_count,
+      (SELECT COUNT(*)::int
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}
+         AND sf.deleted_at IS NULL) AS active_fee_record_count,
+      (SELECT COUNT(*)::int
+       FROM public.fee_transactions ft
+       JOIN public.student_fees sf ON sf.id = ft.student_fee_id
+       WHERE sf.student_id = ${studentId}
+         AND sf.school_id = ${schoolId}
+         AND ft.school_id = ${schoolId}) AS payment_transaction_count,
+      (SELECT COUNT(*)::int
+       FROM public.receipts r
+       WHERE r.student_id = ${studentId} AND r.school_id = ${schoolId}) AS receipt_count,
+      (
+        (SELECT COUNT(*) FROM public.fee_adjustments fa
+         WHERE fa.student_id = ${studentId} AND fa.school_id = ${schoolId})
+        + (SELECT COUNT(*) FROM public.defaulter_dues dd
+           WHERE dd.student_id = ${studentId} AND dd.school_id = ${schoolId})
+        + (SELECT COUNT(*) FROM public.defaulter_payments dp
+           JOIN public.defaulter_dues dd ON dd.id = dp.defaulter_due_id
+           WHERE dd.student_id = ${studentId}
+             AND dd.school_id = ${schoolId}
+             AND dp.school_id = ${schoolId})
+        + (SELECT COUNT(*) FROM public.transport_fee_payments tfp
+           WHERE tfp.student_id = ${studentId} AND tfp.school_id = ${schoolId})
+      )::int AS related_financial_record_count,
+      (SELECT COALESCE(SUM(sf.amount_due), 0)
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS total_due,
+      (SELECT COALESCE(SUM(sf.discount), 0)
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS total_discount,
+      (SELECT COALESCE(SUM(sf.amount_paid), 0)
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS total_paid,
+      (SELECT COALESCE(SUM(sf.amount_due - sf.discount - sf.amount_paid), 0)
+       FROM public.student_fees sf
+       WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS balance
+  `;
+
+  return normalizeFeePreview(row);
+}
+
+export class FeeRecordsConfirmationRequiredError extends Error {
+  constructor(preview) {
+    super('Fee records exist for this student. Confirm fee deletion before continuing.');
+    this.name = 'FeeRecordsConfirmationRequiredError';
+    this.code = 'FEE_RECORDS_CONFIRMATION_REQUIRED';
+    this.preview = preview;
+  }
+}
+
+/**
+ * Read-only preview used at the start of the hard-delete flow.
+ * Returns null when the student does not belong to the requested school.
+ */
+export async function getStudentHardDeletePreview(schoolId, studentId) {
+  const sid = validateDeleteTarget(schoolId, studentId);
+  const [student] = await sql`
+    SELECT id FROM public.students
+    WHERE id = ${studentId} AND school_id = ${sid}
+  `;
+  if (!student) return null;
+  return queryFeePreview(sql, sid, studentId);
+}
+
+async function runDeleteTransaction(tx, schoolId, studentId, confirmFeeDeletion) {
+  // Prevent a fee assignment from being inserted after the safety check. The
+  // student row stays locked until this transaction commits or rolls back.
+  await tx`
+    SELECT id FROM public.students
+    WHERE id = ${studentId} AND school_id = ${schoolId}
+    FOR UPDATE
+  `;
+
   // ── Resolve the blast radius into temp tables (parameterised, safe) ──────────
   await tx`
     CREATE TEMP TABLE target_students ON COMMIT DROP AS
@@ -64,6 +174,14 @@ async function runDeleteTransaction(tx, schoolId, studentId) {
     WHERE p.school_id = ${schoolId} AND p.person_id IS NOT NULL
     ON CONFLICT DO NOTHING
   `;
+
+  // Re-check inside the locked delete transaction. The UI preview is useful to
+  // the operator, but this is the enforcement point and cannot be bypassed by
+  // an outdated client calling the endpoint directly.
+  const feePreview = await queryFeePreview(tx, schoolId, studentId);
+  if (feePreview.has_fee_records && confirmFeeDeletion !== true) {
+    throw new FeeRecordsConfirmationRequiredError(feePreview);
+  }
 
   const stats = {};
   const del = async (label, query) => {
@@ -422,15 +540,19 @@ async function deleteAuthUsers(authUserIds) {
  * Permanently delete a student and all associated data within one school.
  * @param {number} schoolId  Tenant id (from the caller's JWT).
  * @param {string} studentId Student UUID.
+ * @param {{ confirmFeeDeletion?: boolean }} [options]
  * @returns {Promise<{ deleted: boolean, stats: object, authFailures: object[] }>}
  */
-export async function hardDeleteStudent(schoolId, studentId) {
+export async function hardDeleteStudent(schoolId, studentId, options = {}) {
   // Middleware always sets req.schoolId as a string; coerce so the API path works.
-  const sid = typeof schoolId === 'number' ? schoolId : Number(schoolId);
-  if (!Number.isInteger(sid) || sid <= 0) throw new Error('Invalid schoolId');
-  if (typeof studentId !== 'string' || !UUID_RE.test(studentId)) throw new Error('Invalid studentId');
+  const sid = validateDeleteTarget(schoolId, studentId);
 
-  const result = await sql.begin((tx) => runDeleteTransaction(tx, sid, studentId));
+  const result = await sql.begin((tx) => runDeleteTransaction(
+    tx,
+    sid,
+    studentId,
+    options.confirmFeeDeletion === true,
+  ));
 
   let authFailures = [];
   if (result.authUserIds.length > 0 && supabaseAdmin) {

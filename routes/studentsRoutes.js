@@ -21,7 +21,10 @@ import {
   resolveStudentParamWithAccess,
 } from '../utils/studentPortal.js';
 import { normalizeOptionalString } from '../utils/normalizeOptionalString.js';
-import { hardDeleteStudent } from '../services/hardDeleteStudent.js';
+import {
+  getStudentHardDeletePreview,
+  hardDeleteStudent,
+} from '../services/hardDeleteStudent.js';
 
 const router = express.Router();
 
@@ -1490,10 +1493,30 @@ router.delete('/:id', requirePermission('students.delete'), async (req, res) => 
 });
 
 /**
+ * GET /students/:id/hard-delete-preview
+ * Read-only pre-check for the permanent-delete dialog. It reports fee/payment
+ * records that will be destroyed, including soft-deleted fee rows which the
+ * hard-delete service also removes.
+ */
+router.get('/:id/hard-delete-preview', requirePermission('students.delete'), async (req, res) => {
+  try {
+    const preview = await getStudentHardDeletePreview(req.schoolId, req.params.id);
+    if (!preview) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+    sendSuccess(res, req.schoolId, preview);
+  } catch (error) {
+    console.error('hard-delete preview failed:', error);
+    res.status(500).json({ error: 'Failed to check student fee records', details: error.message });
+  }
+});
+
+/**
  * POST /students/:id/hard-delete
  * PERMANENT, irreversible wipe of a student and ALL data belonging to them
  * (fees, receipts, marks, attendance, transport, parent links, login accounts…).
  * Requires an explicit `{ confirm: true }` body so it can never fire by accident,
+ * plus `{ confirm_fee_deletion: true }` whenever the pre-check finds financial data,
  * and is gated by the same `students.delete` permission as soft delete.
  */
 router.post('/:id/hard-delete', requirePermission('students.delete'), async (req, res) => {
@@ -1516,7 +1539,9 @@ router.post('/:id/hard-delete', requirePermission('students.delete'), async (req
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    const result = await hardDeleteStudent(Number(req.schoolId), id);
+    const result = await hardDeleteStudent(Number(req.schoolId), id, {
+      confirmFeeDeletion: req.body?.confirm_fee_deletion === true,
+    });
 
     if (!result.deleted) {
       return res.status(404).json({ error: 'Student not found' });
@@ -1528,6 +1553,13 @@ router.post('/:id/hard-delete', requirePermission('students.delete'), async (req
       authFailures: result.authFailures,
     });
   } catch (error) {
+    if (error.code === 'FEE_RECORDS_CONFIRMATION_REQUIRED') {
+      return res.status(409).json({
+        error: error.message,
+        code: error.code,
+        preview: error.preview,
+      });
+    }
     console.error('hard-delete student failed:', error);
     res.status(500).json({ error: 'Failed to permanently delete student', details: error.message });
   }
