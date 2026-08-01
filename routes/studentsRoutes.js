@@ -33,6 +33,32 @@ const blankToNull = (value) => {
   return value ?? null;
 };
 
+/** Normalize optional Aadhaar to 12 digits or null. Empty clears; partial rejects. */
+const normalizeAadhaarNumber = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const digits = String(value).replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length !== 12) {
+    return { error: 'Aadhaar number must be exactly 12 digits.' };
+  }
+  return digits;
+};
+
+/** Coerce previous_school Yes/No payload to boolean | null. */
+const normalizePreviousSchool = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'yes') {
+    return true;
+  }
+  if (value === 0 || value === '0' || String(value).toLowerCase() === 'false' || String(value).toLowerCase() === 'no') {
+    return false;
+  }
+  return { error: 'Previous school must be Yes or No.' };
+};
+
 /** Optional person name fields — rejects junk literals like "Null", "None", etc. */
 const normalizeOptionalName = (value) => normalizeOptionalString(value);
 
@@ -573,6 +599,7 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
     const student = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
+        s.aadhaar_number, s.tc_number, s.previous_school,
         s.status_id, s.category_id, s.religion_id, s.blood_group_id,
         s.exit_academic_year_id, to_char(s.exit_date, 'YYYY-MM-DD') AS exit_date,
         (SELECT code FROM academic_years WHERE id = s.exit_academic_year_id) AS exit_academic_year,
@@ -639,7 +666,9 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
   try {
     const {
       first_name, middle_name = null, last_name, dob = null, gender_id,
-      admission_no, pen_number = null, apar_number = null, village = null, admission_date, status_id, category_id = null, religion_id = null, blood_group_id = null,
+      admission_no, pen_number = null, apar_number = null, village = null,
+      aadhaar_number = null, tc_number = null, previous_school = null,
+      admission_date, status_id, category_id = null, religion_id = null, blood_group_id = null,
       email = null, phone = null,
       password = null, role_code = null, // For User Creation
       class_id = null, section_id = null, academic_year_id = null, // For Initial Enrollment
@@ -675,6 +704,16 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
     }
     const normalizedPenNumber = await assertPenNumberAvailable(sql, schoolId, pen_number);
 
+    const normalizedAadhaar = normalizeAadhaarNumber(aadhaar_number);
+    if (normalizedAadhaar && typeof normalizedAadhaar === 'object' && normalizedAadhaar.error) {
+      return res.status(400).json({ error: normalizedAadhaar.error });
+    }
+    const normalizedPreviousSchool = normalizePreviousSchool(previous_school);
+    if (normalizedPreviousSchool && typeof normalizedPreviousSchool === 'object' && normalizedPreviousSchool.error) {
+      return res.status(400).json({ error: normalizedPreviousSchool.error });
+    }
+    const normalizedTcNumber = blankToNull(tc_number);
+
     const canonicalEmail = email
       ? await assertSchoolEmailAvailable(sql, schoolId, email)
       : null;
@@ -692,14 +731,20 @@ router.post('/', requirePermission('students.create'), async (req, res) => {
       // 2. Create Student
       const [student] = await sql`
         INSERT INTO students (
-          school_id, person_id, admission_no, pen_number, apar_number, village, admission_date, status_id,
+          school_id, person_id, admission_no, pen_number, apar_number, village,
+          aadhaar_number, tc_number, previous_school,
+          admission_date, status_id,
           category_id, religion_id, blood_group_id
         )
         VALUES (
-          ${req.schoolId}, ${person.id}, ${admission_no}, ${normalizedPenNumber}, ${apar_number ?? null}, ${village ?? null}, ${admission_date}, ${status_id},
+          ${req.schoolId}, ${person.id}, ${admission_no}, ${normalizedPenNumber}, ${apar_number ?? null}, ${village ?? null},
+          ${normalizedAadhaar ?? null}, ${normalizedTcNumber}, ${normalizedPreviousSchool ?? null},
+          ${admission_date}, ${status_id},
           ${category_id}, ${religion_id}, ${blood_group_id}
         )
-        RETURNING id, person_id, admission_no, pen_number, apar_number, village, admission_date, status_id, category_id, religion_id, blood_group_id, school_id, created_at, updated_at
+        RETURNING id, person_id, admission_no, pen_number, apar_number, village,
+          aadhaar_number, tc_number, previous_school,
+          admission_date, status_id, category_id, religion_id, blood_group_id, school_id, created_at, updated_at
       `;
 
       // 3. Contacts
@@ -935,7 +980,9 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
     const { id } = req.params;
     const {
       first_name, middle_name, last_name, dob, gender_id,
-      admission_no, pen_number, apar_number, village, admission_date, status_id, category_id, religion_id, blood_group_id,
+      admission_no, pen_number, apar_number, village,
+      aadhaar_number, tc_number, previous_school,
+      admission_date, status_id, category_id, religion_id, blood_group_id,
       email, phone, password, role_code = null,
       class_id = null, section_id = null, academic_year_id = null,
       parents
@@ -1001,6 +1048,19 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
         excludeStudentId: id,
       });
       shouldUpdatePen = true;
+    }
+
+    const normalizedAadhaar = aadhaar_number !== undefined
+      ? normalizeAadhaarNumber(aadhaar_number)
+      : undefined;
+    if (normalizedAadhaar && typeof normalizedAadhaar === 'object' && normalizedAadhaar.error) {
+      return res.status(400).json({ error: normalizedAadhaar.error });
+    }
+    const normalizedPreviousSchool = previous_school !== undefined
+      ? normalizePreviousSchool(previous_school)
+      : undefined;
+    if (normalizedPreviousSchool && typeof normalizedPreviousSchool === 'object' && normalizedPreviousSchool.error) {
+      return res.status(400).json({ error: normalizedPreviousSchool.error });
     }
 
     const enrollmentRecalcTargets = [];
@@ -1088,6 +1148,9 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
           ${penAssignment}
           apar_number = COALESCE(${apar_number ?? null}, apar_number),
           ${village !== undefined ? sql`village = ${blankToNull(village)},` : sql``}
+          ${aadhaar_number !== undefined ? sql`aadhaar_number = ${normalizedAadhaar ?? null},` : sql``}
+          ${tc_number !== undefined ? sql`tc_number = ${blankToNull(tc_number)},` : sql``}
+          ${previous_school !== undefined ? sql`previous_school = ${normalizedPreviousSchool ?? null},` : sql``}
           admission_date = COALESCE(${admission_date ?? null}, admission_date),
           status_id = COALESCE(${status_id ?? null}, status_id),
           exit_academic_year_id = ${targetIsActive ? null : resolvedLifecycleAcademicYearId},

@@ -123,7 +123,7 @@ function buildDueListWorkbook({ schoolName, academicYear, rows, filters }) {
         filters.section_name ? `Section: ${filters.section_name}` : null,
         filters.village_name ? `Village: ${filters.village_name}` : null,
         filters.overdue_only ? 'Only overdue dues' : null,
-    ].filter(Boolean).join(' | ') || 'All pending fees';
+    ].filter(Boolean).join(' | ') || 'Outstanding dues and waived students';
 
     const sheetRows = [
         [`${schoolName || 'School'} — Pending Fees Due List`],
@@ -203,6 +203,118 @@ function buildDueListWorkbook({ schoolName, academicYear, rows, filters }) {
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Pending Fees');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
+}
+
+function isValidYmd(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const time = new Date(`${value}T00:00:00`).getTime();
+    return !Number.isNaN(time);
+}
+
+function formatPaidDate(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function formatPaidTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+}
+
+function buildCollectionReceiptsWorkbook({ schoolName, fromDate, toDate, rows }) {
+    const generatedAt = new Date().toLocaleString('en-IN');
+    const grandTotal = rows.reduce((sum, row) => sum + money(row.amount), 0);
+    const byMode = {};
+    for (const row of rows) {
+        const mode = String(row.payment_method || 'CASH').toUpperCase();
+        if (!byMode[mode]) byMode[mode] = { count: 0, total: 0 };
+        byMode[mode].count += 1;
+        byMode[mode].total += money(row.amount);
+    }
+
+    const headerRowIndex = 6;
+    const sheetRows = [
+        [`${schoolName || 'School'} — Fee Collection Receipts`],
+        ['From', fromDate, 'To', toDate],
+        ['Generated', generatedAt],
+        [],
+        ['Receipts', rows.length, 'Grand Total', grandTotal],
+        [],
+        [
+            'S.No.', 'Date', 'Time', 'Receipt No.', 'Student Name', 'Admission No.',
+            'Father Name', 'Class', 'Section', 'Fee Type', 'Payment Mode', 'Amount', 'Received By',
+        ],
+        ...rows.map((row, index) => [
+            index + 1,
+            formatPaidDate(row.paid_at),
+            formatPaidTime(row.paid_at),
+            row.receipt_no || '',
+            row.student_name || '',
+            row.admission_no || '',
+            row.father_name || '',
+            row.class_name || '',
+            row.section_name || '',
+            row.fee_type || '',
+            String(row.payment_method || 'CASH').toUpperCase(),
+            money(row.amount),
+            row.received_by || '',
+        ]),
+        [],
+        ['TOTAL', '', '', '', '', '', '', '', '', '', '', grandTotal, ''],
+        [],
+        ['Payment mode', 'Count', 'Amount'],
+        ...Object.entries(byMode)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([mode, bucket]) => [mode, bucket.count, bucket.total]),
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+    worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 12 } }];
+    worksheet['!cols'] = [
+        { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 28 }, { wch: 16 },
+        { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 14 }, { wch: 20 },
+    ];
+    const lastDataRow = headerRowIndex + rows.length;
+    worksheet['!autofilter'] = { ref: `A${headerRowIndex + 1}:M${Math.max(headerRowIndex + 1, lastDataRow + 1)}` };
+    worksheet['!freeze'] = { xSplit: 0, ySplit: headerRowIndex + 1 };
+
+    const headerStyle = {
+        fill: { fgColor: { rgb: '5B21B6' } },
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+    };
+    for (let col = 0; col < 13; col += 1) {
+        const cell = XLSX.utils.encode_cell({ r: headerRowIndex, c: col });
+        if (worksheet[cell]) worksheet[cell].s = headerStyle;
+    }
+
+    const currencyFormat = '₹#,##0.00';
+    if (worksheet.D5) worksheet.D5.z = currencyFormat;
+    for (let row = headerRowIndex + 1; row <= lastDataRow; row += 1) {
+        const cell = XLSX.utils.encode_cell({ r: row, c: 11 });
+        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
+    }
+    const totalRow = lastDataRow + 2;
+    for (let col = 0; col < 13; col += 1) {
+        const cell = XLSX.utils.encode_cell({ r: totalRow, c: col });
+        if (worksheet[cell]) worksheet[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: 'FEF3C7' } } };
+    }
+    const totalCell = XLSX.utils.encode_cell({ r: totalRow, c: 11 });
+    if (worksheet[totalCell]) worksheet[totalCell].z = currencyFormat;
+
+    const modeStart = totalRow + 3;
+    for (let i = 0; i < Object.keys(byMode).length; i += 1) {
+        const cell = XLSX.utils.encode_cell({ r: modeStart + i, c: 2 });
+        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
+    }
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Collection Receipts');
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
 }
 
@@ -1142,12 +1254,14 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
 
 /**
  * GET /admin/pending-fees/export
- * One row per student with outstanding school-fee dues. Money columns
- * (school total, discount, final fee, paid) aggregate ALL of that student's
- * fee lines for the academic year — including fully waived / paid lines —
- * so fee-adjustment waivers still appear under Discount Given. Due amount,
- * fee-item count, earliest due date, and overdue flag stay based on
- * outstanding lines only. Transport is used only for village/route filters.
+ * One row per student with outstanding school-fee dues OR any fee waiver.
+ * Money columns aggregate ALL of that student's fee lines for the academic
+ * year — including fully waived / paid lines — so waivers appear under
+ * Discount Given even when they cleared the balance to zero. Discount Given
+ * is the greater of student_fees.discount and the fee_adjustments waive
+ * ledger (covers rows where discount was not denormalized). Due Amount is
+ * school total − discount − paid at the student level so it stays consistent
+ * with the Discount Given column. Transport is used only for village/route.
  */
 router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
@@ -1167,14 +1281,44 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
     // aggregate fees per student in a CTE first, then join enrollment (deduped
     // to the latest active row) and transport (unique per year) for display only.
     const rows = await sql`
-        WITH fee_agg AS (
+        WITH waiver_ledger AS (
+            SELECT
+                fa.student_id,
+                COALESCE(SUM(fa.amount), 0)::numeric AS waived_amount
+            FROM fee_adjustments fa
+            JOIN student_fees sf ON sf.id = fa.student_fee_id
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            WHERE fa.school_id = ${schoolId}
+              AND fa.adjustment_type = 'waive'
+              AND fa.student_fee_id IS NOT NULL
+              AND fs.academic_year_id = ${academicYear.id}
+            GROUP BY fa.student_id
+        ),
+        fee_agg AS (
             SELECT
                 sf.student_id,
                 COALESCE(SUM(sf.amount_due), 0)::numeric AS school_total_fee,
-                COALESCE(SUM(sf.discount), 0)::numeric AS discount_given,
-                COALESCE(SUM(sf.amount_due - sf.discount), 0)::numeric AS final_fee,
+                GREATEST(
+                  COALESCE(SUM(sf.discount), 0),
+                  COALESCE(MAX(wl.waived_amount), 0)
+                )::numeric AS discount_given,
+                (
+                  COALESCE(SUM(sf.amount_due), 0)
+                  - GREATEST(
+                      COALESCE(SUM(sf.discount), 0),
+                      COALESCE(MAX(wl.waived_amount), 0)
+                    )
+                )::numeric AS final_fee,
                 COALESCE(SUM(sf.amount_paid), 0)::numeric AS paid_fee,
-                COALESCE(SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)), 0)::numeric AS due_amount,
+                GREATEST(
+                  COALESCE(SUM(sf.amount_due), 0)
+                  - GREATEST(
+                      COALESCE(SUM(sf.discount), 0),
+                      COALESCE(MAX(wl.waived_amount), 0)
+                    )
+                  - COALESCE(SUM(sf.amount_paid), 0),
+                  0
+                )::numeric AS due_amount,
                 COUNT(sf.id) FILTER (
                   WHERE (sf.amount_due - sf.discount - sf.amount_paid) > 0
                 )::int AS fee_item_count,
@@ -1187,6 +1331,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
                 ) AS is_overdue
             FROM student_fees sf
             JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            LEFT JOIN waiver_ledger wl ON wl.student_id = sf.student_id
             WHERE sf.school_id = ${schoolId}
               AND fs.academic_year_id = ${academicYear.id}
               AND sf.deleted_at IS NULL
@@ -1194,6 +1339,8 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
               ${structureModeFilter}
             GROUP BY sf.student_id
             HAVING SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) > 0
+                OR COALESCE(SUM(sf.discount), 0) > 0
+                OR COALESCE(MAX(wl.waived_amount), 0) > 0
         ),
         enroll AS (
             SELECT DISTINCT ON (se.student_id)
@@ -1272,6 +1419,153 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="pending-fees-due-list-${stamp}.xlsx"`);
+    return res.send(buffer);
+}));
+
+/**
+ * GET /admin/collection-receipts/export
+ * Excel list of fee + transport collection receipts for a from/to date range.
+ */
+router.get('/collection-receipts/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
+    const schoolId = req.schoolId;
+    const fromDate = String(req.query.from_date || '').trim();
+    const toDate = String(req.query.to_date || '').trim();
+
+    if (!isValidYmd(fromDate) || !isValidYmd(toDate)) {
+        return res.status(400).json({ error: 'from_date and to_date are required in YYYY-MM-DD format.' });
+    }
+    if (fromDate > toDate) {
+        return res.status(400).json({ error: 'from_date must be on or before to_date.' });
+    }
+
+    const [schoolFeeRows, transportRows] = await Promise.all([
+        sql`
+            SELECT
+                t.id,
+                t.amount,
+                t.payment_method,
+                t.paid_at,
+                s.admission_no,
+                p.display_name AS student_name,
+                enroll.class_name,
+                enroll.section_name,
+                father_info.father_name,
+                r.receipt_no,
+                ft.name AS fee_type,
+                receiver.display_name AS received_by
+            FROM fee_transactions t
+            JOIN student_fees sf ON t.student_fee_id = sf.id
+            JOIN students s ON sf.student_id = s.id
+            JOIN persons p ON s.person_id = p.id
+            LEFT JOIN receipt_items ri ON ri.fee_transaction_id = t.id AND ri.school_id = ${schoolId}
+            LEFT JOIN receipts r ON r.id = ri.receipt_id AND r.school_id = ${schoolId}
+            LEFT JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+            LEFT JOIN fee_types ft ON fs.fee_type_id = ft.id
+            LEFT JOIN users u ON t.received_by = u.id
+            LEFT JOIN persons receiver ON u.person_id = receiver.id
+            LEFT JOIN LATERAL (
+                SELECT c.name AS class_name, sec.name AS section_name
+                FROM student_enrollments se
+                JOIN class_sections cs ON se.class_section_id = cs.id
+                JOIN classes c ON cs.class_id = c.id
+                JOIN sections sec ON cs.section_id = sec.id
+                WHERE se.student_id = s.id AND se.status = 'active'
+                ORDER BY se.created_at DESC
+                LIMIT 1
+            ) enroll ON true
+            LEFT JOIN LATERAL (
+                SELECT pp.display_name AS father_name
+                FROM student_parents sp
+                JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+                JOIN persons pp ON par.person_id = pp.id
+                LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+                WHERE sp.student_id = s.id
+                  AND sp.school_id = ${schoolId}
+                  AND sp.deleted_at IS NULL
+                ORDER BY
+                    CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+                    sp.created_at
+                LIMIT 1
+            ) father_info ON true
+            WHERE s.school_id = ${schoolId}
+              AND t.paid_at::DATE BETWEEN ${fromDate}::DATE AND ${toDate}::DATE
+              AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+              AND NOT EXISTS (
+                SELECT 1 FROM fee_transactions rev
+                WHERE rev.school_id = t.school_id
+                  AND rev.refund_of = t.id
+                  AND rev.transaction_ref LIKE 'VOID-%'
+              )
+            ORDER BY t.paid_at ASC
+        `,
+        sql`
+            SELECT
+                tfp.id,
+                tfp.amount,
+                tfp.payment_method,
+                tfp.paid_at,
+                s.admission_no,
+                p.display_name AS student_name,
+                enroll.class_name,
+                enroll.section_name,
+                father_info.father_name,
+                r.receipt_no,
+                'Transport Fee'::text AS fee_type,
+                receiver.display_name AS received_by
+            FROM transport_fee_payments tfp
+            JOIN students s ON tfp.student_id = s.id AND s.school_id = ${schoolId}
+            JOIN persons p ON s.person_id = p.id
+            LEFT JOIN receipts r ON r.transport_payment_id = tfp.id AND r.school_id = ${schoolId}
+            LEFT JOIN users u ON tfp.received_by = u.id
+            LEFT JOIN persons receiver ON u.person_id = receiver.id
+            LEFT JOIN LATERAL (
+                SELECT c.name AS class_name, sec.name AS section_name
+                FROM student_enrollments se
+                JOIN class_sections cs ON se.class_section_id = cs.id
+                JOIN classes c ON cs.class_id = c.id
+                JOIN sections sec ON cs.section_id = sec.id
+                WHERE se.student_id = s.id AND se.status = 'active'
+                ORDER BY se.created_at DESC
+                LIMIT 1
+            ) enroll ON true
+            LEFT JOIN LATERAL (
+                SELECT pp.display_name AS father_name
+                FROM student_parents sp
+                JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+                JOIN persons pp ON par.person_id = pp.id
+                LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+                WHERE sp.student_id = s.id
+                  AND sp.school_id = ${schoolId}
+                  AND sp.deleted_at IS NULL
+                ORDER BY
+                    CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+                    sp.created_at
+                LIMIT 1
+            ) father_info ON true
+            WHERE tfp.school_id = ${schoolId}
+              AND tfp.paid_at::DATE BETWEEN ${fromDate}::DATE AND ${toDate}::DATE
+            ORDER BY tfp.paid_at ASC
+        `,
+    ]);
+
+    const rows = [...(schoolFeeRows || []), ...(transportRows || [])]
+        .sort((a, b) => new Date(a.paid_at).getTime() - new Date(b.paid_at).getTime());
+
+    const [school] = await sql`
+        SELECT name FROM schools WHERE id = ${schoolId} LIMIT 1
+    `;
+
+    const buffer = buildCollectionReceiptsWorkbook({
+        schoolName: school?.name,
+        fromDate,
+        toDate,
+        rows,
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="fee-collection-receipts-${fromDate}-to-${toDate}.xlsx"`,
+    );
     return res.send(buffer);
 }));
 
