@@ -60,6 +60,10 @@ const JWT_SCHOOL_ID_PATHS = [
   // is taken from the JWT, never from client query/body.
   /^\/api\/v1\/users\/me\/photo\/?$/i,
   /^\/users\/me\/photo\/?$/i,
+  // Delegated student photo management is also multipart and must be scoped to
+  // the operator's JWT tenant before the student ownership lookup runs.
+  /^\/api\/v1\/students\/[^/]+\/photo\/?$/i,
+  /^\/students\/[^/]+\/photo\/?$/i,
   // RBAC & Segregation-of-Duties epic: these financial + staff surfaces MUST
   // derive school_id from the JWT (req.user.schoolId), never from client
   // query/body. Added in the same change that hardens their permission gates so

@@ -135,22 +135,47 @@ async function fetchFinancials(range, schoolId) {
         trend,
     ] = await Promise.all([
         sql`
-        SELECT COALESCE(SUM(ft.amount), 0) as total
-        FROM fee_transactions ft
-        JOIN student_fees sf ON ft.student_fee_id = sf.id
-        WHERE ft.paid_at >= ${start}
-          AND sf.school_id = ${schoolId}
+        SELECT
+          COALESCE((
+            SELECT SUM(ft.amount)
+            FROM fee_transactions ft
+            WHERE ft.paid_at >= ${start}
+              AND ft.school_id = ${schoolId}
+          ), 0) +
+          COALESCE((
+            SELECT SUM(tfp.amount)
+            FROM transport_fee_payments tfp
+            WHERE tfp.paid_at >= ${start}
+              AND tfp.school_id = ${schoolId}
+          ), 0) AS total
     `,
         sql`
-        SELECT COALESCE(SUM(ft.amount), 0) as total
-        FROM fee_transactions ft
-        WHERE ft.paid_at >= CURRENT_DATE
-          AND ft.school_id = ${schoolId}
+        SELECT
+          COALESCE((
+            SELECT SUM(ft.amount)
+            FROM fee_transactions ft
+            WHERE ft.paid_at >= CURRENT_DATE
+              AND ft.school_id = ${schoolId}
+          ), 0) +
+          COALESCE((
+            SELECT SUM(tfp.amount)
+            FROM transport_fee_payments tfp
+            WHERE tfp.paid_at >= CURRENT_DATE
+              AND tfp.school_id = ${schoolId}
+          ), 0) AS total
     `,
         sql`
-        SELECT COALESCE(SUM(ft.amount), 0) as total
-        FROM fee_transactions ft
-        WHERE ft.school_id = ${schoolId}
+        SELECT
+          COALESCE((
+            SELECT SUM(ft.amount)
+            FROM fee_transactions ft
+            WHERE ft.school_id = ${schoolId}
+          ), 0) +
+          COALESCE((
+            SELECT SUM(tfp.amount)
+            FROM transport_fee_payments tfp
+            WHERE tfp.school_id = ${schoolId}
+          ), 0) AS total
     `,
         sql`
         SELECT COALESCE(SUM(sf.amount_due - sf.discount - sf.amount_paid), 0) as total

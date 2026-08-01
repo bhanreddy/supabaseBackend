@@ -294,6 +294,10 @@ router.get(
         tf.id AS transport_fee_id,
         tf.fee_amount,
         tf.billing_cycle,
+        COALESCE(adj.net_amount, 0)::numeric AS adjustment_total,
+        COALESCE(adj.added_amount, 0)::numeric AS added_amount,
+        COALESCE(adj.waived_amount, 0)::numeric AS waived_amount,
+        COALESCE(adj.adjustment_count, 0)::int AS adjustment_count,
         COALESCE(pay.paid_total, 0)::numeric AS paid_amount
       FROM student_transport st
       JOIN students s ON st.student_id = s.id AND s.school_id = ${schoolId}
@@ -307,6 +311,17 @@ router.get(
         AND tf.academic_year = ${academicYear}
         AND tf.school_id = ${schoolId}
         AND tf.is_active = TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END) AS net_amount,
+          SUM(fa.amount) FILTER (WHERE fa.adjustment_type = 'add') AS added_amount,
+          SUM(fa.amount) FILTER (WHERE fa.adjustment_type = 'waive') AS waived_amount,
+          COUNT(*) AS adjustment_count
+        FROM fee_adjustments fa
+        WHERE fa.student_id = s.id
+          AND fa.school_id = ${schoolId}
+          AND fa.transport_fee_id = tf.id
+      ) adj ON TRUE
       LEFT JOIN LATERAL (
         SELECT SUM(amount) AS paid_total
         FROM transport_fee_payments tfp
@@ -341,7 +356,9 @@ router.get(
 
     const students = rows.map((r) => {
       const feeNotSet = !r.transport_fee_id || !r.stop_id;
-      const feeAmount = r.transport_fee_id ? Number(r.fee_amount) : null;
+      const baseFeeAmount = r.transport_fee_id ? Number(r.fee_amount) : null;
+      const adjustmentTotal = Number(r.adjustment_total || 0);
+      const feeAmount = baseFeeAmount != null ? Math.max(baseFeeAmount + adjustmentTotal, 0) : null;
       const paidAmount = Number(r.paid_amount || 0);
       const balanceDue = feeAmount != null ? Math.max(feeAmount - paidAmount, 0) : null;
 
@@ -357,7 +374,12 @@ router.get(
         stop_id: r.stop_id,
         stop_name: r.stop_name,
         transport_fee_id: r.transport_fee_id,
+        base_fee_amount: baseFeeAmount,
         fee_amount: feeAmount,
+        adjustment_total: adjustmentTotal,
+        added_amount: Number(r.added_amount || 0),
+        waived_amount: Number(r.waived_amount || 0),
+        adjustment_count: Number(r.adjustment_count || 0),
         billing_cycle: r.billing_cycle,
         paid_amount: paidAmount,
         balance_due: balanceDue,

@@ -26,6 +26,8 @@ export class ExamTimetableError extends Error {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+const EXAM_WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const WEEKDAY_BY_UTC_DAY = [null, 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 function toUtcDate(isoDate) {
   return new Date(`${isoDate}T00:00:00Z`);
@@ -40,18 +42,34 @@ function toIsoDate(date) {
  * bad input. Unknown keys are dropped so timetable_params stays canonical.
  */
 export function normalizeParams(raw = {}) {
+  const includeSaturdays = raw.include_saturdays !== false;
+  const defaultWeekdays = includeSaturdays ? EXAM_WEEKDAYS : EXAM_WEEKDAYS.slice(0, 5);
+  const requestedWeekdays = Array.isArray(raw.allowed_weekdays)
+    ? [...new Set(raw.allowed_weekdays.map((day) => String(day).toLowerCase()))]
+    : defaultWeekdays;
   const p = {
     class_ids: Array.isArray(raw.class_ids) ? [...new Set(raw.class_ids.map(String))] : [],
     start_date: raw.start_date,
     end_date: raw.end_date,
     start_time: raw.start_time || null,
     end_time: raw.end_time || null,
-    include_saturdays: raw.include_saturdays !== false,
+    include_saturdays: includeSaturdays,
+    allowed_weekdays: requestedWeekdays,
     exclude_holidays: raw.exclude_holidays !== false,
     excluded_dates: Array.isArray(raw.excluded_dates) ? [...new Set(raw.excluded_dates)] : [],
     gap_days: Number.isInteger(raw.gap_days) ? raw.gap_days : 0,
+    max_consecutive_days: Number.isInteger(raw.max_consecutive_days)
+      ? raw.max_consecutive_days
+      : 0,
     max_marks: raw.max_marks ?? 100,
     passing_marks: raw.passing_marks ?? 35,
+    subject_marks: Array.isArray(raw.subject_marks)
+      ? raw.subject_marks.map((entry) => ({
+          subject_id: String(entry?.subject_id || ''),
+          max_marks: entry?.max_marks,
+          passing_marks: entry?.passing_marks,
+        }))
+      : [],
     subject_order: Array.isArray(raw.subject_order) ? raw.subject_order.map(String) : [],
     // Ordered subject selection. When non-empty it is authoritative: only these
     // subjects are scheduled, in exactly this order. (subject_order is the
@@ -65,6 +83,9 @@ export function normalizeParams(raw = {}) {
           end_time: s?.end_time || null,
         }))
       : [],
+    // Zero-based index of the session used by the first paper. Later dates
+    // use every session from the beginning of the day as usual.
+    starting_session_index: raw.starting_session_index ?? 0,
     // 'aligned'  : same subject sits on the same date for every class that
     //              teaches it (the common convention for Indian schools).
     // 'per_class': each class fills its own consecutive exam days.
@@ -80,6 +101,14 @@ export function normalizeParams(raw = {}) {
   if (p.end_date < p.start_date) {
     throw new ExamTimetableError('end_date must be on or after start_date');
   }
+  if (
+    p.allowed_weekdays.length === 0 ||
+    p.allowed_weekdays.some((day) => !EXAM_WEEKDAYS.includes(day))
+  ) {
+    throw new ExamTimetableError('Select at least one valid exam weekday (Monday–Saturday)');
+  }
+  // Keep the legacy flag accurate for older readers of timetable_params.
+  p.include_saturdays = p.allowed_weekdays.includes('saturday');
   const spanDays = (toUtcDate(p.end_date) - toUtcDate(p.start_date)) / 86400000;
   if (spanDays > 92) {
     throw new ExamTimetableError('Exam window cannot exceed 3 months');
@@ -100,6 +129,15 @@ export function normalizeParams(raw = {}) {
   if (p.sessions.length > 3) {
     throw new ExamTimetableError('At most 3 sessions per day');
   }
+  if (
+    !Number.isInteger(p.starting_session_index) ||
+    p.starting_session_index < 0 ||
+    p.starting_session_index >= p.sessions.length
+  ) {
+    throw new ExamTimetableError('Starting session must be one of the configured sessions');
+  }
+  // Keep the selected session stable if normalization sorts sessions by time.
+  const startingSession = p.sessions[p.starting_session_index];
   for (const s of p.sessions) {
     for (const t of [s.start_time, s.end_time]) {
       if (t && !TIME_RE.test(t)) {
@@ -122,14 +160,24 @@ export function normalizeParams(raw = {}) {
       }
     }
   }
+  p.starting_session_index = p.sessions.indexOf(startingSession);
   // Keep the legacy fields mirroring session 1 so older readers stay correct.
   p.start_time = p.sessions[0].start_time;
   p.end_time = p.sessions[0].end_time;
   for (const d of p.excluded_dates) {
     if (!DATE_RE.test(d)) throw new ExamTimetableError(`Invalid excluded date: ${d}`);
+    if (d < p.start_date || d > p.end_date) {
+      throw new ExamTimetableError(`Excluded date ${d} is outside the exam window`);
+    }
+  }
+  if (p.excluded_dates.length > 31) {
+    throw new ExamTimetableError('At most 31 blackout dates can be excluded');
   }
   if (p.gap_days < 0 || p.gap_days > 6) {
     throw new ExamTimetableError('gap_days must be between 0 and 6');
+  }
+  if (p.max_consecutive_days < 0 || p.max_consecutive_days > 6) {
+    throw new ExamTimetableError('max_consecutive_days must be between 0 and 6');
   }
   const max = Number(p.max_marks);
   const pass = Number(p.passing_marks);
@@ -138,6 +186,21 @@ export function normalizeParams(raw = {}) {
   }
   p.max_marks = max;
   p.passing_marks = pass;
+  const seenSubjectMarks = new Set();
+  p.subject_marks = p.subject_marks.filter((entry) => {
+    if (!entry.subject_id || seenSubjectMarks.has(entry.subject_id)) return false;
+    seenSubjectMarks.add(entry.subject_id);
+    const entryMax = Number(entry.max_marks);
+    const entryPass = Number(entry.passing_marks);
+    if (!(entryMax > 0) || !(entryPass >= 0) || entryPass > entryMax) {
+      throw new ExamTimetableError(
+        'Each subject passing mark must be between 0 and its maximum mark'
+      );
+    }
+    entry.max_marks = entryMax;
+    entry.passing_marks = entryPass;
+    return true;
+  });
   return p;
 }
 
@@ -180,56 +243,111 @@ export function normalizeSyllabus(raw) {
  * keeps every (gapDays+1)-th remaining day so papers are spaced out.
  * Pure function — unit tested in tests/examTimetable.test.js.
  */
-export function buildExamDates({ startDate, endDate, includeSaturdays, excludedDates, gapDays }) {
+export function buildExamDates({
+  startDate,
+  endDate,
+  includeSaturdays,
+  allowedWeekdays,
+  excludedDates,
+  gapDays,
+  maxConsecutiveDays = 0,
+}) {
   const excluded = new Set(excludedDates || []);
+  const allowed = new Set(
+    Array.isArray(allowedWeekdays) && allowedWeekdays.length > 0
+      ? allowedWeekdays
+      : includeSaturdays
+        ? EXAM_WEEKDAYS
+        : EXAM_WEEKDAYS.slice(0, 5)
+  );
   const working = [];
   const end = toUtcDate(endDate);
   for (let d = toUtcDate(startDate); d <= end; d = new Date(d.getTime() + 86400000)) {
     const dow = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
-    if (dow === 0) continue;
-    if (dow === 6 && !includeSaturdays) continue;
+    const weekday = WEEKDAY_BY_UTC_DAY[dow];
+    if (!weekday || !allowed.has(weekday)) continue;
     const iso = toIsoDate(d);
     if (excluded.has(iso)) continue;
     working.push(iso);
   }
-  const step = (gapDays || 0) + 1;
-  return working.filter((_, i) => i % step === 0);
+  const dates = [];
+  let cooldown = 0;
+  let consecutive = 0;
+  for (const date of working) {
+    if (cooldown > 0) {
+      cooldown -= 1;
+      continue;
+    }
+    dates.push(date);
+    consecutive += 1;
+    cooldown = gapDays || 0;
+    if (
+      maxConsecutiveDays > 0 &&
+      consecutive >= maxConsecutiveDays &&
+      cooldown === 0
+    ) {
+      // Force one otherwise-eligible rest day after the configured streak.
+      cooldown = 1;
+      consecutive = 0;
+    } else if (cooldown > 0) {
+      consecutive = 0;
+    }
+  }
+  return dates;
 }
 
 /**
  * Map subjects onto (day, session) slots.
  *  - classSubjects:  Map<classId, Set<subjectId>>
  *  - subjectOrder:   ordered union of subject ids across the classes
- *  - sessionsPerDay: papers per day (slot j → day floor(j/S), session j%S)
+ *  - sessionsPerDay: papers per day
+ *  - startingSessionIndex: session used by the first paper on the first date
  * Returns { assignments: [{class_id, subject_id, exam_date, session_index}], required }
  * where `required` is how many DATES the chosen mode needs.
  * Pure function — unit tested.
  */
-export function assignSubjects({ classSubjects, subjectOrder, dates, mode, sessionsPerDay = 1 }) {
+export function assignSubjects({
+  classSubjects,
+  subjectOrder,
+  dates,
+  mode,
+  sessionsPerDay = 1,
+  startingSessionIndex = 0,
+}) {
   const S = Math.max(1, sessionsPerDay);
+  const firstSession =
+    Number.isInteger(startingSessionIndex) &&
+    startingSessionIndex >= 0 &&
+    startingSessionIndex < S
+      ? startingSessionIndex
+      : 0;
+  const requiredDatesFor = (paperCount) =>
+    paperCount === 0 ? 0 : Math.ceil((paperCount + firstSession) / S);
   const assignments = [];
   let required = 0;
   if (mode === 'per_class') {
     for (const [classId, subjects] of classSubjects) {
       const ordered = subjectOrder.filter((s) => subjects.has(s));
-      required = Math.max(required, Math.ceil(ordered.length / S));
+      required = Math.max(required, requiredDatesFor(ordered.length));
       ordered.forEach((subjectId, j) => {
-        const date = dates[Math.floor(j / S)];
+        const slotIndex = j + firstSession;
+        const date = dates[Math.floor(slotIndex / S)];
         if (date) {
           assignments.push({
             class_id: classId,
             subject_id: subjectId,
             exam_date: date,
-            session_index: j % S,
+            session_index: slotIndex % S,
           });
         }
       });
     }
   } else {
     // aligned: slot j belongs to subject j for every class teaching it
-    required = Math.ceil(subjectOrder.length / S);
+    required = requiredDatesFor(subjectOrder.length);
     subjectOrder.forEach((subjectId, j) => {
-      const date = dates[Math.floor(j / S)];
+      const slotIndex = j + firstSession;
+      const date = dates[Math.floor(slotIndex / S)];
       if (!date) return;
       for (const [classId, subjects] of classSubjects) {
         if (subjects.has(subjectId)) {
@@ -237,7 +355,7 @@ export function assignSubjects({ classSubjects, subjectOrder, dates, mode, sessi
             class_id: classId,
             subject_id: subjectId,
             exam_date: date,
-            session_index: j % S,
+            session_index: slotIndex % S,
           });
         }
       }
@@ -374,6 +492,9 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
       .sort((a, b) => (subjectNames.get(a) || '').localeCompare(subjectNames.get(b) || ''));
     subjectOrder = [...explicit, ...rest];
   }
+  params.subject_marks = params.subject_marks.filter((entry) =>
+    subjectOrder.includes(entry.subject_id)
+  );
 
   const holidayDates = params.exclude_holidays
     ? await fetchHolidayDates(db, schoolId, params.start_date, params.end_date)
@@ -383,8 +504,10 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
     startDate: params.start_date,
     endDate: params.end_date,
     includeSaturdays: params.include_saturdays,
+    allowedWeekdays: params.allowed_weekdays,
     excludedDates: [...params.excluded_dates, ...holidayDates],
     gapDays: params.gap_days,
+    maxConsecutiveDays: params.max_consecutive_days,
   });
 
   const sessionsPerDay = params.sessions.length;
@@ -394,6 +517,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
     dates,
     mode: params.mode,
     sessionsPerDay,
+    startingSessionIndex: params.starting_session_index,
   });
 
   if (required > dates.length) {
@@ -431,19 +555,25 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
         AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
     `;
 
+    const subjectMarks = new Map(
+      params.subject_marks.map((entry) => [entry.subject_id, entry])
+    );
     const toInsert = assignments
       .filter((a) => !preservedKeys.has(`${a.class_id}|${a.subject_id}`))
-      .map((a) => ({
-        school_id: schoolId,
-        exam_id: examId,
-        subject_id: a.subject_id,
-        class_id: a.class_id,
-        exam_date: a.exam_date,
-        start_time: params.sessions[a.session_index]?.start_time ?? null,
-        end_time: params.sessions[a.session_index]?.end_time ?? null,
-        max_marks: params.max_marks,
-        passing_marks: params.passing_marks,
-      }));
+      .map((a) => {
+        const marks = subjectMarks.get(a.subject_id);
+        return {
+          school_id: schoolId,
+          exam_id: examId,
+          subject_id: a.subject_id,
+          class_id: a.class_id,
+          exam_date: a.exam_date,
+          start_time: params.sessions[a.session_index]?.start_time ?? null,
+          end_time: params.sessions[a.session_index]?.end_time ?? null,
+          max_marks: marks?.max_marks ?? params.max_marks,
+          passing_marks: marks?.passing_marks ?? params.passing_marks,
+        };
+      });
 
     if (toInsert.length > 0) {
       await tx`INSERT INTO exam_subjects ${tx(toInsert)}`;

@@ -59,3 +59,31 @@ test('school settings subroutes still require an authenticated school context', 
   assert.equal(result.statusCode, 401);
   assert.deepEqual(result.payload, { success: false, error: 'Unauthorized' });
 });
+
+test('student photo uploads derive the tenant from the authenticated operator', () => {
+  for (const path of [
+    '/api/v1/students/student-1/photo',
+    '/students/student-1/photo',
+  ]) {
+    const result = invoke(path, {
+      method: 'POST',
+      user: { schoolId: 12 },
+      query: { school_id: '99' },
+    });
+
+    assert.equal(result.continued, true);
+    assert.equal(result.req.schoolId, '12');
+  }
+});
+
+test('student photo removal requires an authenticated school context', () => {
+  const result = invoke('/api/v1/students/student-1/photo', {
+    method: 'DELETE',
+    user: null,
+    query: { school_id: '99' },
+  });
+
+  assert.equal(result.continued, false);
+  assert.equal(result.statusCode, 401);
+  assert.deepEqual(result.payload, { success: false, error: 'Unauthorized' });
+});

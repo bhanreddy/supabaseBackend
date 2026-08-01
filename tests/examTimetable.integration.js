@@ -201,13 +201,17 @@ async function run() {
           ],
           // English deliberately excluded; Science ordered before Math.
           subject_ids: [subjectIds.Science, subjectIds.Math],
+          subject_marks: [
+            { subject_id: subjectIds.Science, max_marks: 50, passing_marks: 18 },
+          ],
         },
       });
       eq(regen2.preserved, 1, 'marked Math paper still preserved with subject selection');
       // Math has marks so only Science is (re)inserted.
       eq(regen2.inserted, 1, 'only the selected, unmarked subject is inserted');
       const sessionPapers = await tx`
-        SELECT subject_id, exam_date::text AS exam_date, start_time::text AS start_time
+        SELECT subject_id, exam_date::text AS exam_date, start_time::text AS start_time,
+               max_marks, passing_marks
         FROM exam_subjects WHERE exam_id = ${exam.id} AND class_id = ${c1.id} AND deleted_at IS NULL
         ORDER BY exam_date, start_time
       `;
@@ -216,6 +220,8 @@ async function run() {
       const sciPaper = sessionPapers.find((p) => p.subject_id === subjectIds.Science);
       eq(sciPaper.exam_date, '2026-09-07', 'first selected subject on day 1');
       eq(sciPaper.start_time, '09:30:00', 'session-1 timing applied');
+      eq(Number(sciPaper.max_marks), 50, 'subject-specific maximum marks applied');
+      eq(Number(sciPaper.passing_marks), 18, 'subject-specific passing marks applied');
 
       // ── Seating & invigilation ────────────────────────────────────────
       // More students: cs1 gets 4 more (5 total in c1), cs2 gets 3 (c2).
@@ -252,10 +258,12 @@ async function run() {
 
       // Two rooms: capacity 5 + 4 = 9 (8 students total).
       const [roomA] = await tx`
-        INSERT INTO exam_rooms (school_id, name, capacity) VALUES (${schoolId}, 'Room A', 5) RETURNING id
+        INSERT INTO exam_rooms (school_id, name, row_count, column_count, capacity)
+        VALUES (${schoolId}, 'Room A', 1, 5, 5) RETURNING id
       `;
       const [roomB] = await tx`
-        INSERT INTO exam_rooms (school_id, name, capacity) VALUES (${schoolId}, 'Room B', 4) RETURNING id
+        INSERT INTO exam_rooms (school_id, name, row_count, column_count, capacity)
+        VALUES (${schoolId}, 'Room B', 1, 4, 4) RETURNING id
       `;
 
       const alloc = await generateExamAllocations({
@@ -309,7 +317,8 @@ async function run() {
 
       // Capacity shortfall: a single tiny room cannot hold a full sitting.
       const [tinyRoom] = await tx`
-        INSERT INTO exam_rooms (school_id, name, capacity) VALUES (${schoolId}, 'Tiny', 2) RETURNING id
+        INSERT INTO exam_rooms (school_id, name, row_count, column_count, capacity)
+        VALUES (${schoolId}, 'Tiny', 1, 2, 2) RETURNING id
       `;
       await assert.rejects(
         generateExamAllocations({
@@ -324,7 +333,8 @@ async function run() {
 
       // Tenant isolation: rooms from another school are rejected.
       const [foreignRoom] = await tx`
-        INSERT INTO exam_rooms (school_id, name, capacity) VALUES (${otherSchool.id}, 'Foreign', 50) RETURNING id
+        INSERT INTO exam_rooms (school_id, name, row_count, column_count, capacity)
+        VALUES (${otherSchool.id}, 'Foreign', 5, 10, 50) RETURNING id
       `;
       await assert.rejects(
         generateExamAllocations({

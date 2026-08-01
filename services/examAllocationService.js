@@ -29,22 +29,25 @@ export function sessionKey(time) {
  * Seat students into rooms.
  *  - studentsByClass: Map<classId, [{ enrollment_id, class_id }]> (pre-sorted)
  *  - classOrder: class ids in fill order
- *  - rooms: [{ room_id, capacity }] in fill order
+ *  - rooms: [{ room_id, capacity, rows?, columns?, class_ids? }] in fill order
  *  - strategy:
  *      'sequential' — class after class, room after room
- *      'mixed'      — round-robin across classes so bench neighbours are from
- *                     different classes
+ *      'mixed'      — round-robin across the classes allowed in each room
  *      'balanced'   — every room seats an equal share of each class (a
  *                     30-seat hall with 3 classes gets ~10 from each); when a
  *                     class runs short its seats are topped up from the
  *                     largest remaining class
+ *      'maximize'   — fill restricted rooms first, then choose every seat to
+ *                     minimise same-class neighbours on the left and in front
  * Returns { seats: [{ room_id, enrollment_id, class_id, seat_no }], unseated }.
  * Pure function — unit tested.
  */
 export function seatStudents({ studentsByClass, classOrder, rooms, strategy }) {
-  const queues = classOrder
-    .map((id) => [...(studentsByClass.get(id) || [])])
-    .filter((q) => q.length > 0);
+  const queues = new Map(
+    classOrder
+      .map((id) => [id, [...(studentsByClass.get(id) || [])]])
+      .filter(([, queue]) => queue.length > 0)
+  );
 
   const seats = [];
   const pushRoomSeats = (room, students) => {
@@ -58,54 +61,131 @@ export function seatStudents({ studentsByClass, classOrder, rooms, strategy }) {
     });
   };
 
-  if (strategy === 'balanced') {
-    for (const room of rooms) {
-      const active = queues.filter((q) => q.length > 0);
-      if (active.length === 0) break;
-      const roomStudents = [];
-      // Equal share pass: each class contributes capacity/classes seats.
-      const share = Math.floor(room.capacity / active.length);
-      for (const q of active) {
-        roomStudents.push(...q.splice(0, Math.min(share, q.length)));
-      }
-      // Top-up pass: leftover seats go to the largest remaining class first,
-      // one seat at a time, so the mix stays as even as possible.
-      while (roomStudents.length < room.capacity) {
-        let biggest = null;
-        for (const q of queues) {
-          if (q.length > 0 && (biggest === null || q.length > biggest.length)) biggest = q;
+  const eligibleClassIds = (room) => {
+    const allowed = Array.isArray(room.class_ids) && room.class_ids.length > 0
+      ? new Set(room.class_ids.map(String))
+      : null;
+    return classOrder.filter((id) => queues.get(id)?.length > 0 && (!allowed || allowed.has(id)));
+  };
+
+  const arrangeForSeparation = (students, columns) => {
+    const pools = new Map();
+    for (const student of students) {
+      if (!pools.has(student.class_id)) pools.set(student.class_id, []);
+      pools.get(student.class_id).push(student);
+    }
+    const arranged = [];
+    const width = Math.max(1, Number(columns) || students.length || 1);
+    while (arranged.length < students.length) {
+      const seatIndex = arranged.length;
+      const leftClass = seatIndex % width === 0 ? null : arranged[seatIndex - 1]?.class_id;
+      const frontClass = seatIndex < width ? null : arranged[seatIndex - width]?.class_id;
+      let pickId = null;
+      let pickPenalty = Infinity;
+      let pickRemaining = -1;
+      for (const classId of classOrder) {
+        const pool = pools.get(classId);
+        if (!pool?.length) continue;
+        const penalty = Number(classId === leftClass) + Number(classId === frontClass);
+        if (penalty < pickPenalty || (penalty === pickPenalty && pool.length > pickRemaining)) {
+          pickId = classId;
+          pickPenalty = penalty;
+          pickRemaining = pool.length;
         }
-        if (!biggest) break;
-        roomStudents.push(biggest.shift());
       }
-      pushRoomSeats(room, roomStudents);
+      if (pickId === null) break;
+      arranged.push(pools.get(pickId).shift());
     }
-    return { seats, unseated: queues.reduce((n, q) => n + q.length, 0) };
+    return arranged;
+  };
+
+  // The maximize strategy handles the most restrictive rooms first. This
+  // avoids wasting an all-class room before a room reserved for one class.
+  const roomPlan = rooms.map((room, index) => ({ ...room, originalIndex: index }));
+  if (strategy === 'maximize') {
+    roomPlan.sort((left, right) => {
+      const leftRestriction = left.class_ids?.length || Number.MAX_SAFE_INTEGER;
+      const rightRestriction = right.class_ids?.length || Number.MAX_SAFE_INTEGER;
+      return leftRestriction - rightRestriction || left.originalIndex - right.originalIndex;
+    });
   }
 
-  const ordered = [];
-  if (strategy === 'mixed') {
-    let remaining = queues.reduce((n, q) => n + q.length, 0);
-    let i = 0;
-    while (remaining > 0) {
-      const q = queues[i % queues.length];
-      if (q.length > 0) {
-        ordered.push(q.shift());
-        remaining--;
-      }
-      i++;
-    }
-  } else {
-    for (const q of queues) ordered.push(...q);
-  }
+  let mixedCursor = 0;
+  for (const room of roomPlan) {
+    const capacity = Math.max(0, Math.floor(Number(room.capacity) || 0));
+    const eligible = eligibleClassIds(room);
+    if (capacity === 0 || eligible.length === 0) continue;
+    let roomStudents = [];
 
-  let cursor = 0;
-  for (const room of rooms) {
-    const roomStudents = ordered.slice(cursor, cursor + room.capacity);
-    cursor += roomStudents.length;
+    if (strategy === 'sequential') {
+      for (const classId of eligible) {
+        const queue = queues.get(classId);
+        roomStudents.push(...queue.splice(0, Math.min(capacity - roomStudents.length, queue.length)));
+        if (roomStudents.length >= capacity) break;
+      }
+    } else if (strategy === 'balanced') {
+      const share = Math.floor(capacity / eligible.length);
+      for (const classId of eligible) {
+        const queue = queues.get(classId);
+        roomStudents.push(...queue.splice(0, Math.min(share, queue.length)));
+      }
+      while (roomStudents.length < capacity) {
+        let biggestId = null;
+        for (const classId of eligible) {
+          const queue = queues.get(classId);
+          if (queue?.length > 0 && (biggestId === null || queue.length > queues.get(biggestId).length)) {
+            biggestId = classId;
+          }
+        }
+        if (biggestId === null) break;
+        roomStudents.push(queues.get(biggestId).shift());
+      }
+      roomStudents = arrangeForSeparation(roomStudents, room.columns);
+    } else if (strategy === 'maximize') {
+      const width = Math.max(1, Number(room.columns) || capacity);
+      while (roomStudents.length < capacity) {
+        const active = eligible.filter((id) => queues.get(id)?.length > 0);
+        if (active.length === 0) break;
+        const seatIndex = roomStudents.length;
+        const leftClass = seatIndex % width === 0 ? null : roomStudents[seatIndex - 1]?.class_id;
+        const frontClass = seatIndex < width ? null : roomStudents[seatIndex - width]?.class_id;
+        let pickId = null;
+        let pickPenalty = Infinity;
+        let pickRemaining = -1;
+        for (const classId of active) {
+          const queue = queues.get(classId);
+          const penalty = Number(classId === leftClass) + Number(classId === frontClass);
+          if (penalty < pickPenalty || (penalty === pickPenalty && queue.length > pickRemaining)) {
+            pickId = classId;
+            pickPenalty = penalty;
+            pickRemaining = queue.length;
+          }
+        }
+        roomStudents.push(queues.get(pickId).shift());
+      }
+    } else {
+      // Mixed: deterministic round-robin within the room's allowed classes.
+      let emptyPasses = 0;
+      while (roomStudents.length < capacity && emptyPasses < eligible.length) {
+        const classId = eligible[mixedCursor % eligible.length];
+        mixedCursor++;
+        const queue = queues.get(classId);
+        if (queue?.length) {
+          roomStudents.push(queue.shift());
+          emptyPasses = 0;
+        } else {
+          emptyPasses++;
+        }
+      }
+    }
+
     pushRoomSeats(room, roomStudents);
   }
-  return { seats, unseated: ordered.length - cursor };
+
+  return {
+    seats,
+    unseated: [...queues.values()].reduce((total, queue) => total + queue.length, 0),
+  };
 }
 
 /**
@@ -162,9 +242,26 @@ export async function clearExamSeating(db, schoolId, examId) {
 }
 
 function normalizeAllocationParams(raw = {}) {
+  const rawRoomConfigs = Array.isArray(raw.room_configs) ? raw.room_configs : [];
+  const configByRoom = new Map();
+  for (const config of rawRoomConfigs) {
+    if (!config?.room_id) continue;
+    configByRoom.set(String(config.room_id), {
+      room_id: String(config.room_id),
+      class_ids: Array.isArray(config.class_ids)
+        ? [...new Set(config.class_ids.map(String))]
+        : [],
+    });
+  }
+  const requestedRoomIds = Array.isArray(raw.room_ids) && raw.room_ids.length > 0
+    ? raw.room_ids.map(String)
+    : [...configByRoom.keys()];
   const p = {
-    room_ids: Array.isArray(raw.room_ids) ? [...new Set(raw.room_ids.map(String))] : [],
-    strategy: ['mixed', 'balanced'].includes(raw.strategy) ? raw.strategy : 'sequential',
+    room_ids: [...new Set(requestedRoomIds)],
+    room_configs: [],
+    strategy: ['sequential', 'mixed', 'balanced', 'maximize'].includes(raw.strategy)
+      ? raw.strategy
+      : 'maximize',
     invigilator_staff_ids: Array.isArray(raw.invigilator_staff_ids)
       ? [...new Set(raw.invigilator_staff_ids.map(String))]
       : [],
@@ -172,6 +269,9 @@ function normalizeAllocationParams(raw = {}) {
   if (p.room_ids.length === 0) {
     throw new ExamTimetableError('Select at least one room');
   }
+  p.room_configs = p.room_ids.map((roomId) => (
+    configByRoom.get(roomId) || { room_id: roomId, class_ids: [] }
+  ));
   return p;
 }
 
@@ -220,18 +320,21 @@ export async function generateExamAllocations({ schoolId, examId, params: rawPar
 
   // Rooms, kept in the admin's chosen fill order.
   const roomRows = await db`
-    SELECT id, name, capacity FROM exam_rooms
+    SELECT id, name, row_count, column_count, capacity FROM exam_rooms
     WHERE id = ANY(${params.room_ids}) AND school_id = ${schoolId} AND deleted_at IS NULL
   `;
   if (roomRows.length !== params.room_ids.length) {
     throw new ExamTimetableError('One or more rooms not found for this school');
   }
   const roomById = new Map(roomRows.map((r) => [String(r.id), r]));
+  const roomConfigById = new Map(params.room_configs.map((config) => [config.room_id, config]));
   const rooms = params.room_ids.map((id) => ({
     room_id: id,
     capacity: Number(roomById.get(id).capacity),
+    rows: Number(roomById.get(id).row_count),
+    columns: Number(roomById.get(id).column_count),
+    class_ids: roomConfigById.get(id)?.class_ids || [],
   }));
-  const totalCapacity = rooms.reduce((n, r) => n + r.capacity, 0);
 
   // Invigilator pool (validated against this school when provided).
   let pool = params.invigilator_staff_ids;
@@ -247,6 +350,13 @@ export async function generateExamAllocations({ schoolId, examId, params: rawPar
   // Students of every involved class, enrollment-year scoped, in a stable
   // seating order (class → section → roll number → name).
   const allClassIds = [...new Set(sittings.flatMap((s) => [...s.classIds]))];
+  const scheduledClassIds = new Set(allClassIds);
+  for (const config of params.room_configs) {
+    const invalidClassIds = config.class_ids.filter((id) => !scheduledClassIds.has(id));
+    if (invalidClassIds.length > 0) {
+      throw new ExamTimetableError('A room includes a class that is not scheduled in this exam');
+    }
+  }
   const studentRows = await db`
     SELECT se.id AS enrollment_id, cs.class_id,
            c.sort_order AS class_sort, c.name AS class_name,
@@ -288,15 +398,19 @@ export async function generateExamAllocations({ schoolId, examId, params: rawPar
       strategy: params.strategy,
     });
     if (plan.unseated > 0) {
+      const eligibleCapacity = rooms.reduce((total, room) => {
+        const allowed = room.class_ids.length === 0 || room.class_ids.some((id) => sitting.classIds.has(id));
+        return total + (allowed ? room.capacity : 0);
+      }, 0);
       shortfalls.push(
-        `${sitting.exam_date} ${sitting.session_start.slice(0, 5)}: ${plan.unseated} student(s) do not fit (capacity ${totalCapacity})`
+        `${sitting.exam_date} ${sitting.session_start.slice(0, 5)}: ${plan.unseated} student(s) do not fit (eligible capacity ${eligibleCapacity})`
       );
     }
     seatPlanBySitting.set(`${sitting.exam_date}|${sitting.session_start}`, plan);
   }
   if (shortfalls.length > 0) {
     throw new ExamTimetableError(
-      'Not enough room capacity. Add rooms or increase capacities.',
+      'Not enough eligible room capacity. Add rooms, increase rows/columns, or adjust room class rules.',
       400,
       { shortfalls }
     );

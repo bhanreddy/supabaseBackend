@@ -1508,6 +1508,8 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
       t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
       t.received_by as received_by_id,
       t.student_fee_id,
+      'tuition'::text as transaction_source,
+      TRUE as can_delete,
       deletion_request.id as deletion_approval_id,
       CASE
         WHEN reversal.id IS NOT NULL THEN 'DELETED'
@@ -1614,10 +1616,12 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
   }
 
   const transactions = await sql`
-    SELECT 
+    SELECT
       t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
       t.received_by as received_by_id,
       t.student_fee_id,
+      'tuition'::text as transaction_source,
+      TRUE as can_delete,
       deletion_request.id as deletion_approval_id,
       CASE
         WHEN reversal.id IS NOT NULL THEN 'DELETED'
@@ -1707,6 +1711,94 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     ORDER BY t.paid_at DESC
   `;
 
+  const transportTransactions = await sql`
+    SELECT
+      tfp.id, tfp.amount, tfp.payment_method, tfp.transaction_ref, tfp.paid_at, tfp.remarks,
+      tfp.received_by as received_by_id,
+      NULL::uuid as student_fee_id,
+      'transport'::text as transaction_source,
+      FALSE as can_delete,
+      NULL::uuid as deletion_approval_id,
+      NULL::text as deletion_status,
+      tfp.student_id,
+      s.admission_no, p.display_name as student_name,
+      enroll.class_name, enroll.section_name,
+      father_info.father_name, father_info.father_mobile,
+      r.receipt_no,
+      'Transport Fee'::text as fee_type, NULL::text as fee_type_te,
+      tfp.academic_year,
+      receiver.display_name as received_by,
+      tf.fee_amount + COALESCE(adj.net_amount, 0) as amount_due,
+      COALESCE(paid.total_paid, 0) as total_paid,
+      0::numeric as discount,
+      GREATEST(tf.fee_amount + COALESCE(adj.net_amount, 0) - COALESCE(paid.total_paid, 0), 0) as balance_due,
+      ts.name as stop_name
+    FROM transport_fee_payments tfp
+    JOIN students s ON tfp.student_id = s.id AND s.school_id = ${req.schoolId}
+    JOIN persons p ON s.person_id = p.id
+    LEFT JOIN transport_fee tf ON tf.id = tfp.transport_fee_id AND tf.school_id = ${req.schoolId}
+    LEFT JOIN transport_stops ts ON ts.id = tf.stop_id
+    LEFT JOIN receipts r ON r.transport_payment_id = tfp.id AND r.school_id = ${req.schoolId}
+    LEFT JOIN users u ON tfp.received_by = u.id
+    LEFT JOIN persons receiver ON u.person_id = receiver.id
+    LEFT JOIN LATERAL (
+      SELECT SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END) AS net_amount
+      FROM fee_adjustments fa
+      WHERE fa.school_id = ${req.schoolId}
+        AND fa.student_id = tfp.student_id
+        AND fa.transport_fee_id = tfp.transport_fee_id
+    ) adj ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT SUM(previous.amount) AS total_paid
+      FROM transport_fee_payments previous
+      WHERE previous.school_id = ${req.schoolId}
+        AND previous.student_id = tfp.student_id
+        AND previous.academic_year = tfp.academic_year
+    ) paid ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT c.name as class_name, sec.name as section_name
+      FROM student_enrollments se
+      JOIN class_sections cs ON se.class_section_id = cs.id
+      JOIN classes c ON cs.class_id = c.id
+      JOIN sections sec ON cs.section_id = sec.id
+      WHERE se.student_id = s.id AND se.status = 'active'
+      ORDER BY se.created_at DESC
+      LIMIT 1
+    ) enroll ON true
+    LEFT JOIN LATERAL (
+      SELECT
+        pp.display_name as father_name,
+        (
+          SELECT pc.contact_value
+          FROM person_contacts pc
+          WHERE pc.person_id = pp.id
+            AND pc.school_id = ${req.schoolId}
+            AND pc.contact_type = 'phone'
+            AND pc.deleted_at IS NULL
+          ORDER BY pc.is_primary DESC, pc.created_at
+          LIMIT 1
+        ) as father_mobile
+      FROM student_parents sp
+      JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+      JOIN persons pp ON par.person_id = pp.id
+      LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+      WHERE sp.student_id = s.id
+        AND sp.school_id = ${req.schoolId}
+        AND sp.deleted_at IS NULL
+      ORDER BY
+        CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+        sp.created_at
+      LIMIT 1
+    ) father_info ON true
+    WHERE tfp.school_id = ${req.schoolId}
+      AND tfp.received_by = ${collectorId}
+      AND tfp.paid_at >= CURRENT_DATE
+      AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+    ORDER BY tfp.paid_at DESC
+  `;
+
+  const allTransactions = [...transactions, ...transportTransactions]
+    .sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime());
   const byPaymentMethod = await sql`
     SELECT
       t.payment_method,
@@ -1725,6 +1817,28 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     GROUP BY t.payment_method
   `;
 
+  const transportByPaymentMethod = await sql`
+    SELECT
+      tfp.payment_method,
+      COUNT(*)::int as transaction_count,
+      COALESCE(SUM(tfp.amount), 0) as total_amount
+    FROM transport_fee_payments tfp
+    WHERE tfp.school_id = ${req.schoolId}
+      AND tfp.received_by = ${collectorId}
+      AND tfp.paid_at >= CURRENT_DATE
+      AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+    GROUP BY tfp.payment_method
+  `;
+
+  const paymentMethodMap = new Map();
+  for (const row of [...byPaymentMethod, ...transportByPaymentMethod]) {
+    const key = row.payment_method;
+    const current = paymentMethodMap.get(key) || { payment_method: key, transaction_count: 0, total_amount: 0 };
+    current.transaction_count += Number(row.transaction_count || 0);
+    current.total_amount += Number(row.total_amount || 0);
+    paymentMethodMap.set(key, current);
+  }
+  const combinedByPaymentMethod = Array.from(paymentMethodMap.values());
   const [totals] = await sql`
     SELECT
       COUNT(*)::int as total_transactions,
@@ -1741,15 +1855,26 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       AND t.paid_at < CURRENT_DATE + INTERVAL '1 day'
   `;
 
+  const [transportTotals] = await sql`
+    SELECT
+      COUNT(*)::int as total_transactions,
+      COALESCE(SUM(tfp.amount), 0) as total_collected
+    FROM transport_fee_payments tfp
+    WHERE tfp.school_id = ${req.schoolId}
+      AND tfp.received_by = ${collectorId}
+      AND tfp.paid_at >= CURRENT_DATE
+      AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+  `;
+
   const [todayRow] = await sql`SELECT CURRENT_DATE::text as today`;
 
   return sendSuccess(res, req.schoolId, {
     date: todayRow?.today,
     collector_id: collectorId,
-    transactions,
-    total_transactions: totals?.total_transactions ?? 0,
-    total_collected: totals?.total_collected ?? 0,
-    by_payment_method: byPaymentMethod,
+    transactions: allTransactions,
+    total_transactions: Number(totals?.total_transactions || 0) + Number(transportTotals?.total_transactions || 0),
+    total_collected: Number(totals?.total_collected || 0) + Number(transportTotals?.total_collected || 0),
+    by_payment_method: combinedByPaymentMethod,
   });
 }));
 
@@ -2014,11 +2139,19 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
   // Always calculate these non-toggleable items
   const [totalCollected, defaulterCount, recentTransactions] = await Promise.all([
     sql`
-      SELECT COALESCE(SUM(ft.amount), 0) as total
-      FROM fee_transactions ft
-      WHERE ft.school_id = ${schoolId}
-        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+      SELECT
+        COALESCE((
+          SELECT SUM(ft.amount)
+          FROM fee_transactions ft
+          WHERE ft.school_id = ${schoolId}
+            AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+            AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+        ), 0) +
+        COALESCE((
+          SELECT SUM(tfp.amount)
+          FROM transport_fee_payments tfp
+          WHERE tfp.school_id = ${schoolId}
+        ), 0) AS total
     `,
     sql`
       SELECT COUNT(DISTINCT sf.student_id) as count
@@ -2062,24 +2195,42 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
   // Conditional stats computation
   if (config.total_collection_month) {
     const monthlyStats = await sql`
-      SELECT COALESCE(SUM(ft.amount), 0) as total
-      FROM fee_transactions ft
-      WHERE date_trunc('month', ft.paid_at) = date_trunc('month', CURRENT_DATE)
-        AND ft.school_id = ${schoolId}
-        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+      SELECT
+        COALESCE((
+          SELECT SUM(ft.amount)
+          FROM fee_transactions ft
+          WHERE date_trunc('month', ft.paid_at) = date_trunc('month', CURRENT_DATE)
+            AND ft.school_id = ${schoolId}
+            AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+            AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+        ), 0) +
+        COALESCE((
+          SELECT SUM(tfp.amount)
+          FROM transport_fee_payments tfp
+          WHERE date_trunc('month', tfp.paid_at) = date_trunc('month', CURRENT_DATE)
+            AND tfp.school_id = ${schoolId}
+        ), 0) AS total
     `;
     stats.total_collection_month = Number(monthlyStats[0]?.total || 0);
   }
 
   if (config.todays_collection) {
     const todayStats = await sql`
-      SELECT COALESCE(SUM(ft.amount), 0) as total
-      FROM fee_transactions ft
-      WHERE ft.paid_at::date = CURRENT_DATE
-        AND ft.school_id = ${schoolId}
-        AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+      SELECT
+        COALESCE((
+          SELECT SUM(ft.amount)
+          FROM fee_transactions ft
+          WHERE ft.paid_at::date = CURRENT_DATE
+            AND ft.school_id = ${schoolId}
+            AND (ft.refund_of IS NULL OR ft.transaction_ref NOT LIKE 'VOID-%')
+            AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = ft.school_id AND rev.refund_of = ft.id AND rev.transaction_ref LIKE 'VOID-%')
+        ), 0) +
+        COALESCE((
+          SELECT SUM(tfp.amount)
+          FROM transport_fee_payments tfp
+          WHERE tfp.paid_at::date = CURRENT_DATE
+            AND tfp.school_id = ${schoolId}
+        ), 0) AS total
     `;
     stats.todays_collection = Number(todayStats[0]?.total || 0);
   }
@@ -2241,10 +2392,19 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
  * Apply a direction-aware fee adjustment (waive = credit, add = debit)
  */
 router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
-  const { student_fee_id, amount, reason, adjustment_type } = req.body;
+  const { student_fee_id, transport_fee_id, student_id, amount, reason, adjustment_type } = req.body;
+  const isTransportAdjustment = Boolean(transport_fee_id);
 
-  if (!student_fee_id || amount === undefined || !reason) {
-    return res.status(400).json({ error: 'student_fee_id, amount, and reason are required' });
+  if ((!student_fee_id && !transport_fee_id) || (student_fee_id && transport_fee_id)) {
+    return res.status(400).json({ error: 'Provide exactly one of student_fee_id or transport_fee_id' });
+  }
+
+  if (isTransportAdjustment && !student_id) {
+    return res.status(400).json({ error: 'student_id is required for a transport fee adjustment' });
+  }
+
+  if (amount === undefined || !reason) {
+    return res.status(400).json({ error: 'amount and reason are required' });
   }
 
   if (!['waive', 'add'].includes(adjustment_type)) {
@@ -2269,6 +2429,104 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
   const adminName = adminPerson?.display_name || 'Admin';
 
   const { updatedFee, adjustment } = await sql.begin(async (tx) => {
+    if (isTransportAdjustment) {
+      // Transport fees are stop-derived, so the adjustment is a per-student
+      // ledger entry. Never mutate the stop fee, which would affect every rider.
+      const [fee] = await tx`
+        SELECT
+          tf.id,
+          tf.fee_amount,
+          tf.academic_year,
+          st.student_id,
+          ts.name AS stop_name
+        FROM transport_fee tf
+        JOIN student_transport st
+          ON st.route_id = tf.route_id
+          AND st.stop_id = tf.stop_id
+          AND st.school_id = ${req.schoolId}
+          AND st.student_id = ${student_id}
+          AND st.is_active = TRUE
+        JOIN academic_years ay
+          ON ay.id = st.academic_year_id
+          AND ay.code = tf.academic_year
+          AND ay.school_id = ${req.schoolId}
+        LEFT JOIN transport_stops ts ON ts.id = tf.stop_id
+        WHERE tf.id = ${transport_fee_id}
+          AND tf.school_id = ${req.schoolId}
+          AND tf.is_active = TRUE
+        FOR UPDATE OF tf
+      `;
+
+      if (!fee) {
+        const err = new Error('Transport fee not found for this student');
+        err.status = 404;
+        throw err;
+      }
+
+      const [ledger] = await tx`
+        SELECT
+          COALESCE((
+            SELECT SUM(tfp.amount)
+            FROM transport_fee_payments tfp
+            WHERE tfp.school_id = ${req.schoolId}
+              AND tfp.student_id = ${student_id}
+              AND tfp.academic_year = ${fee.academic_year}
+          ), 0)::numeric AS amount_paid,
+          COALESCE((
+            SELECT SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END)
+            FROM fee_adjustments fa
+            WHERE fa.school_id = ${req.schoolId}
+              AND fa.student_id = ${student_id}
+              AND fa.transport_fee_id = ${transport_fee_id}
+          ), 0)::numeric AS adjustment_total
+      `;
+
+      const amountPaid = Number(ledger?.amount_paid || 0);
+      const currentDue = Number(fee.fee_amount) + Number(ledger?.adjustment_total || 0);
+      const remaining = Math.max(currentDue - amountPaid, 0);
+      if (isWaive && parsedAmount > remaining) {
+        const err = new Error(`Cannot waive more than the outstanding amount (₹${remaining})`);
+        err.status = 422;
+        throw err;
+      }
+
+      const [receiptData] = await tx`
+        SELECT public.get_next_adj_receipt_no(${req.schoolId}) as receipt_no
+      `;
+
+      const [adjustment] = await tx`
+        INSERT INTO fee_adjustments (
+          school_id, student_id, student_fee_id, transport_fee_id, fee_component,
+          amount, reason, receipt_no, adjusted_by, adjusted_by_name, adjustment_type
+        ) VALUES (
+          ${req.schoolId}, ${student_id}, NULL, ${transport_fee_id}, 'Transport Fee',
+          ${parsedAmount}, ${reason}, ${receiptData.receipt_no}, ${req.user.internal_id}, ${adminName}, ${adjustment_type}
+        )
+        RETURNING *
+      `;
+
+      const adjustedDue = Math.max(currentDue + (isWaive ? -parsedAmount : parsedAmount), 0);
+      const balanceDue = Math.max(adjustedDue - amountPaid, 0);
+      const status = balanceDue <= 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'pending';
+
+      return {
+        adjustment,
+        updatedFee: {
+          id: transport_fee_id,
+          transport_fee_id,
+          student_id,
+          fee_type: 'Transport Fee',
+          stop_name: fee.stop_name,
+          academic_year: fee.academic_year,
+          amount_due: adjustedDue,
+          amount_paid: amountPaid,
+          discount: 0,
+          balance_due: balanceDue,
+          status,
+        },
+      };
+    }
+
     // Lock student fee and get student + fee component information
     const [fee] = await tx`
       SELECT sf.id, sf.amount_due, sf.amount_paid, sf.discount, sf.student_id, sf.due_date, ft.name as fee_type
@@ -2303,10 +2561,10 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
     // Log the adjustment
     const [adjustment] = await tx`
       INSERT INTO fee_adjustments (
-        school_id, student_id, student_fee_id, fee_component,
+        school_id, student_id, student_fee_id, transport_fee_id, fee_component,
         amount, reason, receipt_no, adjusted_by, adjusted_by_name, adjustment_type
       ) VALUES (
-        ${req.schoolId}, ${fee.student_id}, ${student_fee_id}, ${fee.fee_type},
+        ${req.schoolId}, ${fee.student_id}, ${student_fee_id}, NULL, ${fee.fee_type},
         ${parsedAmount}, ${reason}, ${receiptNo}, ${req.user.internal_id}, ${adminName}, ${adjustment_type}
       )
       RETURNING *

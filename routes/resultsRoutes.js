@@ -244,25 +244,40 @@ router.put('/exams/:id', requirePermission('exams.manage'), asyncHandler(async (
 
 /**
  * DELETE /results/exams/:id
- * Delete an exam (only if no marks recorded)
+ * Delete an exam. By default this is blocked when marks exist. The explicit
+ * force=true path is reserved for the admin UI's fully destructive reset.
  */
 router.delete('/exams/:id', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
+  const force = String(req.query.force || '').toLowerCase() === 'true';
 
-  // 1. Check for recorded marks
-  const [hasMarks] = await sql`
-        SELECT 1 FROM marks m
-        JOIN exam_subjects es ON m.exam_subject_id = es.id
-        WHERE es.exam_id = ${id} LIMIT 1
-    `;
-  if (hasMarks) {
-    return res.status(400).json({ error: 'Cannot delete exam: Student marks have already been recorded' });
+  const [exam] = await sql`
+    SELECT id
+    FROM exams
+    WHERE id = ${id} AND school_id = ${req.schoolId}
+  `;
+  if (!exam) {
+    return res.status(404).json({ error: 'Exam not found' });
   }
 
-  // 2. Clear exam subjects (Cascade handles this usually, but let's be explicit if needed, 
-  // though schema has ON DELETE CASCADE on exam_id in exam_subjects)
+  if (!force) {
+    const [hasMarks] = await sql`
+      SELECT 1
+      FROM marks m
+      JOIN exam_subjects es ON m.exam_subject_id = es.id
+      WHERE es.exam_id = ${id}
+        AND es.school_id = ${req.schoolId}
+        AND m.school_id = ${req.schoolId}
+      LIMIT 1
+    `;
+    if (hasMarks) {
+      return res.status(400).json({ error: 'Cannot delete exam: Student marks have already been recorded' });
+    }
+  }
 
-  await sql`DELETE FROM exams WHERE id = ${id} AND school_id = ${req.schoolId} AND school_id = ${req.schoolId}`;
+  // exam_subjects, marks, room allocations and seat assignments are all
+  // protected by ON DELETE CASCADE. One scoped delete is therefore atomic.
+  await sql`DELETE FROM exams WHERE id = ${id} AND school_id = ${req.schoolId}`;
   return sendSuccess(res, req.schoolId, { message: 'Exam deleted successfully' });
 }));
 
@@ -1315,10 +1330,23 @@ router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHand
       p.display_name,
       p.photo_url,
       st.admission_no,
-      se.roll_number
+      se.roll_number,
+      father_info.father_name
     FROM student_enrollments se
     JOIN students st ON se.student_id = st.id
     JOIN persons p ON st.person_id = p.id
+    LEFT JOIN LATERAL (
+      SELECT pp.display_name AS father_name
+      FROM student_parents sp
+      JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+      JOIN persons pp ON par.person_id = pp.id
+      JOIN relationship_types rt ON sp.relationship_id = rt.id AND rt.name = 'Father'
+      WHERE sp.student_id = st.id
+        AND sp.school_id = ${req.schoolId}
+        AND sp.deleted_at IS NULL
+      ORDER BY sp.is_primary_contact DESC NULLS LAST, sp.created_at
+      LIMIT 1
+    ) father_info ON true
     WHERE se.school_id = ${req.schoolId}
       AND se.class_section_id = ${classSection.id}
       AND se.academic_year_id = ${exam.academic_year_id}
@@ -1751,7 +1779,7 @@ router.get('/exam-timetable/teacher', requireAuth, asyncHandler(async (req, res)
  */
 router.get('/exam-rooms', requirePermission('exams.view'), asyncHandler(async (req, res) => {
   const rooms = await sql`
-    SELECT id, name, capacity, sort_order
+    SELECT id, name, row_count AS rows, column_count AS columns, capacity, sort_order
     FROM exam_rooms
     WHERE school_id = ${req.schoolId} AND deleted_at IS NULL
     ORDER BY sort_order, name
@@ -1760,19 +1788,27 @@ router.get('/exam-rooms', requirePermission('exams.view'), asyncHandler(async (r
 }));
 
 /**
- * POST /results/exam-rooms  { name, capacity }
+ * POST /results/exam-rooms  { name, rows, columns }
  */
 router.post('/exam-rooms', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const name = String(req.body?.name || '').trim();
-  const capacity = Number(req.body?.capacity);
+  const legacyCapacity = req.body?.capacity !== undefined ? Number(req.body.capacity) : null;
+  const rows = Number(req.body?.rows ?? (legacyCapacity ? 1 : NaN));
+  const columns = Number(req.body?.columns ?? legacyCapacity);
   if (!name) return res.status(400).json({ error: 'Room name is required' });
-  if (!(capacity > 0)) return res.status(400).json({ error: 'Capacity must be a positive number' });
+  if (!Number.isInteger(rows) || rows < 1 || rows > 100) {
+    return res.status(400).json({ error: 'Rows must be a whole number between 1 and 100' });
+  }
+  if (!Number.isInteger(columns) || columns < 1 || columns > 100) {
+    return res.status(400).json({ error: 'Columns must be a whole number between 1 and 100' });
+  }
+  const capacity = rows * columns;
 
   try {
     const [room] = await sql`
-      INSERT INTO exam_rooms (school_id, name, capacity)
-      VALUES (${req.schoolId}, ${name}, ${Math.floor(capacity)})
-      RETURNING id, name, capacity, sort_order
+      INSERT INTO exam_rooms (school_id, name, row_count, column_count, capacity)
+      VALUES (${req.schoolId}, ${name}, ${rows}, ${columns}, ${capacity})
+      RETURNING id, name, row_count AS rows, column_count AS columns, capacity, sort_order
     `;
     return sendSuccess(res, req.schoolId, { message: 'Room added', room }, 201);
   } catch (err) {
@@ -1784,24 +1820,33 @@ router.post('/exam-rooms', requirePermission('exams.manage'), asyncHandler(async
 }));
 
 /**
- * PATCH /results/exam-rooms/:id  { name?, capacity? }
+ * PATCH /results/exam-rooms/:id  { name?, rows?, columns? }
  */
 router.patch('/exam-rooms/:id', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const name = req.body?.name !== undefined ? String(req.body.name).trim() : null;
-  const capacity = req.body?.capacity !== undefined ? Number(req.body.capacity) : null;
+  const legacyCapacity = req.body?.capacity !== undefined ? Number(req.body.capacity) : null;
+  const rows = req.body?.rows !== undefined ? Number(req.body.rows) : legacyCapacity !== null ? 1 : null;
+  const columns = req.body?.columns !== undefined
+    ? Number(req.body.columns)
+    : legacyCapacity;
   if (name !== null && !name) return res.status(400).json({ error: 'Room name cannot be empty' });
-  if (capacity !== null && !(capacity > 0)) {
-    return res.status(400).json({ error: 'Capacity must be a positive number' });
+  if (rows !== null && (!Number.isInteger(rows) || rows < 1 || rows > 100)) {
+    return res.status(400).json({ error: 'Rows must be a whole number between 1 and 100' });
+  }
+  if (columns !== null && (!Number.isInteger(columns) || columns < 1 || columns > 100)) {
+    return res.status(400).json({ error: 'Columns must be a whole number between 1 and 100' });
   }
 
   try {
     const [room] = await sql`
       UPDATE exam_rooms
       SET name = COALESCE(${name}, name),
-          capacity = COALESCE(${capacity !== null ? Math.floor(capacity) : null}, capacity)
+          row_count = COALESCE(${rows}, row_count),
+          column_count = COALESCE(${columns}, column_count),
+          capacity = COALESCE(${rows}, row_count) * COALESCE(${columns}, column_count)
       WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
-      RETURNING id, name, capacity, sort_order
+      RETURNING id, name, row_count AS rows, column_count AS columns, capacity, sort_order
     `;
     if (!room) return res.status(404).json({ error: 'Room not found' });
     return sendSuccess(res, req.schoolId, { message: 'Room updated', room });
@@ -1839,7 +1884,12 @@ router.delete('/exam-rooms/:id', requirePermission('exams.manage'), asyncHandler
 
 /**
  * POST /results/exams/:id/allocations/generate
- * Body: { room_ids (fill order), strategy: 'sequential'|'mixed', invigilator_staff_ids }
+ * Body: {
+ *   room_ids (fill order),
+ *   room_configs: [{ room_id, class_ids }],
+ *   strategy: 'maximize'|'mixed'|'balanced'|'sequential',
+ *   invigilator_staff_ids
+ * }
  */
 router.post('/exams/:id/allocations/generate', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   try {
@@ -1872,7 +1922,7 @@ router.get('/exams/:id/allocations', requirePermission('exams.view'), asyncHandl
   const allocations = await sql`
     SELECT
       era.id, era.exam_date::text AS exam_date, era.session_start::text AS session_start,
-      era.room_id, r.name AS room_name, r.capacity,
+      era.room_id, r.name AS room_name, r.row_count AS rows, r.column_count AS columns, r.capacity,
       era.invigilator_staff_id, p.display_name AS invigilator_name,
       (SELECT COUNT(*)::int FROM exam_seat_assignments esa
         WHERE esa.room_allocation_id = era.id AND esa.deleted_at IS NULL) AS seats_count,

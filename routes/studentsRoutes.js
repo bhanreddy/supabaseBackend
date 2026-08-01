@@ -1,7 +1,10 @@
 import express from 'express';
 import sql, { supabaseAdmin } from '../db.js';
-import { requirePermission, requireAuth } from '../middleware/auth.js';
+import { requirePermission, requireAuth, requireAnyPermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
+import { singleAvatarUpload, handleAvatarMulterError } from '../middleware/avatarUpload.js';
+import { normalizeAvatar } from '../utils/avatarImage.js';
+import { uploadAvatar, removeAvatar } from '../utils/avatarStorage.js';
 import {
   assertSchoolEmailAvailable,
   createSchoolScopedAuthUser,
@@ -573,7 +576,7 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
         to_char(s.admission_date, 'YYYY-MM-DD') as admission_date,
         p.first_name, p.middle_name, p.last_name, p.display_name,
         to_char(p.dob, 'YYYY-MM-DD') as dob,
-        p.gender_id,
+        p.gender_id, p.photo_url,
         st.code as status,
         -- Fetch Primary Email
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
@@ -824,6 +827,103 @@ router.post('/recalculate-rolls', requirePermission('students.create'), async (r
     res.status(500).json({ error: 'Failed to recalculate rolls' });
   }
 });
+
+/**
+ * POST /students/:id/photo
+ * Upload or replace a student's profile picture from the admin/accounts
+ * student form. The student lookup is tenant-scoped before any storage write.
+ */
+router.post(
+  '/:id/photo',
+  requireAnyPermission(['students.create', 'students.edit']),
+  singleAvatarUpload,
+  handleAvatarMulterError,
+  async (req, res) => {
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'No image provided. Attach an image under the "photo" field.' });
+    }
+
+    try {
+      const [student] = await sql`
+        SELECT person_id
+        FROM students
+        WHERE id = ${req.params.id}
+          AND school_id = ${req.schoolId}
+          AND deleted_at IS NULL
+      `;
+      if (!student) {
+        return res.status(404).json({ error: 'Student not found' });
+      }
+
+      const { buffer } = await normalizeAvatar(req.file.buffer);
+      const photoUrl = await uploadAvatar(req.schoolId, student.person_id, buffer);
+      const [updated] = await sql`
+        UPDATE persons
+        SET photo_url = ${photoUrl}, updated_at = now()
+        WHERE id = ${student.person_id}
+          AND school_id = ${req.schoolId}
+        RETURNING photo_url
+      `;
+      if (!updated) {
+        return res.status(404).json({ error: 'Student profile not found' });
+      }
+
+      return sendSuccess(res, req.schoolId, {
+        message: 'Student profile picture updated',
+        photo_url: updated.photo_url,
+      });
+    } catch (error) {
+      if (/not a valid image/i.test(error?.message || '')) {
+        return res.status(400).json({ error: 'The uploaded file is not a valid image.' });
+      }
+      console.error('[POST /students/:id/photo] Error:', error?.message || error);
+      return res.status(500).json({ error: 'Failed to update student profile picture' });
+    }
+  },
+);
+
+/**
+ * DELETE /students/:id/photo
+ * Remove a student's profile picture while preserving the student record.
+ */
+router.delete(
+  '/:id/photo',
+  requireAnyPermission(['students.create', 'students.edit']),
+  async (req, res) => {
+    try {
+      const [student] = await sql`
+        SELECT person_id
+        FROM students
+        WHERE id = ${req.params.id}
+          AND school_id = ${req.schoolId}
+          AND deleted_at IS NULL
+      `;
+      if (!student) {
+        return res.status(404).json({ error: 'Student not found' });
+      }
+
+      const [updated] = await sql`
+        UPDATE persons
+        SET photo_url = NULL, updated_at = now()
+        WHERE id = ${student.person_id}
+          AND school_id = ${req.schoolId}
+        RETURNING id
+      `;
+      if (!updated) {
+        return res.status(404).json({ error: 'Student profile not found' });
+      }
+
+      await removeAvatar(req.schoolId, student.person_id).catch(() => {});
+      return sendSuccess(res, req.schoolId, {
+        message: 'Student profile picture removed',
+        photo_url: null,
+      });
+    } catch (error) {
+      console.error('[DELETE /students/:id/photo] Error:', error?.message || error);
+      return res.status(500).json({ error: 'Failed to remove student profile picture' });
+    }
+  },
+);
 
 // Update student
 router.put('/:id', requirePermission('students.edit'), async (req, res) => {

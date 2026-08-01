@@ -36,6 +36,29 @@ eq(
   ['2026-07-20', '2026-07-22', '2026-07-24', '2026-07-27', '2026-07-29', '2026-07-31'],
   'gap_days=1 keeps every second working day'
 );
+eq(
+  buildExamDates({
+    startDate: '2026-07-20',
+    endDate: '2026-07-31',
+    allowedWeekdays: ['monday', 'wednesday', 'friday'],
+    excludedDates: [],
+    gapDays: 0,
+  }),
+  ['2026-07-20', '2026-07-22', '2026-07-24', '2026-07-27', '2026-07-29', '2026-07-31'],
+  'custom weekdays schedule only on selected days'
+);
+eq(
+  buildExamDates({
+    startDate: '2026-07-20',
+    endDate: '2026-07-31',
+    allowedWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
+    excludedDates: [],
+    gapDays: 0,
+    maxConsecutiveDays: 3,
+  }),
+  ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-24', '2026-07-25', '2026-07-27', '2026-07-29', '2026-07-30', '2026-07-31'],
+  'maximum consecutive days inserts a rest day after each full streak'
+);
 
 // ── assignSubjects ──────────────────────────────────────────────────────
 const classSubjects = new Map([
@@ -80,12 +103,57 @@ eq(sciSlot.session_index, 1, 'sessions: subject 2 in session 2');
 eq(engSlot.exam_date, '2026-07-21', 'sessions: subject 3 rolls to day 2');
 eq(engSlot.session_index, 0, 'sessions: subject 3 back in session 1');
 
+const afternoonStart = assignSubjects({
+  classSubjects,
+  subjectOrder,
+  dates,
+  mode: 'aligned',
+  sessionsPerDay: 2,
+  startingSessionIndex: 1,
+});
+eq(afternoonStart.required, 2, 'afternoon start accounts for the unused first morning');
+const afternoonMath = afternoonStart.assignments.find((a) => a.class_id === 'c1' && a.subject_id === 'math');
+const afternoonSci = afternoonStart.assignments.find((a) => a.class_id === 'c1' && a.subject_id === 'sci');
+const afternoonEng = afternoonStart.assignments.find((a) => a.class_id === 'c1' && a.subject_id === 'eng');
+eq(afternoonMath.exam_date, '2026-07-20', 'afternoon start: first subject stays on day 1');
+eq(afternoonMath.session_index, 1, 'afternoon start: first subject uses session 2');
+eq(afternoonSci.exam_date, '2026-07-21', 'afternoon start: second subject rolls to day 2');
+eq(afternoonSci.session_index, 0, 'afternoon start: day 2 begins with session 1');
+eq(afternoonEng.exam_date, '2026-07-21', 'afternoon start: day 2 uses both sessions');
+eq(afternoonEng.session_index, 1, 'afternoon start: third subject uses session 2');
+eq(
+  assignSubjects({
+    classSubjects,
+    subjectOrder: ['math', 'sci'],
+    dates,
+    mode: 'aligned',
+    sessionsPerDay: 2,
+    startingSessionIndex: 1,
+  }).required,
+  2,
+  'afternoon start: two subjects require two dates because day 1 has only one usable session'
+);
+
 const perClassSessions = assignSubjects({ classSubjects, subjectOrder, dates, mode: 'per_class', sessionsPerDay: 2 });
 eq(perClassSessions.required, 2, 'per_class with sessions: ceil(3/2) days');
 eq(
   perClassSessions.assignments.find((a) => a.class_id === 'c2' && a.subject_id === 'eng').session_index,
   1,
   'per_class: c2 second subject sits in session 2 of day 1'
+);
+const perClassAfternoon = assignSubjects({
+  classSubjects,
+  subjectOrder,
+  dates,
+  mode: 'per_class',
+  sessionsPerDay: 2,
+  startingSessionIndex: 1,
+});
+eq(perClassAfternoon.required, 2, 'per_class afternoon start includes the partial first date');
+eq(
+  perClassAfternoon.assignments.find((a) => a.class_id === 'c2' && a.subject_id === 'eng').session_index,
+  0,
+  'per_class afternoon start: second subject moves to session 1 on day 2'
 );
 
 // ── normalizeParams validation ──────────────────────────────────────────
@@ -99,6 +167,29 @@ assert.throws(() => normalizeParams({ ...base, start_time: '10:00', end_time: '0
 assert.throws(() => normalizeParams({ ...base, max_marks: 50, passing_marks: 60 }), ExamTimetableError); assertions++;
 assert.throws(() => normalizeParams({ ...base, end_date: '2026-12-31' }), ExamTimetableError); assertions++;
 ok(normalizeParams({ ...base, start_time: '09:30', end_time: '12:30' }).start_time === '09:30', 'valid times pass');
+eq(
+  normalizeParams({ ...base, allowed_weekdays: ['monday', 'wednesday'] }).allowed_weekdays,
+  ['monday', 'wednesday'],
+  'custom weekdays are normalized'
+);
+assert.throws(
+  () => normalizeParams({ ...base, allowed_weekdays: [] }),
+  ExamTimetableError,
+  'at least one weekday is required'
+); assertions++;
+assert.throws(
+  () => normalizeParams({ ...base, excluded_dates: ['2026-08-01'] }),
+  ExamTimetableError,
+  'blackout dates must stay inside the exam window'
+); assertions++;
+eq(
+  normalizeParams({
+    ...base,
+    subject_marks: [{ subject_id: 'math', max_marks: '50', passing_marks: '18' }],
+  }).subject_marks,
+  [{ subject_id: 'math', max_marks: 50, passing_marks: 18 }],
+  'subject mark overrides are normalized'
+);
 
 // sessions normalization
 const legacy = normalizeParams({ ...base, start_time: '09:30', end_time: '12:30' });
@@ -107,6 +198,7 @@ eq(legacy.sessions[0].start_time, '09:30', 'legacy session carries the time');
 
 const multi = normalizeParams({
   ...base,
+  starting_session_index: 0,
   sessions: [
     { start_time: '14:00', end_time: '16:00' },
     { start_time: '09:30', end_time: '12:00' },
@@ -114,6 +206,16 @@ const multi = normalizeParams({
 });
 eq(multi.sessions[0].start_time, '09:30', 'sessions sorted by start time');
 eq(multi.start_time, '09:30', 'legacy fields mirror session 1');
+eq(multi.starting_session_index, 1, 'starting session follows its selected time when sessions sort');
+assert.throws(
+  () => normalizeParams({
+    ...base,
+    starting_session_index: 2,
+    sessions: [{ start_time: '09:00', end_time: '12:00' }, { start_time: '13:00', end_time: '16:00' }],
+  }),
+  ExamTimetableError,
+  'starting session must exist'
+); assertions++;
 assert.throws(
   () => normalizeParams({ ...base, sessions: [{ start_time: '09:00', end_time: '12:00' }, { start_time: '11:00', end_time: '13:00' }] }),
   ExamTimetableError,
@@ -264,6 +366,55 @@ eq(unevenCounts.get('b'), 4, 'balanced top-up: short class fully seated');
 eq(uneven.unseated, 2, 'balanced top-up: overflow reported');
 const seatNos = uneven.seats.map((s) => s.seat_no);
 eq(Math.max(...seatNos), 12, 'balanced: seat numbers run 1..capacity within the room');
+
+// ── seating: maximize (room constraints + 2D neighbour separation) ─────
+const checkerboard = seatStudents({
+  studentsByClass: new Map([
+    ['c1', mkStudents('c1', 3)],
+    ['c2', mkStudents('c2', 3)],
+  ]),
+  classOrder: ['c1', 'c2'],
+  rooms: [{ room_id: 'grid', rows: 2, columns: 3, capacity: 6, class_ids: ['c1', 'c2'] }],
+  strategy: 'maximize',
+});
+eq(checkerboard.unseated, 0, 'maximize: everyone fits in the configured grid');
+for (let index = 0; index < checkerboard.seats.length; index++) {
+  const current = checkerboard.seats[index];
+  if (index % 3 !== 0) {
+    ok(
+      current.class_id !== checkerboard.seats[index - 1].class_id,
+      `maximize: seat ${index + 1} differs from its left neighbour`
+    );
+  }
+  if (index >= 3) {
+    ok(
+      current.class_id !== checkerboard.seats[index - 3].class_id,
+      `maximize: seat ${index + 1} differs from its front neighbour`
+    );
+  }
+}
+
+const constrainedRooms = seatStudents({
+  studentsByClass: new Map([
+    ['c1', mkStudents('c1', 3)],
+    ['c2', mkStudents('c2', 3)],
+  ]),
+  classOrder: ['c1', 'c2'],
+  rooms: [
+    { room_id: 'all', rows: 1, columns: 3, capacity: 3, class_ids: ['c1', 'c2'] },
+    { room_id: 'c1-only', rows: 1, columns: 3, capacity: 3, class_ids: ['c1'] },
+  ],
+  strategy: 'maximize',
+});
+eq(constrainedRooms.unseated, 0, 'maximize: restrictive rooms are planned first so no valid seat is wasted');
+ok(
+  constrainedRooms.seats.filter((seat) => seat.room_id === 'c1-only').every((seat) => seat.class_id === 'c1'),
+  'maximize: per-room class restriction is enforced'
+);
+ok(
+  constrainedRooms.seats.filter((seat) => seat.room_id === 'all').every((seat) => seat.class_id === 'c2'),
+  'maximize: unrestricted room receives the remaining class'
+);
 
 // ── seating: assignInvigilators ─────────────────────────────────────────
 const invig = assignInvigilators({
