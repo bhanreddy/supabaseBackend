@@ -65,7 +65,7 @@ router.get(
 );
 
 // ── POST /broadcast ─────────────────────────────────────────────────────────────
-// Class-targeted dispatch is synchronous; all-school dispatch is async (poll status).
+// Broadcasts are asynchronous; the client polls the batch status for progress.
 router.post(
   '/broadcast',
   requireAuth,

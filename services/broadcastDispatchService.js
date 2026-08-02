@@ -2,6 +2,11 @@ import sql from '../db.js';
 import { sendNotificationToUsersWithReport } from './notificationService.js';
 
 const DISPATCH_CHUNK_SIZE = 50;
+// Fee reminders render a different amount for every recipient, so each recipient
+// needs an individual FCM send. Never launch a whole 50-recipient database/FCM
+// fan-out at once: it can exhaust the 10-connection database pool and progress
+// remains at zero until the slowest promise settles.
+const FEE_REMINDER_CHUNK_SIZE = 5;
 const TARGET_COUNT_CONCURRENCY = 4;
 const DB_WRITE_RETRIES = 3;
 
@@ -335,7 +340,19 @@ async function updateBatchProgress(batchId, schoolId, summary, status = 'process
   `, 'batch progress update');
 }
 
-async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, batchId) {
+export async function dispatchFeeReminder(
+  schoolId,
+  recipients,
+  channelType,
+  adminId,
+  batchId,
+  {
+    sendNotification = sendNotificationToUsersWithReport,
+    persistRows = persistRecipientRows,
+    writeProgress = updateBatchProgress,
+    chunkSize = FEE_REMINDER_CHUNK_SIZE,
+  } = {}
+) {
   const summary = {
     sentCount: 0,
     failureCount: 0,
@@ -343,8 +360,8 @@ async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, b
     tokensTargeted: 0,
   };
 
-  for (let i = 0; i < recipients.length; i += DISPATCH_CHUNK_SIZE) {
-    const chunk = recipients.slice(i, i + DISPATCH_CHUNK_SIZE);
+  for (let i = 0; i < recipients.length; i += chunkSize) {
+    const chunk = recipients.slice(i, i + chunkSize);
     const chunkReports = await Promise.allSettled(
       chunk.map(async (recipient) => {
         const amt = parseFloat(recipient.balance || 0).toLocaleString('en-IN', {
@@ -352,7 +369,7 @@ async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, b
           maximumFractionDigits: 2,
         });
         const msg = `Gentle reminder: Your child has pending fees of ₹${amt} due for this active term.`;
-        const report = await sendNotificationToUsersWithReport(
+        const report = await sendNotification(
           [recipient.id],
           channelType,
           { message: msg },
@@ -383,8 +400,8 @@ async function dispatchFeeReminder(schoolId, recipients, channelType, adminId, b
       chunkRows.push(...report.recipientRows);
     }
 
-    await persistRecipientRows(schoolId, batchId, chunkRows);
-    await updateBatchProgress(batchId, schoolId, summary);
+    await persistRows(schoolId, batchId, chunkRows);
+    await writeProgress(batchId, schoolId, summary);
   }
 
   return { summary };
@@ -609,7 +626,7 @@ export async function getBroadcastStatus(batchId, schoolId) {
       AND school_id = ${schoolId}
       AND type = 'BROADCAST'
       AND status = 'processing'
-      AND updated_at < now() - interval '10 minutes'
+      AND updated_at < now() - interval '3 minutes'
   `;
 
   const [batch] = await sql`
@@ -763,10 +780,21 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
     RETURNING id
   `;
 
-  const result = await runDispatch(retryBatch.id, schoolId, adminId, channelType, recipients);
+  setImmediate(() => {
+    runDispatch(retryBatch.id, schoolId, adminId, channelType, recipients).catch(() => {});
+  });
+
   return {
-    ...result,
+    batch_id: retryBatch.id,
+    status: 'processing',
+    total_targets: recipients.length,
+    sent_count: 0,
+    failure_count: 0,
+    no_token_count: 0,
+    tokens_targeted: 0,
+    remaining_count: recipients.length,
     parent_batch_id: batchId,
-    mode: 'sync',
+    mode: 'async',
+    message: 'Retry broadcast started. Poll GET /broadcast/:batchId for progress.',
   };
 }

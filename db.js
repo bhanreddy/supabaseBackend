@@ -22,12 +22,12 @@ const sql = postgres(config.databaseUrl, {
     // Required alongside `prepare: false` for PgBouncer/Supavisor transaction pooling.
     // postgres.js pipelines queued queries onto an already-busy connection by default
     // (max_pipeline: 100). A transaction-mode pooler can reassign the backend
-    // connection between pipelined queries, so the response to anything queued behind
-    // the first query on that socket is lost and its promise hangs forever — this is
-    // exactly what caused broadcast sends (e.g. Fee Reminders) to freeze at "0 reached"
-    // once more than `max` concurrent queries were in flight. See
-    // https://github.com/porsager/postgres/issues/970
-    max_pipeline: 0
+    // connection between pipelined queries, so keep exactly one in-flight query per
+    // connection. `0` is not a valid way to disable pipelining: it prevents the
+    // connection from being returned to the dispatch pool after a query and can make
+    // a later BEGIN run as an unreserved transaction, poisoning unrelated requests.
+    // See https://github.com/porsager/postgres/issues/970
+    max_pipeline: 1
 });
 
 // 2. Supabase Clients
