@@ -8,6 +8,10 @@ import { sendSuccess } from '../utils/apiResponse.js';
 import { ACCOUNTS_STAT_KEYS, resolveAccountsDashboardConfig } from '../utils/constants.js';
 import { activeStructureFilter, getSchoolFeeMode } from '../services/feeModeService.js';
 import { getTranslationStats, probeTranslation } from '../services/geminiTranslator.js';
+import {
+    buildCollectionReceiptsWorkbook,
+    normalizeCollectionReceiptColumns,
+} from '../utils/collectionReceiptsWorkbook.js';
 
 const router = express.Router();
 
@@ -210,112 +214,6 @@ function isValidYmd(value) {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
     const time = new Date(`${value}T00:00:00`).getTime();
     return !Number.isNaN(time);
-}
-
-function formatPaidDate(value) {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-
-function formatPaidTime(value) {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
-}
-
-function buildCollectionReceiptsWorkbook({ schoolName, fromDate, toDate, rows }) {
-    const generatedAt = new Date().toLocaleString('en-IN');
-    const grandTotal = rows.reduce((sum, row) => sum + money(row.amount), 0);
-    const byMode = {};
-    for (const row of rows) {
-        const mode = String(row.payment_method || 'CASH').toUpperCase();
-        if (!byMode[mode]) byMode[mode] = { count: 0, total: 0 };
-        byMode[mode].count += 1;
-        byMode[mode].total += money(row.amount);
-    }
-
-    const headerRowIndex = 6;
-    const sheetRows = [
-        [`${schoolName || 'School'} — Fee Collection Receipts`],
-        ['From', fromDate, 'To', toDate],
-        ['Generated', generatedAt],
-        [],
-        ['Receipts', rows.length, 'Grand Total', grandTotal],
-        [],
-        [
-            'S.No.', 'Date', 'Time', 'Receipt No.', 'Student Name', 'Admission No.',
-            'Father Name', 'Class', 'Section', 'Fee Type', 'Payment Mode', 'Amount', 'Received By',
-        ],
-        ...rows.map((row, index) => [
-            index + 1,
-            formatPaidDate(row.paid_at),
-            formatPaidTime(row.paid_at),
-            row.receipt_no || '',
-            row.student_name || '',
-            row.admission_no || '',
-            row.father_name || '',
-            row.class_name || '',
-            row.section_name || '',
-            row.fee_type || '',
-            String(row.payment_method || 'CASH').toUpperCase(),
-            money(row.amount),
-            row.received_by || '',
-        ]),
-        [],
-        ['TOTAL', '', '', '', '', '', '', '', '', '', '', grandTotal, ''],
-        [],
-        ['Payment mode', 'Count', 'Amount'],
-        ...Object.entries(byMode)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([mode, bucket]) => [mode, bucket.count, bucket.total]),
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
-    worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 12 } }];
-    worksheet['!cols'] = [
-        { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 28 }, { wch: 16 },
-        { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 14 }, { wch: 20 },
-    ];
-    const lastDataRow = headerRowIndex + rows.length;
-    worksheet['!autofilter'] = { ref: `A${headerRowIndex + 1}:M${Math.max(headerRowIndex + 1, lastDataRow + 1)}` };
-    worksheet['!freeze'] = { xSplit: 0, ySplit: headerRowIndex + 1 };
-
-    const headerStyle = {
-        fill: { fgColor: { rgb: '5B21B6' } },
-        font: { bold: true, color: { rgb: 'FFFFFF' } },
-        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-    };
-    for (let col = 0; col < 13; col += 1) {
-        const cell = XLSX.utils.encode_cell({ r: headerRowIndex, c: col });
-        if (worksheet[cell]) worksheet[cell].s = headerStyle;
-    }
-
-    const currencyFormat = '₹#,##0.00';
-    if (worksheet.D5) worksheet.D5.z = currencyFormat;
-    for (let row = headerRowIndex + 1; row <= lastDataRow; row += 1) {
-        const cell = XLSX.utils.encode_cell({ r: row, c: 11 });
-        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
-    }
-    const totalRow = lastDataRow + 2;
-    for (let col = 0; col < 13; col += 1) {
-        const cell = XLSX.utils.encode_cell({ r: totalRow, c: col });
-        if (worksheet[cell]) worksheet[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: 'FEF3C7' } } };
-    }
-    const totalCell = XLSX.utils.encode_cell({ r: totalRow, c: 11 });
-    if (worksheet[totalCell]) worksheet[totalCell].z = currencyFormat;
-
-    const modeStart = totalRow + 3;
-    for (let i = 0; i < Object.keys(byMode).length; i += 1) {
-        const cell = XLSX.utils.encode_cell({ r: modeStart + i, c: 2 });
-        if (worksheet[cell]) worksheet[cell].z = currencyFormat;
-    }
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Collection Receipts');
-    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
 }
 
 /**
@@ -1430,6 +1328,7 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
     const schoolId = req.schoolId;
     const fromDate = String(req.query.from_date || '').trim();
     const toDate = String(req.query.to_date || '').trim();
+    const columns = normalizeCollectionReceiptColumns(req.query.columns);
 
     if (!isValidYmd(fromDate) || !isValidYmd(toDate)) {
         return res.status(400).json({ error: 'from_date and to_date are required in YYYY-MM-DD format.' });
@@ -1444,6 +1343,8 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
                 t.id,
                 t.amount,
                 t.payment_method,
+                t.transaction_ref,
+                t.remarks,
                 t.paid_at,
                 s.admission_no,
                 p.display_name AS student_name,
@@ -1503,6 +1404,8 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
                 tfp.id,
                 tfp.amount,
                 tfp.payment_method,
+                tfp.transaction_ref,
+                tfp.remarks,
                 tfp.paid_at,
                 s.admission_no,
                 p.display_name AS student_name,
@@ -1560,6 +1463,7 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
         fromDate,
         toDate,
         rows,
+        columns,
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader(
