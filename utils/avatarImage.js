@@ -22,13 +22,15 @@ import sharp from 'sharp';
 const TARGET_MIN_BYTES = 50 * 1024;
 const TARGET_MAX_BYTES = 100 * 1024;
 
-const QUALITY_MIN = 40;
+// Keep enough headroom to guarantee the hard 100 KB ceiling even for very
+// noisy camera images. The normal path still aims for the 50–100 KB band.
+const QUALITY_MIN = 20;
 const QUALITY_MAX = 92;
 
 // Ascending — index of the 512 "home" dimension is DIM_HOME_INDEX. We walk down
 // for over-band images and up for under-band (highly compressible) images.
-const DIMENSIONS = [256, 320, 384, 448, 512, 640, 768, 896, 1024];
-const DIM_HOME_INDEX = 4; // 512
+const DIMENSIONS = [64, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024];
+const DIM_HOME_INDEX = 10; // 512
 
 async function encodeJpeg(input, size, quality) {
   return sharp(input, { failOn: 'error' })
@@ -112,7 +114,26 @@ export async function normalizeAvatar(inputBuffer, opts = {}) {
     break; // closest endpoint already captured in `best`
   }
 
-  return best;
+  if (!best) {
+    throw new Error('Could not process the uploaded image');
+  }
+
+  if (best.size <= maxBytes) return best;
+
+  // Absolute safety net: callers promise that no stored avatar exceeds the
+  // configured ceiling. This path should be practically unreachable because
+  // the dimension walk reaches 64 px, but it makes the invariant explicit
+  // instead of returning an oversized "closest" result.
+  for (const dimension of [64, 48, 32]) {
+    for (const quality of [15, 10, 5, 1]) {
+      const buffer = await encodeJpeg(inputBuffer, dimension, quality);
+      if (buffer.length <= maxBytes) {
+        return { buffer, size: buffer.length, dimension, quality };
+      }
+    }
+  }
+
+  throw new Error(`Could not compress image to ${maxBytes} bytes or less`);
 }
 
 export const AVATAR_BAND = { minBytes: TARGET_MIN_BYTES, maxBytes: TARGET_MAX_BYTES };

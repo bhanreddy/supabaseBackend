@@ -31,6 +31,12 @@ const parseCsv = (value) =>
 
 const nodeEnv = required('NODE_ENV', 'development');
 const isProduction = nodeEnv === 'production';
+const diaryDigestHour = boundedNumber(
+    'DIARY_DIGEST_HOUR',
+    optional('DIARY_DIGEST_HOUR', '17'),
+    0,
+    23,
+);
 
 /**
  * pg-boss needs a SESSION-mode connection (LISTEN/NOTIFY, advisory locks,
@@ -112,6 +118,12 @@ const config = {
         cron: optional('TRANSPORT_MAINTENANCE_CRON', '30 2 * * *'),
         timezone: optional('TRANSPORT_MAINTENANCE_TIMEZONE', 'Asia/Kolkata'),
     },
+    diaryDigestJobs: {
+        enabled: optional('DIARY_DIGEST_ENABLED', 'true') !== 'false',
+        cutoffHour: diaryDigestHour,
+        cron: optional('DIARY_DIGEST_CRON', `0 ${diaryDigestHour} * * *`),
+        timezone: optional('DIARY_DIGEST_TIMEZONE', 'Asia/Kolkata'),
+    },
 };
 
 Object.freeze(config);
@@ -121,6 +133,7 @@ Object.freeze(config.firebase);
 Object.freeze(config.auth);
 Object.freeze(config.rateLimit);
 Object.freeze(config.transportJobs);
+Object.freeze(config.diaryDigestJobs);
 Object.freeze(config.paperforge);
 
 /**

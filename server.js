@@ -25,7 +25,12 @@ import { errorHandler } from './utils/asyncHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import sql from './db.js';
 import { startSupportNotificationOutboxWorker, stopSupportNotificationOutboxWorker } from './services/supportNotificationOutboxService.js';
-import { startTransportJobs, stopTransportJobs, isTransportJobsReady } from './services/transportJobService.js';
+import {
+    startTransportJobs,
+    stopTransportJobs,
+    isTransportJobsReady,
+    isDiaryDigestJobsReady,
+} from './services/transportJobService.js';
 
 const app = express();
 const port = config.port;
@@ -36,8 +41,13 @@ app.get('/api/v1/healthz', (_req, res) => res.json({ ok: true, uptime: process.u
 app.get('/api/v1/readyz', async (_req, res) => {
     try {
         await sql`SELECT 1`;
-        if (!isTransportJobsReady()) {
-            return res.status(503).json({ ok: false, database: 'connected', transport_jobs: 'starting' });
+        if (!isTransportJobsReady() || !isDiaryDigestJobsReady()) {
+            return res.status(503).json({
+                ok: false,
+                database: 'connected',
+                transport_jobs: isTransportJobsReady() ? 'ready' : 'starting',
+                diary_digest_jobs: isDiaryDigestJobsReady() ? 'ready' : 'starting',
+            });
         }
         return res.json({ ok: true, database: 'connected', transport_jobs: 'ready' });
     } catch {
@@ -408,7 +418,7 @@ const c = {
 const server = app.listen(port);
 startSupportNotificationOutboxWorker();
 setImmediate(() => startTransportJobs().catch((error) => {
-    logger.error({ error }, 'Failed to start transport maintenance worker');
+    logger.error({ error }, 'Failed to start scheduled job workers');
 }));
 
 server.on('error', (err) => {

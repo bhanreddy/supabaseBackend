@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../db.js';
 
 export const AVATAR_BUCKET = 'avatars';
+export const MAX_STORED_AVATAR_BYTES = 100 * 1024;
 
 let ensureBucketPromise = null;
 
@@ -47,6 +48,13 @@ export function avatarObjectPath(schoolId, personId) {
  * expo-image would otherwise serve a stale cached copy after re-upload.
  */
 export async function uploadAvatar(schoolId, personId, jpegBuffer) {
+  if (!Buffer.isBuffer(jpegBuffer) || jpegBuffer.length === 0) {
+    throw new Error('Avatar upload requires a non-empty JPEG buffer');
+  }
+  if (jpegBuffer.length > MAX_STORED_AVATAR_BYTES) {
+    throw new Error(`Avatar exceeds the ${MAX_STORED_AVATAR_BYTES}-byte storage limit`);
+  }
+
   await ensureAvatarBucket();
   const path = avatarObjectPath(schoolId, personId);
 

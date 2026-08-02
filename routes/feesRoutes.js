@@ -1494,114 +1494,208 @@ router.get('/transactions/:id/receipt-no', requireAnyPermission(['fees.view', 'f
 
 /**
  * GET /fees/transactions
- * List fee transactions
+ * List fee + transport payment transactions (merged, newest first).
  */
 router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (req, res) => {
   const { from_date, to_date, payment_method, received_by, page = 1, limit = 50 } = req.query;
   const safeLimit = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 50));
   const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
   const offset = (pageNum - 1) * safeLimit;
+  // Enough rows from each source to correctly compute the merged page.
+  const fetchLimit = offset + safeLimit;
   const receivedByFilter = received_by ? sql`AND t.received_by = ${received_by}` : sql``;
+  const transportReceivedByFilter = received_by ? sql`AND tfp.received_by = ${received_by}` : sql``;
 
-  const transactions = await sql`
-    SELECT 
-      t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
-      t.received_by as received_by_id,
-      t.student_fee_id,
-      'tuition'::text as transaction_source,
-      TRUE as can_delete,
-      deletion_request.id as deletion_approval_id,
-      CASE
-        WHEN reversal.id IS NOT NULL THEN 'DELETED'
-        ELSE deletion_request.status
-      END as deletion_status,
-      sf.student_id,
-      s.admission_no, p.display_name as student_name,
-      enroll.class_name, enroll.section_name,
-      father_info.father_name, father_info.father_mobile,
-      r.receipt_no,
-      ft.name as fee_type, ft.name_te as fee_type_te, ay.code as academic_year,
-      receiver.display_name as received_by,
-      sf.amount_due, sf.amount_paid as total_paid, sf.discount,
-      GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0) as balance_due
-    FROM fee_transactions t
-    LEFT JOIN receipt_items ri ON ri.fee_transaction_id = t.id AND ri.school_id = ${req.schoolId}
-    LEFT JOIN receipts r ON r.id = ri.receipt_id AND r.school_id = ${req.schoolId}
-    JOIN student_fees sf ON t.student_fee_id = sf.id AND sf.school_id = ${req.schoolId}
-    JOIN students s ON sf.student_id = s.id AND s.school_id = ${req.schoolId}
-    JOIN persons p ON s.person_id = p.id
-    JOIN fee_structures fs ON sf.fee_structure_id = fs.id
-    JOIN fee_types ft ON fs.fee_type_id = ft.id
-    LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
-    LEFT JOIN users u ON t.received_by = u.id
-    LEFT JOIN persons receiver ON u.person_id = receiver.id
-    LEFT JOIN LATERAL (
-      SELECT ar.id, ar.status
-      FROM approval_requests ar
-      WHERE ar.school_id = ${req.schoolId}
-        AND ar.type = 'fee_payment_deletion'
-        AND ar.requested_by = t.received_by
-        AND ar.payload->>'scope_key' = CASE
-          WHEN t.receipt_group IS NOT NULL THEN 'receipt_group:' || t.receipt_group::text
-          ELSE 'transaction:' || t.id::text
-        END
-      ORDER BY ar.created_at DESC
-      LIMIT 1
-    ) deletion_request ON true
-    LEFT JOIN LATERAL (
-      SELECT rev.id
-      FROM fee_transactions rev
-      WHERE rev.school_id = ${req.schoolId}
-        AND rev.refund_of = t.id
-        AND rev.transaction_ref LIKE 'VOID-%'
-      LIMIT 1
-    ) reversal ON true
-    LEFT JOIN LATERAL (
-      SELECT c.name as class_name, sec.name as section_name
-      FROM student_enrollments se
-      JOIN class_sections cs ON se.class_section_id = cs.id
-      JOIN classes c ON cs.class_id = c.id
-      JOIN sections sec ON cs.section_id = sec.id
-      WHERE se.student_id = s.id AND se.status = 'active'
-      ORDER BY se.created_at DESC
-      LIMIT 1
-    ) enroll ON true
-    LEFT JOIN LATERAL (
+  const [transactions, transportTransactions] = await Promise.all([
+    sql`
       SELECT
-        pp.display_name as father_name,
-        (
-          SELECT pc.contact_value
-          FROM person_contacts pc
-          WHERE pc.person_id = pp.id
-            AND pc.school_id = ${req.schoolId}
-            AND pc.contact_type = 'phone'
-            AND pc.deleted_at IS NULL
-          ORDER BY pc.is_primary DESC, pc.created_at
-          LIMIT 1
-        ) as father_mobile
-      FROM student_parents sp
-      JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
-      JOIN persons pp ON par.person_id = pp.id
-      LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
-      WHERE sp.student_id = s.id
-        AND sp.school_id = ${req.schoolId}
-        AND sp.deleted_at IS NULL
-      ORDER BY
-        CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
-        sp.created_at
-      LIMIT 1
-    ) father_info ON true
-    WHERE t.school_id = ${req.schoolId}
-      AND t.refund_of IS NULL
-      ${from_date ? sql`AND t.paid_at >= ${from_date}` : sql``}
-      ${to_date ? sql`AND t.paid_at <= ${to_date}` : sql``}
-      ${payment_method ? sql`AND t.payment_method = ${payment_method}` : sql``}
-      ${receivedByFilter}
-    ORDER BY t.paid_at DESC
-    LIMIT ${safeLimit} OFFSET ${offset}
-  `;
+        t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
+        t.received_by as received_by_id,
+        t.student_fee_id,
+        'tuition'::text as transaction_source,
+        TRUE as can_delete,
+        deletion_request.id as deletion_approval_id,
+        CASE
+          WHEN reversal.id IS NOT NULL THEN 'DELETED'
+          ELSE deletion_request.status
+        END as deletion_status,
+        sf.student_id,
+        s.admission_no, p.display_name as student_name,
+        enroll.class_name, enroll.section_name,
+        father_info.father_name, father_info.father_mobile,
+        r.receipt_no,
+        ft.name as fee_type, ft.name_te as fee_type_te, ay.code as academic_year,
+        receiver.display_name as received_by,
+        sf.amount_due, sf.amount_paid as total_paid, sf.discount,
+        GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0) as balance_due
+      FROM fee_transactions t
+      LEFT JOIN receipt_items ri ON ri.fee_transaction_id = t.id AND ri.school_id = ${req.schoolId}
+      LEFT JOIN receipts r ON r.id = ri.receipt_id AND r.school_id = ${req.schoolId}
+      JOIN student_fees sf ON t.student_fee_id = sf.id AND sf.school_id = ${req.schoolId}
+      JOIN students s ON sf.student_id = s.id AND s.school_id = ${req.schoolId}
+      JOIN persons p ON s.person_id = p.id
+      JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+      JOIN fee_types ft ON fs.fee_type_id = ft.id
+      LEFT JOIN academic_years ay ON fs.academic_year_id = ay.id
+      LEFT JOIN users u ON t.received_by = u.id
+      LEFT JOIN persons receiver ON u.person_id = receiver.id
+      LEFT JOIN LATERAL (
+        SELECT ar.id, ar.status
+        FROM approval_requests ar
+        WHERE ar.school_id = ${req.schoolId}
+          AND ar.type = 'fee_payment_deletion'
+          AND ar.requested_by = t.received_by
+          AND ar.payload->>'scope_key' = CASE
+            WHEN t.receipt_group IS NOT NULL THEN 'receipt_group:' || t.receipt_group::text
+            ELSE 'transaction:' || t.id::text
+          END
+        ORDER BY ar.created_at DESC
+        LIMIT 1
+      ) deletion_request ON true
+      LEFT JOIN LATERAL (
+        SELECT rev.id
+        FROM fee_transactions rev
+        WHERE rev.school_id = ${req.schoolId}
+          AND rev.refund_of = t.id
+          AND rev.transaction_ref LIKE 'VOID-%'
+        LIMIT 1
+      ) reversal ON true
+      LEFT JOIN LATERAL (
+        SELECT c.name as class_name, sec.name as section_name
+        FROM student_enrollments se
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE se.student_id = s.id AND se.status = 'active'
+        ORDER BY se.created_at DESC
+        LIMIT 1
+      ) enroll ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          pp.display_name as father_name,
+          (
+            SELECT pc.contact_value
+            FROM person_contacts pc
+            WHERE pc.person_id = pp.id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+            ORDER BY pc.is_primary DESC, pc.created_at
+            LIMIT 1
+          ) as father_mobile
+        FROM student_parents sp
+        JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+        JOIN persons pp ON par.person_id = pp.id
+        LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+        WHERE sp.student_id = s.id
+          AND sp.school_id = ${req.schoolId}
+          AND sp.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+          sp.created_at
+        LIMIT 1
+      ) father_info ON true
+      WHERE t.school_id = ${req.schoolId}
+        AND t.refund_of IS NULL
+        ${from_date ? sql`AND t.paid_at >= ${from_date}` : sql``}
+        ${to_date ? sql`AND t.paid_at <= ${to_date}` : sql``}
+        ${payment_method ? sql`AND t.payment_method = ${payment_method}` : sql``}
+        ${receivedByFilter}
+      ORDER BY t.paid_at DESC
+      LIMIT ${fetchLimit}
+    `,
+    sql`
+      SELECT
+        tfp.id, tfp.amount, tfp.payment_method, tfp.transaction_ref, tfp.paid_at, tfp.remarks,
+        tfp.received_by as received_by_id,
+        NULL::uuid as student_fee_id,
+        'transport'::text as transaction_source,
+        FALSE as can_delete,
+        NULL::uuid as deletion_approval_id,
+        NULL::text as deletion_status,
+        tfp.student_id,
+        s.admission_no, p.display_name as student_name,
+        enroll.class_name, enroll.section_name,
+        father_info.father_name, father_info.father_mobile,
+        r.receipt_no,
+        'Transport Fee'::text as fee_type, NULL::text as fee_type_te,
+        tfp.academic_year,
+        receiver.display_name as received_by,
+        tf.fee_amount + COALESCE(adj.net_amount, 0) as amount_due,
+        COALESCE(paid.total_paid, 0) as total_paid,
+        0::numeric as discount,
+        GREATEST(tf.fee_amount + COALESCE(adj.net_amount, 0) - COALESCE(paid.total_paid, 0), 0) as balance_due
+      FROM transport_fee_payments tfp
+      JOIN students s ON tfp.student_id = s.id AND s.school_id = ${req.schoolId}
+      JOIN persons p ON s.person_id = p.id
+      LEFT JOIN transport_fee tf ON tf.id = tfp.transport_fee_id AND tf.school_id = ${req.schoolId}
+      LEFT JOIN receipts r ON r.transport_payment_id = tfp.id AND r.school_id = ${req.schoolId}
+      LEFT JOIN users u ON tfp.received_by = u.id
+      LEFT JOIN persons receiver ON u.person_id = receiver.id
+      LEFT JOIN LATERAL (
+        SELECT SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END) AS net_amount
+        FROM fee_adjustments fa
+        WHERE fa.school_id = ${req.schoolId}
+          AND fa.student_id = tfp.student_id
+          AND fa.transport_fee_id = tfp.transport_fee_id
+      ) adj ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT SUM(previous.amount) AS total_paid
+        FROM transport_fee_payments previous
+        WHERE previous.school_id = ${req.schoolId}
+          AND previous.student_id = tfp.student_id
+          AND previous.academic_year = tfp.academic_year
+      ) paid ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT c.name as class_name, sec.name as section_name
+        FROM student_enrollments se
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE se.student_id = s.id AND se.status = 'active'
+        ORDER BY se.created_at DESC
+        LIMIT 1
+      ) enroll ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          pp.display_name as father_name,
+          (
+            SELECT pc.contact_value
+            FROM person_contacts pc
+            WHERE pc.person_id = pp.id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+            ORDER BY pc.is_primary DESC, pc.created_at
+            LIMIT 1
+          ) as father_mobile
+        FROM student_parents sp
+        JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+        JOIN persons pp ON par.person_id = pp.id
+        LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+        WHERE sp.student_id = s.id
+          AND sp.school_id = ${req.schoolId}
+          AND sp.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+          sp.created_at
+        LIMIT 1
+      ) father_info ON true
+      WHERE tfp.school_id = ${req.schoolId}
+        ${from_date ? sql`AND tfp.paid_at >= ${from_date}` : sql``}
+        ${to_date ? sql`AND tfp.paid_at <= ${to_date}` : sql``}
+        ${payment_method ? sql`AND tfp.payment_method = ${payment_method}` : sql``}
+        ${transportReceivedByFilter}
+      ORDER BY tfp.paid_at DESC
+      LIMIT ${fetchLimit}
+    `,
+  ]);
 
-  return sendSuccess(res, req.schoolId, transactions);
+  const merged = [...transactions, ...transportTransactions].sort(
+    (a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime()
+  );
+
+  return sendSuccess(res, req.schoolId, merged.slice(offset, offset + safeLimit));
 }));
 
 /**
@@ -1882,112 +1976,214 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
 
 /**
  * GET /fees/collection-summary
- * Get daily/monthly collection summary
+ * Get daily/monthly collection summary (tuition + transport).
  */
 router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(async (req, res) => {
   const { date, from_date, to_date, group_by = 'day', received_by } = req.query;
   const receivedByFilter = received_by ? sql`AND t.received_by = ${received_by}` : sql``;
+  const transportReceivedByFilter = received_by ? sql`AND tfp.received_by = ${received_by}` : sql``;
+
+  const mergePaymentMethodRows = (tuitionRows, transportRows) => {
+    const map = new Map();
+    for (const row of [...tuitionRows, ...transportRows]) {
+      const key = row.payment_method;
+      const current = map.get(key) || { payment_method: key, transaction_count: 0, total_amount: 0 };
+      current.transaction_count += Number(row.transaction_count || 0);
+      current.total_amount += Number(row.total_amount || 0);
+      map.set(key, current);
+    }
+    return Array.from(map.values());
+  };
+
+  const mergePeriodRows = (tuitionRows, transportRows) => {
+    const map = new Map();
+    for (const row of [...tuitionRows, ...transportRows]) {
+      const key = String(row.period);
+      const current = map.get(key) || { period: row.period, transaction_count: 0, total_amount: 0 };
+      current.transaction_count += Number(row.transaction_count || 0);
+      current.total_amount += Number(row.total_amount || 0);
+      map.set(key, current);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(a.period).getTime() - new Date(b.period).getTime()
+    );
+  };
 
   if (date) {
-    // Single day summary — F7 FIX: Add school_id filter
-    const summary = await sql`
-      SELECT
-        t.payment_method,
-        COUNT(*) as transaction_count,
-        SUM(t.amount) as total_amount
-      FROM fee_transactions t
-      WHERE DATE(t.paid_at) = ${date}
-        AND t.school_id = ${req.schoolId}
-        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-        ${receivedByFilter}
-      GROUP BY t.payment_method
-    `;
-
-    const total = await sql`
-      SELECT
-        COUNT(*) as total_transactions,
-        COALESCE(SUM(t.amount), 0) as total_collected
-      FROM fee_transactions t
-      WHERE DATE(t.paid_at) = ${date}
-        AND t.school_id = ${req.schoolId}
-        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-        ${receivedByFilter}
-    `;
+    const [summary, transportSummary, total, transportTotal] = await Promise.all([
+      sql`
+        SELECT
+          t.payment_method,
+          COUNT(*) as transaction_count,
+          SUM(t.amount) as total_amount
+        FROM fee_transactions t
+        WHERE DATE(t.paid_at) = ${date}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+          ${receivedByFilter}
+        GROUP BY t.payment_method
+      `,
+      sql`
+        SELECT
+          tfp.payment_method,
+          COUNT(*) as transaction_count,
+          SUM(tfp.amount) as total_amount
+        FROM transport_fee_payments tfp
+        WHERE DATE(tfp.paid_at) = ${date}
+          AND tfp.school_id = ${req.schoolId}
+          ${transportReceivedByFilter}
+        GROUP BY tfp.payment_method
+      `,
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(t.amount), 0) as total_collected
+        FROM fee_transactions t
+        WHERE DATE(t.paid_at) = ${date}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+          ${receivedByFilter}
+      `,
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(tfp.amount), 0) as total_collected
+        FROM transport_fee_payments tfp
+        WHERE DATE(tfp.paid_at) = ${date}
+          AND tfp.school_id = ${req.schoolId}
+          ${transportReceivedByFilter}
+      `,
+    ]);
 
     return sendSuccess(res, req.schoolId, {
       date,
-      by_payment_method: summary,
-      ...total[0]
+      by_payment_method: mergePaymentMethodRows(summary, transportSummary),
+      total_transactions: Number(total[0]?.total_transactions || 0) + Number(transportTotal[0]?.total_transactions || 0),
+      total_collected: Number(total[0]?.total_collected || 0) + Number(transportTotal[0]?.total_collected || 0),
     });
   } else if (from_date && to_date) {
-    // Range summary
     let summary;
+    let transportSummary;
     if (group_by === 'month') {
-      summary = await sql`
-        SELECT
-          DATE_TRUNC('month', t.paid_at) as period,
-          COUNT(*) as transaction_count,
-          SUM(t.amount) as total_amount
-        FROM fee_transactions t
-        WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
-          AND t.school_id = ${req.schoolId}
-          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-          ${receivedByFilter}
-        GROUP BY DATE_TRUNC('month', t.paid_at)
-        ORDER BY period
-      `;
+      [summary, transportSummary] = await Promise.all([
+        sql`
+          SELECT
+            DATE_TRUNC('month', t.paid_at) as period,
+            COUNT(*) as transaction_count,
+            SUM(t.amount) as total_amount
+          FROM fee_transactions t
+          WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+            AND t.school_id = ${req.schoolId}
+            AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+            AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+            ${receivedByFilter}
+          GROUP BY DATE_TRUNC('month', t.paid_at)
+          ORDER BY period
+        `,
+        sql`
+          SELECT
+            DATE_TRUNC('month', tfp.paid_at) as period,
+            COUNT(*) as transaction_count,
+            SUM(tfp.amount) as total_amount
+          FROM transport_fee_payments tfp
+          WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
+            AND tfp.school_id = ${req.schoolId}
+            ${transportReceivedByFilter}
+          GROUP BY DATE_TRUNC('month', tfp.paid_at)
+          ORDER BY period
+        `,
+      ]);
     } else {
-      summary = await sql`
-        SELECT
-          DATE(t.paid_at) as period,
-          COUNT(*) as transaction_count,
-          SUM(t.amount) as total_amount
-        FROM fee_transactions t
-        WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
-          AND t.school_id = ${req.schoolId}
-          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-          ${receivedByFilter}
-        GROUP BY DATE(t.paid_at)
-        ORDER BY period
-      `;
+      [summary, transportSummary] = await Promise.all([
+        sql`
+          SELECT
+            DATE(t.paid_at) as period,
+            COUNT(*) as transaction_count,
+            SUM(t.amount) as total_amount
+          FROM fee_transactions t
+          WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+            AND t.school_id = ${req.schoolId}
+            AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+            AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+            ${receivedByFilter}
+          GROUP BY DATE(t.paid_at)
+          ORDER BY period
+        `,
+        sql`
+          SELECT
+            DATE(tfp.paid_at) as period,
+            COUNT(*) as transaction_count,
+            SUM(tfp.amount) as total_amount
+          FROM transport_fee_payments tfp
+          WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
+            AND tfp.school_id = ${req.schoolId}
+            ${transportReceivedByFilter}
+          GROUP BY DATE(tfp.paid_at)
+          ORDER BY period
+        `,
+      ]);
     }
 
-    const [rangeTotal] = await sql`
-      SELECT
-        COUNT(*)::int as total_transactions,
-        COALESCE(SUM(t.amount), 0) as total_collected
-      FROM fee_transactions t
-      WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
-        AND t.school_id = ${req.schoolId}
-        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-        ${receivedByFilter}
-    `;
+    const [[rangeTotal], [transportRangeTotal]] = await Promise.all([
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(t.amount), 0) as total_collected
+        FROM fee_transactions t
+        WHERE t.paid_at BETWEEN ${from_date} AND ${to_date}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+          ${receivedByFilter}
+      `,
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(tfp.amount), 0) as total_collected
+        FROM transport_fee_payments tfp
+        WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
+          AND tfp.school_id = ${req.schoolId}
+          ${transportReceivedByFilter}
+      `,
+    ]);
 
     return sendSuccess(res, req.schoolId, {
-      periods: summary,
-      ...rangeTotal,
+      periods: mergePeriodRows(summary, transportSummary),
+      total_transactions: Number(rangeTotal?.total_transactions || 0) + Number(transportRangeTotal?.total_transactions || 0),
+      total_collected: Number(rangeTotal?.total_collected || 0) + Number(transportRangeTotal?.total_collected || 0),
     });
   } else {
-    // Today's summary by default — F7 FIX: Add school_id filter
     const today = new Date().toISOString().split('T')[0];
-    const summary = await sql`
-      SELECT
-        COUNT(*) as total_transactions,
-        COALESCE(SUM(t.amount), 0) as total_collected
-      FROM fee_transactions t
-      WHERE DATE(t.paid_at) = ${today}
-        AND t.school_id = ${req.schoolId}
-        AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
-        AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
-        ${receivedByFilter}
-    `;
+    const [[tuitionToday], [transportToday]] = await Promise.all([
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(t.amount), 0) as total_collected
+        FROM fee_transactions t
+        WHERE DATE(t.paid_at) = ${today}
+          AND t.school_id = ${req.schoolId}
+          AND (t.refund_of IS NULL OR t.transaction_ref NOT LIKE 'VOID-%')
+          AND NOT EXISTS (SELECT 1 FROM fee_transactions rev WHERE rev.school_id = t.school_id AND rev.refund_of = t.id AND rev.transaction_ref LIKE 'VOID-%')
+          ${receivedByFilter}
+      `,
+      sql`
+        SELECT
+          COUNT(*)::int as total_transactions,
+          COALESCE(SUM(tfp.amount), 0) as total_collected
+        FROM transport_fee_payments tfp
+        WHERE DATE(tfp.paid_at) = ${today}
+          AND tfp.school_id = ${req.schoolId}
+          ${transportReceivedByFilter}
+      `,
+    ]);
 
-    return sendSuccess(res, req.schoolId, { date: today, ...summary[0] });
+    return sendSuccess(res, req.schoolId, {
+      date: today,
+      total_transactions: Number(tuitionToday?.total_transactions || 0) + Number(transportToday?.total_transactions || 0),
+      total_collected: Number(tuitionToday?.total_collected || 0) + Number(transportToday?.total_collected || 0),
+    });
   }
 }));
 

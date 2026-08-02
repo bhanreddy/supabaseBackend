@@ -62,6 +62,9 @@ docker compose up --build
 - **Supabase**: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
 - **CORS**: `ALLOWED_ORIGINS` (comma-separated; in prod prefer explicit origins)
 - **Runtime**: `LOG_LEVEL` (default `info` in prod), `BODY_LIMIT` (default `1mb`)
+- **Daily diary digest**: enabled by default at 5:00 PM Asia/Kolkata. Override with
+  `DIARY_DIGEST_ENABLED`, `DIARY_DIGEST_HOUR`, `DIARY_DIGEST_CRON`, and
+  `DIARY_DIGEST_TIMEZONE`.
 
 ### Optional integrations
 

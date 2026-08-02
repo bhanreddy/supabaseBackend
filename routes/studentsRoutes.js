@@ -3,7 +3,8 @@ import sql, { supabaseAdmin } from '../db.js';
 import { requirePermission, requireAuth, requireAnyPermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { singleAvatarUpload, handleAvatarMulterError } from '../middleware/avatarUpload.js';
-import { normalizeAvatar } from '../utils/avatarImage.js';
+import { singleExcelUpload, handleMulterError as handleExcelMulterError } from '../middleware/excelUpload.js';
+import { AVATAR_BAND, normalizeAvatar } from '../utils/avatarImage.js';
 import { uploadAvatar, removeAvatar } from '../utils/avatarStorage.js';
 import {
   assertSchoolEmailAvailable,
@@ -25,6 +26,16 @@ import {
   getStudentHardDeletePreview,
   hardDeleteStudent,
 } from '../services/hardDeleteStudent.js';
+import {
+  buildStudentBulkUpdateFailureWorkbook,
+  buildStudentBulkUpdateTemplate,
+  commitStudentBulkUpdate,
+  createStudentBulkUpdatePreview,
+  getStudentBulkUpdateField,
+  isLikelyStudentUpdateWorkbook,
+  listStudentBulkUpdateFields,
+  parseStudentBulkUpdateBuffer,
+} from '../services/studentBulkUpdateService.js';
 
 const router = express.Router();
 
@@ -233,6 +244,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       class_id,
       section_id,
       status_id,
+      admission_type,
       lifecycle,
       sort_by = 'name',
       sort_order = 'asc',
@@ -257,6 +269,16 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       // Passed-out and withdrawn students remain fully retained, but live in
       // the archive instead of operational student lists.
       whereClause = sql`${whereClause} AND s.status_id IN (2, 3)`;
+    }
+    if (admission_type) {
+      const normalizedAdmissionType = String(admission_type).trim().toLowerCase();
+      if (normalizedAdmissionType === 'dummy') {
+        whereClause = sql`${whereClause} AND s.admission_no ~* '^Dummy[0-9]+$'`;
+      } else if (normalizedAdmissionType === 'permanent') {
+        whereClause = sql`${whereClause} AND s.admission_no ~ '^[0-9]+$'`;
+      } else {
+        return res.status(400).json({ error: "Admission type must be 'dummy' or 'permanent'." });
+      }
     }
     if (search && String(search).trim() !== '') {
       const term = `%${String(search).trim()}%`;
@@ -301,7 +323,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village, s.admission_date, s.status_id,
         s.exit_academic_year_id, s.exit_date, exit_year.code AS exit_academic_year,
-        p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id,
+        p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
         st.code as status,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'phone' AND pc.is_primary = true LIMIT 1) as phone,
@@ -416,6 +438,185 @@ router.get('/statuses', requirePermission('students.view'), async (req, res) => 
   } catch (error) {
 
     res.status(500).json({ error: 'Failed to fetch student statuses' });
+  }
+});
+
+/**
+ * GET /students/admission-number/next?type=dummy|permanent
+ *
+ * Suggestions are tenant-scoped and only consider exact generated formats:
+ * Dummy123 contributes to the dummy sequence, while 123 contributes to the
+ * permanent sequence. A dummy suffix is never reused as a permanent number:
+ * converting Dummy123 uses max(permanent numeric admissions) + 1. Legacy/custom
+ * values are deliberately ignored.
+ */
+router.get(
+  '/admission-number/next',
+  requireAnyPermission(['students.create', 'students.edit']),
+  async (req, res) => {
+    try {
+      const type = String(req.query.type || '').toLowerCase();
+      if (type !== 'dummy' && type !== 'permanent') {
+        return res.status(400).json({ error: "Admission number type must be 'dummy' or 'permanent'." });
+      }
+
+      const [sequence] = type === 'dummy'
+        ? await sql`
+            SELECT
+              COALESCE(MAX(sequence_no), 0)::text AS current_max,
+              (COALESCE(MAX(sequence_no), 0) + 1)::text AS next_number
+            FROM (
+              SELECT SUBSTRING(admission_no FROM 6)::numeric AS sequence_no
+              FROM students
+              WHERE school_id = ${req.schoolId}
+                AND deleted_at IS NULL
+                AND admission_no ~* '^Dummy[0-9]+$'
+            ) generated_admission_numbers
+          `
+        : await sql`
+            SELECT
+              COALESCE(MAX(sequence_no), 0)::text AS current_max,
+              (COALESCE(MAX(sequence_no), 0) + 1)::text AS next_number
+            FROM (
+              SELECT admission_no::numeric AS sequence_no
+              FROM students
+              WHERE school_id = ${req.schoolId}
+                AND deleted_at IS NULL
+                AND admission_no ~ '^[0-9]+$'
+            ) generated_admission_numbers
+          `;
+
+      const nextNumber = sequence?.next_number || '1';
+      return sendSuccess(res, req.schoolId, {
+        type,
+        current_max: sequence?.current_max || '0',
+        next_number: nextNumber,
+        next_admission_no: type === 'dummy' ? `Dummy${nextNumber}` : nextNumber,
+      });
+    } catch (error) {
+      console.error('[GET /students/admission-number/next] Error:', error?.message || error);
+      return res.status(500).json({ error: 'Failed to generate the next admission number.' });
+    }
+  },
+);
+
+/**
+ * GET /students/bulk-update/fields
+ * Whitelisted scalar fields that the one-column Excel updater can safely edit.
+ */
+router.get('/bulk-update/fields', requirePermission('students.edit'), async (req, res) => {
+  try {
+    const fields = await listStudentBulkUpdateFields(sql);
+    return sendSuccess(res, req.schoolId, { fields });
+  } catch (error) {
+    console.error('[GET /students/bulk-update/fields] Error:', error?.message || error);
+    return res.status(500).json({ error: 'Failed to load bulk-update fields.' });
+  }
+});
+
+/**
+ * GET /students/bulk-update/template?field=aadhaar_number
+ * Generates a field-specific workbook with exact headers, examples and allowed
+ * reference values. This prevents fragile manual column mapping.
+ */
+router.get('/bulk-update/template', requirePermission('students.edit'), async (req, res) => {
+  try {
+    const field = getStudentBulkUpdateField(req.query.field);
+    if (!field) return res.status(400).json({ error: 'Select a supported student field.' });
+    const buffer = await buildStudentBulkUpdateTemplate(sql, field.key);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="student-${field.key}-update-template.xlsx"`);
+    return res.send(buffer);
+  } catch (error) {
+    console.error('[GET /students/bulk-update/template] Error:', error?.message || error);
+    return res.status(500).json({ error: 'Failed to create the Excel template.' });
+  }
+});
+
+/**
+ * POST /students/bulk-update/preview?field=aadhaar_number&clear_blank=false
+ * Parses and validates the workbook without changing student data. The preview
+ * is persisted so the later commit is auditable and cannot accept tampered rows.
+ */
+router.post(
+  '/bulk-update/preview',
+  requirePermission('students.edit'),
+  (req, res, next) => {
+    singleExcelUpload(req, res, (error) => {
+      if (error) return handleExcelMulterError(error, req, res, next);
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const field = getStudentBulkUpdateField(req.query.field || req.body?.field);
+      if (!field) return res.status(400).json({ error: 'Select a supported student field.' });
+      if (!req.file?.buffer) {
+        return res.status(400).json({ error: 'Excel file is required (field name: file).' });
+      }
+      if (!isLikelyStudentUpdateWorkbook(req.file.buffer, req.file.originalname)) {
+        return res.status(400).json({ error: 'Upload a valid .xlsx, .xls, or .csv file.' });
+      }
+
+      const parsedRows = parseStudentBulkUpdateBuffer(req.file.buffer, field.key);
+      const allowBlankClear = String(req.query.clear_blank || req.body?.clear_blank || '').toLowerCase() === 'true';
+      const result = await createStudentBulkUpdatePreview(sql, {
+        schoolId: req.schoolId,
+        uploadedBy: req.user?.internal_id ?? req.user?.id ?? null,
+        originalFilename: req.file.originalname,
+        fieldKey: field.key,
+        allowBlankClear,
+        parsedRows,
+      });
+      return sendSuccess(res, req.schoolId, result, 201);
+    } catch (error) {
+      console.error('[POST /students/bulk-update/preview] Error:', error?.message || error);
+      const status = error?.code === '42P01' ? 503 : 400;
+      const message = error?.code === '42P01'
+        ? 'Bulk student update is not initialized. Apply the latest database migration.'
+        : (error?.message || 'Failed to validate the uploaded workbook.');
+      return res.status(status).json({ error: message });
+    }
+  },
+);
+
+/** POST /students/bulk-update/:batchId/commit */
+router.post('/bulk-update/:batchId/commit', requirePermission('students.edit'), async (req, res) => {
+  try {
+    const result = await commitStudentBulkUpdate(sql, {
+      schoolId: req.schoolId,
+      batchId: req.params.batchId,
+    });
+    return sendSuccess(res, req.schoolId, result);
+  } catch (error) {
+    console.error('[POST /students/bulk-update/:batchId/commit] Error:', error?.message || error);
+    if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error?.code === '23505') {
+      return res.status(409).json({
+        error: 'A unique admission or PEN number changed after preview. Upload the corrected file again.',
+      });
+    }
+    if (error?.code === '23514' || error?.code === '22007') {
+      return res.status(400).json({ error: 'A value no longer passes database validation. Upload the file again.' });
+    }
+    return res.status(500).json({ error: 'No student data was changed. The bulk update failed safely.' });
+  }
+});
+
+/** GET /students/bulk-update/:batchId/errors */
+router.get('/bulk-update/:batchId/errors', requirePermission('students.edit'), async (req, res) => {
+  try {
+    const buffer = await buildStudentBulkUpdateFailureWorkbook(sql, {
+      schoolId: req.schoolId,
+      batchId: req.params.batchId,
+    });
+    if (!buffer) return res.status(404).json({ error: 'Bulk update batch not found.' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="student-bulk-update-errors-${req.params.batchId}.xlsx"`);
+    return res.send(buffer);
+  } catch (error) {
+    console.error('[GET /students/bulk-update/:batchId/errors] Error:', error?.message || error);
+    return res.status(500).json({ error: 'Failed to create the error report.' });
   }
 });
 
@@ -903,7 +1104,10 @@ router.post(
         return res.status(404).json({ error: 'Student not found' });
       }
 
-      const { buffer } = await normalizeAvatar(req.file.buffer);
+      const { buffer, size } = await normalizeAvatar(req.file.buffer);
+      if (size > AVATAR_BAND.maxBytes || buffer.length > AVATAR_BAND.maxBytes) {
+        throw new Error('Student photo compression exceeded the 100 KB storage limit');
+      }
       const photoUrl = await uploadAvatar(req.schoolId, student.person_id, buffer);
       const [updated] = await sql`
         UPDATE persons
@@ -919,6 +1123,7 @@ router.post(
       return sendSuccess(res, req.schoolId, {
         message: 'Student profile picture updated',
         photo_url: updated.photo_url,
+        photo_size_bytes: buffer.length,
       });
     } catch (error) {
       if (/not a valid image/i.test(error?.message || '')) {
