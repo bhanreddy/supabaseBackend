@@ -4783,9 +4783,13 @@ CREATE TABLE IF NOT EXISTS transport_stops (
     pickup_time TIME,
     drop_time TIME,
     stop_order INTEGER NOT NULL,
-    deleted_at TIMESTAMPTZ,
-    UNIQUE (school_id, route_id, stop_order)
+    deleted_at TIMESTAMPTZ
 );
+
+-- Active stops only: soft-deleted rows must not block reuse of stop_order
+CREATE UNIQUE INDEX IF NOT EXISTS uq_transport_stops_route_order_active
+  ON transport_stops (school_id, route_id, stop_order)
+  WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transport_stops_school_id ON transport_stops(school_id);
 

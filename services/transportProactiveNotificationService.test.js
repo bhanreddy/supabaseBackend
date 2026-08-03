@@ -154,3 +154,8 @@ test('bus approaching uses the dedicated confirmation sound and channel', () => 
   assert.equal(NotificationEventConfig.TRANSPORT_BUS_APPROACHING.sound, 'busconfirmation.wav');
   assert.equal(NotificationEventConfig.TRANSPORT_BUS_APPROACHING.channelId, 'bus_confirmation');
 });
+
+test('driver present attendance uses the dedicated bus-present sound and channel', () => {
+  assert.equal(NotificationEventConfig.STUDENT_BUS_PRESENT.sound, 'bus_present.wav');
+  assert.equal(NotificationEventConfig.STUDENT_BUS_PRESENT.channelId, 'bus_present');
+});

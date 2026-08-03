@@ -54,6 +54,30 @@ async function assertCanDistributePayroll(req, res) {
   return true;
 }
 
+async function notifyPayrollRecipient(staffId, schoolId) {
+  const [user] = await sql`
+    SELECT u.id
+    FROM staff s
+    JOIN users u
+      ON u.person_id = s.person_id
+     AND u.school_id = s.school_id
+     AND u.deleted_at IS NULL
+    WHERE s.id = ${staffId}
+      AND s.school_id = ${schoolId}
+      AND s.deleted_at IS NULL
+      AND u.account_status = 'active'
+    LIMIT 1
+  `;
+
+  if (!user) return;
+  await sendNotificationToUsers(
+    [user.id],
+    'PAYROLL_SUCCESS',
+    { message: 'Your salary has been credited successfully.' },
+    { deepLink: '/staff/payslip', role: 'staff' },
+  );
+}
+
 /**
  * GET /distribution-status
  * Whether accounts payroll processing is blocked for this school
@@ -161,21 +185,7 @@ router.post('/process', requirePayrollIssuer, asyncHandler(async (req, res) => {
 
   (async () => {
     try {
-      const [user] = await sql`
-        SELECT u.id 
-        FROM users u 
-        JOIN staff s ON u.person_id = s.person_id 
-        WHERE s.id = ${staff_id} 
-          AND u.account_status = 'active'
-      `;
-
-      if (user) {
-        await sendNotificationToUsers(
-          [user.id],
-          'PAYROLL_SUCCESS',
-          { message: 'Your salary has been credited successfully.' }
-        );
-      }
+      await notifyPayrollRecipient(staff_id, req.schoolId);
     } catch (err) {
       // non-blocking
     }
@@ -219,21 +229,7 @@ router.put('/:id/pay', requirePayrollIssuer, asyncHandler(async (req, res) => {
 
   (async () => {
     try {
-      const [user] = await sql`
-        SELECT u.id 
-        FROM users u 
-        JOIN staff s ON u.person_id = s.person_id 
-        WHERE s.id = ${payroll.staff_id} 
-          AND u.account_status = 'active'
-      `;
-
-      if (user) {
-        await sendNotificationToUsers(
-          [user.id],
-          'PAYROLL_SUCCESS',
-          { message: 'Your salary has been credited successfully.' }
-        );
-      }
+      await notifyPayrollRecipient(payroll.staff_id, req.schoolId);
     } catch (err) {
       // non-blocking
     }

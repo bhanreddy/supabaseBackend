@@ -34,6 +34,8 @@ test('field registry exposes the requested high-value student details', () => {
   assert.equal(getStudentBulkUpdateField('date_of_birth')?.target, 'person');
   assert.equal(getStudentBulkUpdateField('gender')?.referenceTable, 'genders');
   assert.equal(getStudentBulkUpdateField('mobile_number')?.target, 'contact');
+  assert.equal(getStudentBulkUpdateField('father_name')?.label, 'Father name');
+  assert.equal(getStudentBulkUpdateField('father_name')?.target, 'father');
   assert.equal(getStudentBulkUpdateField('not_a_real_field'), null);
 });
 

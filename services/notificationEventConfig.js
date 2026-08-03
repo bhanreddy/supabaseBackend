@@ -334,8 +334,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_TRIP_CANCELLED: {
-        channelId: 'emergency',
-        sound: 'emergency.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '⚠️ Trip Cancelled',
         titleTemplate_te: '⚠️ ప్రయాణం రద్దు',
         bodyTemplate: '⚠️ Today\'s school bus trip has been cancelled. Please arrange alternative transport for your child.',

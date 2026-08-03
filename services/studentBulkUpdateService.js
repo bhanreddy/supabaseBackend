@@ -121,6 +121,19 @@ const FIELD_DEFINITIONS = [
     rule: 'Maximum 50 characters.',
   },
   {
+    key: 'father_name',
+    label: 'Father name',
+    templateHeader: 'Father Name',
+    aliases: ['father name', 'father', 'fathers name', "father's name", 'parent name'],
+    inputType: 'text',
+    target: 'father',
+    column: 'father_name',
+    nullable: true,
+    maxLength: 50,
+    example: 'Ramesh Kumar',
+    rule: 'Maximum 50 characters. Creates a Father parent link when the student has none.',
+  },
+  {
     key: 'admission_number',
     label: 'Admission number',
     templateHeader: 'New Admission Number',
@@ -251,6 +264,7 @@ const SECOND_EXAMPLES = {
   first_name: 'Arjun',
   middle_name: 'Kumar',
   last_name: 'Reddy',
+  father_name: 'Suresh Reddy',
   admission_number: '2052',
   pen_number: 'PEN20260002',
   apar_number: 'APAAR234567',
@@ -501,6 +515,15 @@ const loadStudentRows = async (db, schoolId, admissionNumbers) => {
          AND pc.is_primary = TRUE
          AND pc.deleted_at IS NULL
        LIMIT 1) AS mobile_number,
+      (SELECT pp.display_name
+       FROM student_parents sp
+       JOIN parents pa ON pa.id = sp.parent_id AND pa.deleted_at IS NULL
+       JOIN persons pp ON pp.id = pa.person_id AND pp.school_id = ${schoolId}
+       WHERE sp.student_id = s.id
+         AND sp.school_id = ${schoolId}
+         AND sp.relationship_id = 1
+         AND sp.deleted_at IS NULL
+       LIMIT 1) AS father_name,
       g.name AS gender_name,
       sc.name AS category_name,
       r.name AS religion_name,
@@ -531,6 +554,7 @@ const currentFieldValue = (field, student) => {
   if (field.key === 'religion') return { value: student.religion_id == null ? null : String(student.religion_id), display: student.religion_name };
   if (field.key === 'blood_group') return { value: student.blood_group_id == null ? null : String(student.blood_group_id), display: student.blood_group_name };
   if (field.key === 'mobile_number') return { value: student.mobile_number || null, display: student.mobile_number || null };
+  if (field.key === 'father_name') return { value: student.father_name || null, display: student.father_name || null };
   if (field.key === 'admission_number') return { value: student.admission_no, display: student.admission_no };
 
   const raw = student[field.column];
@@ -872,6 +896,73 @@ async function applyContactUpdates(tx, schoolId, field, rows) {
   return applied;
 }
 
+const FATHER_RELATIONSHIP_ID = 1;
+
+async function applyFatherNameUpdates(tx, schoolId, rows) {
+  let applied = 0;
+  for (const row of rows) {
+    const [existingLink] = await tx`
+      SELECT sp.id AS link_id, pa.id AS parent_id, pp.id AS person_id
+      FROM student_parents sp
+      JOIN parents pa ON pa.id = sp.parent_id AND pa.deleted_at IS NULL
+      JOIN persons pp ON pp.id = pa.person_id AND pp.school_id = ${schoolId}
+      WHERE sp.student_id = ${row.student_id}
+        AND sp.school_id = ${schoolId}
+        AND sp.relationship_id = ${FATHER_RELATIONSHIP_ID}
+        AND sp.deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    if (row.normalized_value == null) {
+      if (existingLink) {
+        await tx`
+          UPDATE student_parents
+          SET deleted_at = now()
+          WHERE id = ${existingLink.link_id}
+            AND school_id = ${schoolId}
+            AND deleted_at IS NULL
+        `;
+      }
+      applied += 1;
+      continue;
+    }
+
+    if (existingLink) {
+      await tx`
+        UPDATE persons
+        SET first_name = ${row.normalized_value},
+            middle_name = NULL,
+            last_name = NULL,
+            gender_id = 1,
+            updated_at = now()
+        WHERE id = ${existingLink.person_id}
+          AND school_id = ${schoolId}
+      `;
+    } else {
+      const [parentPerson] = await tx`
+        INSERT INTO persons (school_id, first_name, last_name, gender_id)
+        VALUES (${schoolId}, ${row.normalized_value}, NULL, 1)
+        RETURNING id
+      `;
+      const [parentRecord] = await tx`
+        INSERT INTO parents (school_id, person_id)
+        VALUES (${schoolId}, ${parentPerson.id})
+        RETURNING id
+      `;
+      await tx`
+        INSERT INTO student_parents (
+          school_id, student_id, parent_id, relationship_id, is_primary_contact, is_legal_guardian
+        )
+        VALUES (
+          ${schoolId}, ${row.student_id}, ${parentRecord.id}, ${FATHER_RELATIONSHIP_ID}, FALSE, FALSE
+        )
+      `;
+    }
+    applied += 1;
+  }
+  return applied;
+}
+
 async function applyScalarUpdates(tx, schoolId, field, rows) {
   const studentIds = rows.map((row) => row.student_id);
   const values = rows.map((row) => row.normalized_value);
@@ -956,9 +1047,14 @@ export async function commitStudentBulkUpdate(db, { schoolId, batchId }) {
       throw error;
     }
 
-    const applied = field.target === 'contact'
-      ? await applyContactUpdates(tx, schoolId, field, rows)
-      : await applyScalarUpdates(tx, schoolId, field, rows);
+    let applied;
+    if (field.target === 'contact') {
+      applied = await applyContactUpdates(tx, schoolId, field, rows);
+    } else if (field.target === 'father') {
+      applied = await applyFatherNameUpdates(tx, schoolId, rows);
+    } else {
+      applied = await applyScalarUpdates(tx, schoolId, field, rows);
+    }
     if (applied !== rows.length) {
       throw new Error(`Expected to update ${rows.length} students, but only ${applied} were updated.`);
     }
