@@ -223,7 +223,7 @@ const FIELD_DEFINITIONS = [
     column: 'category_id',
     nullable: true,
     example: 'General',
-    rule: 'Use a configured category name or ID.',
+    rule: 'Use a configured category name or ID (General, OC, OBC, BC, BC A–BC E, SC, ST, EWS).',
   },
   {
     key: 'religion',
@@ -466,7 +466,10 @@ function normalizeFieldValue(field, row, { allowBlankClear, referenceLookup }) {
   }
 
   if (field.inputType === 'reference') {
-    const option = referenceLookup.get(input.toLowerCase());
+    const option =
+      referenceLookup.get(input.toLowerCase())
+      || referenceLookup.get(normalizeReferenceKey(input))
+      || referenceLookup.get(normalizeReferenceKey(input).replace(/\s+/g, ''));
     if (!option) return { error: `${input} is not a configured ${field.label.toLowerCase()} value.` };
     return { value: String(option.id), displayValue: option.name };
   }
@@ -567,11 +570,26 @@ const currentFieldValue = (field, student) => {
   return { value: raw == null ? null : String(raw), display: raw == null ? null : String(raw) };
 };
 
+/** Normalize category-like labels so "BC-A", "BC A", and "BCA" resolve the same. */
+const normalizeReferenceKey = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_./]+/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ');
+
 const buildReferenceLookup = (options) => {
   const lookup = new Map();
   for (const option of options) {
     lookup.set(String(option.id), option);
-    lookup.set(option.name.trim().toLowerCase(), option);
+    const raw = option.name.trim().toLowerCase();
+    lookup.set(raw, option);
+    const normalized = normalizeReferenceKey(option.name);
+    if (normalized) lookup.set(normalized, option);
+    // Compact form without spaces: "bc a" → "bca"
+    const compact = normalized.replace(/\s+/g, '');
+    if (compact) lookup.set(compact, option);
   }
   return lookup;
 };

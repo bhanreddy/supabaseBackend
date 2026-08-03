@@ -75,30 +75,43 @@ const normalizeOptionalName = (value) => normalizeOptionalString(value);
 
 const RELATIONSHIP_MAP = { Father: 1, Mother: 2, Guardian: 3 };
 
-const PARENTS_SUBQUERY = sql`
+const buildParentsSubquery = (schoolId) => sql`
   (
     SELECT json_agg(
       json_build_object(
         'first_name', pp.first_name,
         'last_name', pp.last_name,
+        'display_name', pp.display_name,
         'relation', rt.name,
+        'relationship', rt.name,
         'phone', (
           SELECT contact_value FROM person_contacts pc2
-          WHERE pc2.person_id = pp.id AND pc2.contact_type = 'phone'
+          WHERE pc2.person_id = pp.id
+            AND pc2.school_id = ${schoolId}
+            AND pc2.contact_type = 'phone'
+            AND pc2.is_primary = TRUE
+            AND pc2.deleted_at IS NULL
           LIMIT 1
         ),
         'occupation', par.occupation,
         'is_primary', sp.is_primary_contact,
-        'is_guardian', sp.is_legal_guardian
+        'is_primary_contact', sp.is_primary_contact,
+        'is_guardian', sp.is_legal_guardian,
+        'is_legal_guardian', sp.is_legal_guardian
       )
+      ORDER BY sp.is_primary_contact DESC, rt.id ASC NULLS LAST
     )
     FROM student_parents sp
     JOIN parents par ON sp.parent_id = par.id
+      AND par.school_id = ${schoolId}
+      AND par.deleted_at IS NULL
     JOIN persons pp ON par.person_id = pp.id
+      AND pp.school_id = ${schoolId}
+      AND pp.deleted_at IS NULL
     LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
     WHERE sp.student_id = s.id
+      AND sp.school_id = ${schoolId}
       AND sp.deleted_at IS NULL
-      AND par.deleted_at IS NULL
   ) as parents
 `;
 
@@ -322,9 +335,14 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     const students = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village, s.admission_date, s.status_id,
+        s.category_id, s.religion_id, s.blood_group_id,
         s.exit_academic_year_id, s.exit_date, exit_year.code AS exit_academic_year,
         p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
         st.code as status,
+        CASE WHEN s.category_id IS NOT NULL THEN
+          json_build_object('id', sc.id, 'name', sc.name)
+        ELSE NULL END AS category,
+        sc.name AS category_name,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'phone' AND pc.is_primary = true LIMIT 1) as phone,
         json_build_object(
@@ -354,6 +372,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       FROM students s
       JOIN persons p ON s.person_id = p.id
       JOIN student_statuses st ON s.status_id = st.id
+      LEFT JOIN student_categories sc ON sc.id = s.category_id
       LEFT JOIN academic_years exit_year ON exit_year.id = s.exit_academic_year_id
       LEFT JOIN LATERAL (
         SELECT candidate.*
@@ -797,6 +816,7 @@ router.get('/unenrolled', requirePermission('students.view'), async (req, res) =
 router.get('/:id', requirePermission('students.view'), async (req, res) => {
   try {
     const { id } = req.params;
+    res.set('Cache-Control', 'no-store');
     const student = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
@@ -809,10 +829,30 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
         to_char(p.dob, 'YYYY-MM-DD') as dob,
         p.gender_id, p.photo_url,
         st.code as status,
+        CASE WHEN s.category_id IS NOT NULL THEN
+          json_build_object('id', sc.id, 'name', sc.name)
+        ELSE NULL END AS category,
+        CASE WHEN s.religion_id IS NOT NULL THEN
+          json_build_object('id', rel.id, 'name', rel.name)
+        ELSE NULL END AS religion,
+        sc.name AS category_name,
+        rel.name AS religion_name,
         -- Fetch Primary Email
-        (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
+        (SELECT contact_value FROM person_contacts pc
+         WHERE pc.person_id = p.id
+           AND pc.school_id = ${req.schoolId}
+           AND pc.contact_type = 'email'
+           AND pc.is_primary = true
+           AND pc.deleted_at IS NULL
+         LIMIT 1) as email,
         -- Fetch Primary Phone
-        (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'phone' AND pc.is_primary = true LIMIT 1) as phone,
+        (SELECT contact_value FROM person_contacts pc
+         WHERE pc.person_id = p.id
+           AND pc.school_id = ${req.schoolId}
+           AND pc.contact_type = 'phone'
+           AND pc.is_primary = true
+           AND pc.deleted_at IS NULL
+         LIMIT 1) as phone,
         -- Current Enrollment
         (SELECT json_build_object(
                 'id', se.id,
@@ -844,11 +884,16 @@ router.get('/:id', requirePermission('students.view'), async (req, res) => {
               se.created_at DESC
             LIMIT 1
         ) as current_enrollment,
-        ${PARENTS_SUBQUERY}
+        ${buildParentsSubquery(req.schoolId)}
       FROM students s
       JOIN persons p ON s.person_id = p.id
       JOIN student_statuses st ON s.status_id = st.id
-      WHERE s.id = ${id} AND s.school_id = ${req.schoolId}
+      LEFT JOIN student_categories sc ON sc.id = s.category_id
+      LEFT JOIN religions rel ON rel.id = s.religion_id
+      WHERE s.id = ${id}
+        AND s.school_id = ${req.schoolId}
+        AND s.deleted_at IS NULL
+        AND p.deleted_at IS NULL
     `;
 
     if (student.length === 0) {
@@ -2077,8 +2122,38 @@ router.get('/:id/attendance', requireAuth, async (req, res) => {
       `;
     }
 
-    // Calculate summary
-    const summary = await sql`
+    // Calculate summary (respect optional date range used for records)
+    const summary = (from_date && to_date)
+      ? await sql`
+      SELECT 
+        COUNT(*) FILTER (WHERE da.status = 'present')::int as present,
+        COUNT(*) FILTER (WHERE da.status = 'absent')::int as absent,
+        COUNT(*) FILTER (WHERE da.status = 'late')::int as late,
+        COUNT(*) FILTER (WHERE da.status = 'half_day')::int as half_day,
+        (
+          COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+          + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+        )::float as effective_present,
+        (
+          COUNT(*) FILTER (WHERE da.status = 'absent')
+          + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+        )::float as effective_absent,
+        ROUND(
+          (
+            COUNT(*) FILTER (WHERE da.status IN ('present', 'late'))
+            + 0.5 * COUNT(*) FILTER (WHERE da.status = 'half_day')
+          )::numeric / NULLIF(COUNT(*), 0) * 100,
+          1
+        )::float as attendance_percentage,
+        COUNT(*)::int as total
+      FROM daily_attendance da
+      JOIN student_enrollments se ON da.student_enrollment_id = se.id
+      WHERE se.student_id = ${targetStudentId}
+        AND se.school_id = ${req.schoolId}
+        AND da.attendance_date BETWEEN ${from_date} AND ${to_date}
+        AND da.deleted_at IS NULL
+    `
+      : await sql`
       SELECT 
         COUNT(*) FILTER (WHERE da.status = 'present')::int as present,
         COUNT(*) FILTER (WHERE da.status = 'absent')::int as absent,

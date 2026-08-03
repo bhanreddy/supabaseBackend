@@ -3219,11 +3219,12 @@ FROM (VALUES
   (4, 'ST'),
   (5, 'EWS'),
   (6, 'BC'),
-  (7, 'BC-A'),
-  (8, 'BC-B'),
-  (9, 'BC-C'),
-  (10, 'BC-D'),
-  (11, 'BC-E')
+  (7, 'BC A'),
+  (8, 'BC B'),
+  (9, 'BC C'),
+  (10, 'BC D'),
+  (11, 'BC E'),
+  (12, 'OC')
 ) AS v(id, name)
 WHERE NOT EXISTS (
   SELECT 1 FROM student_categories sc WHERE sc.id = v.id
