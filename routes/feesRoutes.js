@@ -521,28 +521,58 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
     ) enroll ON true
     LEFT JOIN LATERAL (
       SELECT
-        pp.display_name as father_name,
         (
-          SELECT pc.contact_value
-          FROM person_contacts pc
-          WHERE pc.person_id = pp.id
-            AND pc.school_id = ${req.schoolId}
-            AND pc.contact_type = 'phone'
-            AND pc.deleted_at IS NULL
-          ORDER BY pc.is_primary DESC, pc.created_at
+          SELECT pp.display_name
+          FROM student_parents sp
+          JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+          JOIN persons pp ON par.person_id = pp.id
+          LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+          WHERE sp.student_id = s.id
+            AND sp.school_id = ${req.schoolId}
+            AND sp.deleted_at IS NULL
+          ORDER BY
+            CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+            sp.created_at
           LIMIT 1
+        ) as father_name,
+        COALESCE(
+          (
+            SELECT pc.contact_value
+            FROM student_parents sp
+            JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+            JOIN persons pp ON par.person_id = pp.id
+            LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+            JOIN person_contacts pc ON pc.person_id = pp.id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+              AND NULLIF(btrim(pc.contact_value), '') IS NOT NULL
+            WHERE sp.student_id = s.id
+              AND sp.school_id = ${req.schoolId}
+              AND sp.deleted_at IS NULL
+            ORDER BY
+              CASE
+                WHEN rt.name = 'Father' THEN 0
+                WHEN rt.name = 'Mother' THEN 1
+                WHEN COALESCE(sp.is_primary_contact, false) THEN 2
+                ELSE 3
+              END,
+              pc.is_primary DESC,
+              sp.created_at
+            LIMIT 1
+          ),
+          (
+            SELECT pc.contact_value
+            FROM person_contacts pc
+            WHERE pc.person_id = s.person_id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+              AND NULLIF(btrim(pc.contact_value), '') IS NOT NULL
+            ORDER BY pc.is_primary DESC, pc.created_at
+            LIMIT 1
+          )
         ) as father_mobile
-      FROM student_parents sp
-      JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
-      JOIN persons pp ON par.person_id = pp.id
-      LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
-      WHERE sp.student_id = s.id
-        AND sp.school_id = ${req.schoolId}
-        AND sp.deleted_at IS NULL
-      ORDER BY
-        CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
-        sp.created_at
-      LIMIT 1
     ) father_info ON true
     WHERE s.id = ${studentId} AND s.deleted_at IS NULL AND s.school_id = ${req.schoolId}
   `;
@@ -1204,28 +1234,61 @@ router.get('/summaries', requirePermission('fees.view'), asyncHandler(async (req
     LEFT JOIN page ON true
     LEFT JOIN LATERAL (
       SELECT
-        pp.display_name as father_name,
         (
-          SELECT pc.contact_value
-          FROM person_contacts pc
-          WHERE pc.person_id = pp.id
-            AND pc.school_id = ${req.schoolId}
-            AND pc.contact_type = 'phone'
-            AND pc.deleted_at IS NULL
-          ORDER BY pc.is_primary DESC, pc.created_at
+          SELECT pp.display_name
+          FROM student_parents sp
+          JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+          JOIN persons pp ON par.person_id = pp.id
+          LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+          WHERE sp.student_id = page.student_id
+            AND sp.school_id = ${req.schoolId}
+            AND sp.deleted_at IS NULL
+          ORDER BY
+            CASE WHEN rt.name = 'Father' THEN 0 WHEN COALESCE(sp.is_primary_contact, true) THEN 1 ELSE 2 END,
+            sp.created_at
           LIMIT 1
+        ) as father_name,
+        COALESCE(
+          (
+            -- Prefer Father phone, then Mother, then primary/other parent contact
+            SELECT pc.contact_value
+            FROM student_parents sp
+            JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
+            JOIN persons pp ON par.person_id = pp.id
+            LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
+            JOIN person_contacts pc ON pc.person_id = pp.id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+              AND NULLIF(btrim(pc.contact_value), '') IS NOT NULL
+            WHERE sp.student_id = page.student_id
+              AND sp.school_id = ${req.schoolId}
+              AND sp.deleted_at IS NULL
+            ORDER BY
+              CASE
+                WHEN rt.name = 'Father' THEN 0
+                WHEN rt.name = 'Mother' THEN 1
+                WHEN COALESCE(sp.is_primary_contact, false) THEN 2
+                ELSE 3
+              END,
+              pc.is_primary DESC,
+              sp.created_at
+            LIMIT 1
+          ),
+          (
+            -- Fall back to the student's own contact number
+            SELECT pc.contact_value
+            FROM students st
+            JOIN person_contacts pc ON pc.person_id = st.person_id
+              AND pc.school_id = ${req.schoolId}
+              AND pc.contact_type = 'phone'
+              AND pc.deleted_at IS NULL
+              AND NULLIF(btrim(pc.contact_value), '') IS NOT NULL
+            WHERE st.id = page.student_id
+            ORDER BY pc.is_primary DESC, pc.created_at
+            LIMIT 1
+          )
         ) as father_mobile
-      FROM student_parents sp
-      JOIN parents par ON sp.parent_id = par.id AND par.deleted_at IS NULL
-      JOIN persons pp ON par.person_id = pp.id
-      LEFT JOIN relationship_types rt ON sp.relationship_id = rt.id
-      WHERE sp.student_id = page.student_id
-        AND sp.school_id = ${req.schoolId}
-        AND sp.deleted_at IS NULL
-      ORDER BY
-        CASE WHEN rt.name = 'Father' THEN 0 WHEN sp.is_primary_contact THEN 1 ELSE 2 END,
-        sp.created_at
-      LIMIT 1
     ) father_info ON true
     ORDER BY page.student_name, page.student_id
   `;
