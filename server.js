@@ -235,6 +235,7 @@ import paymentRouter from './routes/paymentRoutes.js';
 import meRouter from './routes/meRoutes.js';
 import messagesRouter from './routes/messagesRoutes.js';
 import parentVisitRouter from './routes/parentVisitRoutes.js';
+import websiteGalleryRouter from './routes/websiteGalleryRoutes.js';
 import { requireFeature } from './middleware/requireFeature.js';
 
 // Health check endpoint (requires school_id per multi-tenant contract)
@@ -319,6 +320,7 @@ app.use('/api/v1/transport', requireFeature('quick.transport'), transportFeeRout
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportRouter);
 app.use('/api/v1/hostel', hostelRouter);
 app.use('/api/v1/events', eventsRouter);
+app.use('/api/v1', websiteGalleryRouter);
 app.use('/api/v1/admin', adminRouter);
 app.use('/api/v1/lms', requireFeature('topbar.lms'), lmsRouter);
 app.use('/api/v1/notifications', notificationRouter);

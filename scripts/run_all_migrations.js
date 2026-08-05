@@ -85,6 +85,7 @@ async function bootstrapExistingMigrations(files, client) {
     '20260706_partial_fee_payment_toggle.sql',
     '20260706_rbac_sod_permissions.sql',
     '20260706_fee_refund_amount_constraint.sql',
+    '20260804_school_website_gallery.sql',
   ];
   let bootstrapped = 0;
   for (const filePath of files) {

@@ -22,6 +22,9 @@ const JWT_SCHOOL_ID_PATHS = [
   // the tenant from the verified JWT. Multipart PATCH bodies have not been
   // parsed when this middleware runs, so they cannot safely supply school_id.
   /^\/api\/v1\/school-settings(?:\/.*)?$/i,
+  // Public website gallery reads use the explicit school_id query parameter,
+  // while every admin list/upload/delete is JWT tenant-bound.
+  /^\/api\/v1\/admin\/website-gallery(?:\/.*)?$/i,
   /^\/api\/v1\/dcgd\/?$/i,
   /^\/api\/v1\/dcgd\/programs\/\d+\/content\/?$/i,
   /^\/api\/v1\/fees\/adjust\/?$/i,
