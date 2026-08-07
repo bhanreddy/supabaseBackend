@@ -110,6 +110,8 @@ router.post(
 /**
  * GET /certificates
  * List issued certificates for the authenticated school (most recent first).
+ * Optional filters: student_id, type (TC|BONAFIDE).
+ * Includes snapshot `data` so clients can re-render school copies.
  */
 router.get(
   '/',
@@ -119,6 +121,12 @@ router.get(
     const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
     const offset = Math.max(Number.parseInt(String(req.query.offset || '0'), 10) || 0, 0);
     const studentId = req.query.student_id ? String(req.query.student_id) : null;
+    const typeRaw = req.query.type ? String(req.query.type).toUpperCase() : null;
+    const typeFilter = typeRaw && VALID_TYPES.has(typeRaw) ? typeRaw : null;
+
+    if (typeRaw && !typeFilter) {
+      return sendError(res, 400, 'type must be TC or BONAFIDE');
+    }
 
     const rows = await sql`
       SELECT
@@ -128,6 +136,7 @@ router.get(
         ic.serial_no,
         ic.issued_at,
         ic.created_at,
+        ic.data,
         s.admission_no,
         p.display_name AS student_name
       FROM issued_certificates ic
@@ -135,6 +144,7 @@ router.get(
       JOIN persons p ON p.id = s.person_id
       WHERE ic.school_id = ${req.schoolId}
         ${studentId ? sql`AND ic.student_id = ${studentId}` : sql``}
+        ${typeFilter ? sql`AND ic.type = ${typeFilter}` : sql``}
       ORDER BY ic.issued_at DESC
       LIMIT ${limit}
       OFFSET ${offset}

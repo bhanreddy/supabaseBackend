@@ -98,13 +98,16 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
   const [notices, attendanceBlock, upcomingFee, timetableToday] = await Promise.all([
     sql`
         SELECT
-          n.id, n.title, n.content, n.title_te, n.content_te, n.audience, n.priority,
+          n.id, n.title, n.content, n.title_te, n.content_te, n.audience, n.audiences, n.priority,
           n.is_pinned, n.publish_at AS published_at, n.expires_at, n.created_at
         FROM notices n
         WHERE n.publish_at <= NOW()
           AND n.school_id = ${schoolId}
           AND (n.expires_at IS NULL OR n.expires_at > NOW())
-          AND (n.audience = 'students' OR n.audience = 'all')
+          AND (
+            n.audience = 'students' OR n.audience = 'all'
+            OR 'students' = ANY(n.audiences) OR 'all' = ANY(n.audiences)
+          )
         ORDER BY n.is_pinned DESC, n.publish_at DESC
         LIMIT 8
       `,

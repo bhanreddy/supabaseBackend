@@ -4346,6 +4346,9 @@ CREATE TABLE IF NOT EXISTS exams (
     start_date DATE,
     end_date DATE,
     status exam_status_enum NOT NULL DEFAULT 'scheduled',
+    results_published BOOLEAN NOT NULL DEFAULT FALSE,
+    results_published_at TIMESTAMPTZ,
+    results_published_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
@@ -4354,6 +4357,9 @@ CREATE TABLE IF NOT EXISTS exams (
 );
 
 CREATE INDEX IF NOT EXISTS idx_exams_school_id ON exams(school_id);
+
+CREATE INDEX IF NOT EXISTS idx_exams_results_published
+ON exams(school_id, results_published) WHERE deleted_at IS NULL;
 
 
 CREATE INDEX IF NOT EXISTS idx_exams_active ON exams(id) WHERE deleted_at IS NULL;
@@ -4522,6 +4528,7 @@ CREATE TABLE IF NOT EXISTS notices (
     content TEXT NOT NULL,
     content_te TEXT,
     audience notice_audience_enum NOT NULL DEFAULT 'all',
+    audiences notice_audience_enum[] NOT NULL DEFAULT ARRAY['all']::notice_audience_enum[],
     target_class_id UUID REFERENCES classes(id), 
     priority complaint_priority_enum NOT NULL DEFAULT 'medium',
     is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
@@ -4537,6 +4544,7 @@ CREATE INDEX IF NOT EXISTS idx_notices_school_id ON notices(school_id);
 
 
 CREATE INDEX IF NOT EXISTS idx_notices_audience ON notices(audience);
+CREATE INDEX IF NOT EXISTS idx_notices_audiences ON notices USING GIN (audiences);
 CREATE INDEX IF NOT EXISTS idx_notices_publish ON notices(publish_at);
 
 DROP TRIGGER IF EXISTS trg_notices_updated ON notices;
@@ -4555,11 +4563,11 @@ USING (
   (auth.role() = 'service_role') OR (
     notices.school_id = auth_school_id() AND (
       (created_by = auth.uid()) OR
-      (audience = 'all' AND auth.role() = 'authenticated') OR
-      (audience = 'staff' AND auth_has_role(ARRAY['admin', 'teacher', 'staff', 'accounts'])) OR
-      (audience = 'students' AND auth_has_role(ARRAY['admin', 'student'])) OR
-      (audience = 'parents' AND auth_has_role(ARRAY['admin', 'parent'])) OR
-      (audience = 'class' AND target_class_id IS NOT NULL)
+      ((audience = 'all' OR 'all' = ANY(audiences)) AND auth.role() = 'authenticated') OR
+      ((audience = 'staff' OR 'staff' = ANY(audiences)) AND auth_has_role(ARRAY['admin', 'teacher', 'staff', 'accounts'])) OR
+      ((audience = 'students' OR 'students' = ANY(audiences)) AND auth_has_role(ARRAY['admin', 'student'])) OR
+      ((audience = 'parents' OR 'parents' = ANY(audiences)) AND auth_has_role(ARRAY['admin', 'parent'])) OR
+      ((audience = 'class' OR 'class' = ANY(audiences)) AND target_class_id IS NOT NULL)
     )
   )
 );

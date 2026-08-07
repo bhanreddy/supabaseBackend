@@ -399,11 +399,14 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   const params = normalizeParams(rawParams);
 
   const [exam] = await db`
-    SELECT id, academic_year_id, timetable_published
+    SELECT id, academic_year_id, timetable_published, results_published
     FROM exams
     WHERE id = ${examId} AND school_id = ${schoolId} AND deleted_at IS NULL
   `;
   if (!exam) throw new ExamTimetableError('Exam not found', 404);
+  if (exam.results_published) {
+    throw new ExamTimetableError('Unpublish the exam results before regenerating the timetable', 409);
+  }
 
   const classes = await db`
     SELECT id, name FROM classes

@@ -872,70 +872,113 @@ router.post(
 
     // AN3: Ownership check — notice must belong to this school (404 on miss)
     const [notice] = await sql`
-      SELECT title, audience, target_class_id
+      SELECT title, audience, audiences, target_class_id
       FROM notices
       WHERE id        = ${notice_id}
         AND school_id = ${schoolId}
     `;
     if (!notice) return res.status(404).json({ error: 'Notice not found' });
 
-    const safeAudience      = notice.audience;
+    const safeAudiences = Array.isArray(notice.audiences) && notice.audiences.length
+      ? notice.audiences
+      : [notice.audience || 'all'];
     const safeTargetClassId = notice.target_class_id;
 
-    let recips = [];
+    // Resolve recipients for every selected audience (union / de-dupe)
+    const recipBuckets = await Promise.all(safeAudiences.map(async (safeAudience) => {
+      if (safeAudience === 'class' && safeTargetClassId) {
+        return sql`
+          SELECT DISTINCT u.id FROM users u
+          JOIN students s ON u.person_id = s.person_id
+            AND s.school_id  = ${schoolId}
+          JOIN student_enrollments se ON s.id = se.student_id
+            AND se.school_id = ${schoolId}
+          JOIN class_sections cs ON se.class_section_id = cs.id
+            AND cs.school_id = ${schoolId}
+          WHERE cs.class_id      = ${safeTargetClassId}
+            AND se.status        = 'active'
+            AND u.account_status = 'active'
+            AND u.school_id      = ${schoolId}
+          UNION
+          SELECT DISTINCT u.id FROM users u
+          JOIN parents p ON u.person_id = p.person_id
+          JOIN student_parents sp ON p.id = sp.parent_id
+          JOIN students s ON sp.student_id = s.id
+            AND s.school_id  = ${schoolId}
+          JOIN student_enrollments se ON s.id = se.student_id
+            AND se.school_id = ${schoolId}
+          JOIN class_sections cs ON se.class_section_id = cs.id
+            AND cs.school_id = ${schoolId}
+          WHERE cs.class_id      = ${safeTargetClassId}
+            AND se.status        = 'active'
+            AND u.account_status = 'active'
+            AND u.school_id      = ${schoolId}
+        `;
+      }
+      if (safeAudience === 'students') {
+        return sql`
+          SELECT DISTINCT u.id FROM users u
+          JOIN students s ON u.person_id = s.person_id
+            AND s.school_id = ${schoolId}
+          JOIN student_enrollments se ON s.id = se.student_id
+            AND se.school_id = ${schoolId}
+          WHERE se.status = 'active'
+            AND u.account_status = 'active'
+            AND u.school_id = ${schoolId}
+        `;
+      }
+      if (safeAudience === 'parents') {
+        return sql`
+          SELECT DISTINCT u.id FROM users u
+          JOIN parents p ON u.person_id = p.person_id
+          JOIN student_parents sp ON p.id = sp.parent_id
+          JOIN students s ON sp.student_id = s.id
+            AND s.school_id = ${schoolId}
+          WHERE u.account_status = 'active'
+            AND u.school_id = ${schoolId}
+        `;
+      }
+      if (safeAudience === 'staff') {
+        return sql`
+          SELECT DISTINCT u.id FROM users u
+          JOIN staff s ON u.person_id = s.person_id
+            AND s.school_id = ${schoolId}
+          WHERE s.deleted_at IS NULL
+            AND u.account_status = 'active'
+            AND u.school_id = ${schoolId}
+        `;
+      }
+      if (safeAudience === 'all') {
+        return sql`
+          SELECT DISTINCT u.id FROM users u
+          JOIN students s ON u.person_id = s.person_id
+            AND s.school_id  = ${schoolId}
+          JOIN student_enrollments se ON s.id = se.student_id
+            AND se.school_id = ${schoolId}
+          WHERE se.status        = 'active'
+            AND u.account_status = 'active'
+            AND u.school_id      = ${schoolId}
+          UNION
+          SELECT DISTINCT u.id FROM users u
+          JOIN parents p ON u.person_id = p.person_id
+          JOIN student_parents sp ON p.id = sp.parent_id
+          JOIN students s ON sp.student_id = s.id
+            AND s.school_id  = ${schoolId}
+          JOIN student_enrollments se ON s.id = se.student_id
+            AND se.school_id = ${schoolId}
+          WHERE se.status        = 'active'
+            AND u.account_status = 'active'
+            AND u.school_id      = ${schoolId}
+        `;
+      }
+      return [];
+    }));
 
-    // AN3: Downstream recipient queries also scoped to schoolId
-    if (safeAudience === 'class' && safeTargetClassId) {
-      recips = await sql`
-        SELECT DISTINCT u.id FROM users u
-        JOIN students s ON u.person_id = s.person_id
-          AND s.school_id  = ${schoolId}
-        JOIN student_enrollments se ON s.id = se.student_id
-          AND se.school_id = ${schoolId}
-        JOIN class_sections cs ON se.class_section_id = cs.id
-          AND cs.school_id = ${schoolId}
-        WHERE cs.class_id      = ${safeTargetClassId}
-          AND se.status        = 'active'
-          AND u.account_status = 'active'
-          AND u.school_id      = ${schoolId}
-        UNION
-        SELECT DISTINCT u.id FROM users u
-        JOIN parents p ON u.person_id = p.person_id
-        JOIN student_parents sp ON p.id = sp.parent_id
-        JOIN students s ON sp.student_id = s.id
-          AND s.school_id  = ${schoolId}
-        JOIN student_enrollments se ON s.id = se.student_id
-          AND se.school_id = ${schoolId}
-        JOIN class_sections cs ON se.class_section_id = cs.id
-          AND cs.school_id = ${schoolId}
-        WHERE cs.class_id      = ${safeTargetClassId}
-          AND se.status        = 'active'
-          AND u.account_status = 'active'
-          AND u.school_id      = ${schoolId}
-      `;
-    } else if (safeAudience === 'all') {
-      recips = await sql`
-        SELECT DISTINCT u.id FROM users u
-        JOIN students s ON u.person_id = s.person_id
-          AND s.school_id  = ${schoolId}
-        JOIN student_enrollments se ON s.id = se.student_id
-          AND se.school_id = ${schoolId}
-        WHERE se.status        = 'active'
-          AND u.account_status = 'active'
-          AND u.school_id      = ${schoolId}
-        UNION
-        SELECT DISTINCT u.id FROM users u
-        JOIN parents p ON u.person_id = p.person_id
-        JOIN student_parents sp ON p.id = sp.parent_id
-        JOIN students s ON sp.student_id = s.id
-          AND s.school_id  = ${schoolId}
-        JOIN student_enrollments se ON s.id = se.student_id
-          AND se.school_id = ${schoolId}
-        WHERE se.status        = 'active'
-          AND u.account_status = 'active'
-          AND u.school_id      = ${schoolId}
-      `;
+    const recipIds = new Set();
+    for (const rows of recipBuckets) {
+      for (const row of rows) recipIds.add(row.id);
     }
+    const recips = [...recipIds].map((id) => ({ id }));
 
     const totalUsers = recips.length;
 

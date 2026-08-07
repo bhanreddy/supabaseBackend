@@ -260,6 +260,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
        AND exam.academic_year_id = ${calendar.academicYearId}
        AND exam.deleted_at IS NULL
        AND exam.status != 'cancelled'
+       AND exam.results_published = TRUE
       WHERE mark.student_enrollment_id = enrollment.id
         AND mark.school_id = ${req.schoolId}
     ) result ON true
@@ -462,6 +463,7 @@ router.get('/:studentId', requireAuth, asyncHandler(async (req, res) => {
        AND exam.academic_year_id = ${calendar.academicYearId}
        AND exam.deleted_at IS NULL
        AND exam.status != 'cancelled'
+       AND exam.results_published = TRUE
       WHERE mark.student_enrollment_id = ${student.enrollment_id}
         AND mark.school_id = ${req.schoolId}
       GROUP BY exam.id, exam.name, exam.exam_type, exam.start_date

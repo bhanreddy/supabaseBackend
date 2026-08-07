@@ -14,8 +14,74 @@ import {
   sessionKey,
   clearExamSeating,
 } from '../services/examAllocationService.js';
+import {
+  ExamResultPublishingError,
+  getExamResultReadiness,
+  setExamResultsPublished,
+} from '../services/examResultPublishingService.js';
 
 const router = express.Router();
+
+const canPreviewUnpublishedResults = (req) =>
+  req.user?.roles?.includes('admin') || Boolean(req.staffPortalAccess?.admin_user_id);
+
+async function notifyPublishedResultUsers(schoolId, exam) {
+  try {
+    const { sendNotificationToUsers } = await import('../services/notificationService.js');
+    const users = await sql`
+      WITH result_students AS (
+        SELECT DISTINCT se.student_id
+        FROM exam_subjects es
+        JOIN class_sections cs
+          ON cs.class_id = es.class_id
+         AND cs.academic_year_id = ${exam.academic_year_id}
+         AND cs.school_id = ${schoolId}
+         AND cs.deleted_at IS NULL
+        JOIN student_enrollments se
+          ON se.class_section_id = cs.id
+         AND se.academic_year_id = ${exam.academic_year_id}
+         AND se.school_id = ${schoolId}
+         AND se.status = 'active'
+         AND se.deleted_at IS NULL
+        WHERE es.exam_id = ${exam.id}
+          AND es.school_id = ${schoolId}
+          AND es.deleted_at IS NULL
+      )
+      SELECT DISTINCT u.id AS user_id
+      FROM result_students rs
+      JOIN students st ON st.id = rs.student_id AND st.school_id = ${schoolId}
+      JOIN users u
+        ON u.person_id = st.person_id
+       AND u.school_id = ${schoolId}
+       AND u.account_status = 'active'
+       AND u.deleted_at IS NULL
+      UNION
+      SELECT DISTINCT u.id AS user_id
+      FROM result_students rs
+      JOIN student_parents sp
+        ON sp.student_id = rs.student_id
+       AND sp.school_id = ${schoolId}
+       AND sp.deleted_at IS NULL
+      JOIN parents p
+        ON p.id = sp.parent_id
+       AND p.school_id = ${schoolId}
+       AND p.deleted_at IS NULL
+      JOIN users u
+        ON u.person_id = p.person_id
+       AND u.school_id = ${schoolId}
+       AND u.account_status = 'active'
+       AND u.deleted_at IS NULL
+    `;
+    const userIds = users.map((user) => user.user_id);
+    if (userIds.length > 0) {
+      await sendNotificationToUsers(userIds, 'RESULT_RELEASED', {
+        message: `Results for ${exam.name} are now available.`,
+      });
+    }
+  } catch (error) {
+    console.error('Failed to notify users about published results', error);
+  }
+}
 
 // ============== SUBJECTS ==============
 
@@ -118,7 +184,7 @@ router.get('/exams', requirePermission('exams.view'), asyncHandler(async (req, r
     SELECT
       e.id, e.name, e.name_te, e.exam_type,
       e.start_date::text AS start_date, e.end_date::text AS end_date, e.status,
-      e.timetable_published,
+      e.timetable_published, e.results_published, e.results_published_at,
       (SELECT COUNT(*)::int FROM exam_subjects es
         WHERE es.exam_id = e.id AND es.deleted_at IS NULL) AS papers_count,
       ay.code as academic_year
@@ -294,9 +360,14 @@ router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandl
   }
 
   // RES3 FIX: Verify exam ownership
-  const [examCheck] = await sql`SELECT id FROM exams WHERE id = ${id} AND school_id = ${req.schoolId}`;
+  const [examCheck] = await sql`
+    SELECT id, results_published FROM exams WHERE id = ${id} AND school_id = ${req.schoolId}
+  `;
   if (!examCheck) {
     return res.status(404).json({ error: 'Exam not found' });
+  }
+  if (examCheck.results_published) {
+    return res.status(409).json({ error: 'Unpublish the exam results before adding a paper.' });
   }
 
   // RES3 FIX: Add school_id to exam_subjects INSERT
@@ -338,7 +409,7 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
   // RES4 FIX: Validate exam_subject ownership against both exam_subjects and exams school_id.
   const [examSubject] = await sql`
-    SELECT es.id, es.max_marks, es.exam_id, e.school_id
+    SELECT es.id, es.max_marks, es.exam_id, e.school_id, e.results_published
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id
     WHERE es.id = ${exam_subject_id}
@@ -348,6 +419,9 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
   if (!examSubject) {
     return res.status(404).json({ error: 'Exam subject not found' });
+  }
+  if (examSubject.results_published) {
+    return res.status(409).json({ error: 'Results are published. Ask an admin to unpublish them before changing marks.' });
   }
 
   const enteredBy = req.user?.internal_id;
@@ -407,64 +481,6 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
       results.push({ student_enrollment_id, error: err.message });
     }
   }
-
-  // 3. Send Notification (Async)
-  (async () => {
-    try {
-      const { sendNotificationToUsers } = await import('../services/notificationService.js');
-
-      // a. Fetch Exam Status
-      const [exam] = await sql`
-        SELECT e.name, e.status
-        FROM exams e
-        JOIN exam_subjects es ON e.id = es.exam_id
-        WHERE es.id = ${exam_subject_id}
-      `;
-
-      if (!exam || exam.status !== 'published') return;
-
-      // b. Identify Affected Students (Only NEW inserts)
-      const successEnrollmentIds = results.
-        filter((r) => r.success && r.isNew).
-        map((r) => r.student_enrollment_id);
-
-      if (successEnrollmentIds.length === 0) return;
-
-      // c. Resolve User IDs (Students & Parents)
-      const usersToNotify = await sql`
-        -- Student Users
-        SELECT u.id as user_id 
-        FROM users u
-        JOIN students s ON u.person_id = s.person_id
-        JOIN student_enrollments se ON s.id = se.student_id
-        WHERE se.id IN ${sql(successEnrollmentIds)}
-          AND u.account_status = 'active'
-
-        UNION
-
-        -- Parent Users
-        SELECT u.id as user_id
-        FROM users u
-        JOIN parents p ON u.person_id = p.person_id
-        JOIN student_parents sp ON p.id = sp.parent_id
-        JOIN students s ON sp.student_id = s.id
-        JOIN student_enrollments se ON s.id = se.student_id
-        WHERE se.id IN ${sql(successEnrollmentIds)}
-          AND u.account_status = 'active'
-      `;
-
-      const userIds = usersToNotify.map((u) => u.user_id);
-
-      await sendNotificationToUsers(
-        userIds,
-        'RESULT_RELEASED',
-        { message: `Results for ${exam.name} are now available.` }
-      );
-
-    } catch (err) {
-
-    }
-  })();
 
   return sendSuccess(res, req.schoolId, { message: 'Marks uploaded', results });
 }));
@@ -596,12 +612,16 @@ router.put('/marks/:id', requirePermission('marks.enter'), asyncHandler(async (r
 
   // RES5 FIX: Ownership check — verify mark belongs to this school via exam_subjects
   const [markCheck] = await sql`
-    SELECT m.id FROM marks m
+    SELECT m.id, e.results_published FROM marks m
     JOIN exam_subjects es ON m.exam_subject_id = es.id
+    JOIN exams e ON e.id = es.exam_id AND e.school_id = ${req.schoolId}
     WHERE m.id = ${id} AND es.school_id = ${req.schoolId}
   `;
   if (!markCheck) {
     return res.status(404).json({ error: 'Mark entry not found' });
+  }
+  if (markCheck.results_published) {
+    return res.status(409).json({ error: 'Results are published. Ask an admin to unpublish them before changing marks.' });
   }
 
   const [updated] = await sql`
@@ -633,6 +653,12 @@ router.put('/marks/:id', requirePermission('marks.enter'), asyncHandler(async (r
 router.get('/student/:studentId', requirePermission('results.view'), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   const { exam_id, academic_year_id } = req.query;
+  const resultVisibility = () => canPreviewUnpublishedResults(req)
+    ? sql``
+    : sql`AND e.results_published = TRUE`;
+  const resultCompleteness = () => canPreviewUnpublishedResults(req)
+    ? sql``
+    : sql`HAVING COUNT(m.id) = COUNT(es.id)`;
 
   // Get student info
   const [student] = await sql`
@@ -654,6 +680,25 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
   // Get exam results
   let results;
   if (exam_id) {
+    // Scope papers to the student's active class so other classes' subjects
+    // do not appear as duplicate zero / null rows.
+    const [enrollment] = await sql`
+      SELECT se.id AS enrollment_id, cs.class_id
+      FROM student_enrollments se
+      JOIN class_sections cs ON se.class_section_id = cs.id
+        AND cs.school_id = ${req.schoolId}
+        AND cs.deleted_at IS NULL
+      WHERE se.student_id = ${studentId}
+        AND se.school_id = ${req.schoolId}
+        AND se.status = 'active'
+        AND se.deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    if (!enrollment) {
+      return sendSuccess(res, req.schoolId, { student, results: [] });
+    }
+
     results = await sql`
       SELECT 
         e.id as exam_id, e.name as exam_name, e.name_te as exam_name_te, e.exam_type,
@@ -662,23 +707,40 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
           'marks_obtained', m.marks_obtained,
           'max_marks', es.max_marks,
           'passing_marks', es.passing_marks,
-          'is_absent', m.is_absent,
+          'is_absent', COALESCE(m.is_absent, false),
           'remarks', m.remarks,
-          'percentage', CASE WHEN m.is_absent THEN 0 ELSE ROUND((m.marks_obtained / es.max_marks) * 100, 2) END,
-          'passed', CASE WHEN m.is_absent THEN false ELSE m.marks_obtained >= es.passing_marks END
+          'percentage', CASE
+            WHEN m.id IS NULL THEN NULL
+            WHEN m.is_absent THEN 0
+            ELSE ROUND((m.marks_obtained / es.max_marks) * 100, 2)
+          END,
+          'passed', CASE
+            WHEN m.id IS NULL THEN NULL
+            WHEN m.is_absent THEN false
+            ELSE m.marks_obtained >= es.passing_marks
+          END
         ) ORDER BY sub.name) as subjects,
-        SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END) as total_obtained,
+        SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END) as total_obtained,
         SUM(es.max_marks) as total_max,
-        ROUND(CAST(SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END) AS NUMERIC) / NULLIF(SUM(es.max_marks), 0) * 100, 2) as percentage
+        ROUND(
+          CAST(SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END) AS NUMERIC)
+          / NULLIF(SUM(es.max_marks), 0) * 100,
+          2
+        ) as percentage
       FROM exams e
       JOIN exam_subjects es ON e.id = es.exam_id
+        AND es.class_id = ${enrollment.class_id}
+        AND es.school_id = ${req.schoolId}
+        AND es.deleted_at IS NULL
       JOIN subjects sub ON es.subject_id = sub.id
-      LEFT JOIN marks m ON m.exam_subject_id = es.id 
-        AND m.student_enrollment_id IN (
-          SELECT id FROM student_enrollments WHERE student_id = ${studentId}
-        )
+      LEFT JOIN marks m ON m.exam_subject_id = es.id
+        AND m.student_enrollment_id = ${enrollment.enrollment_id}
+        AND m.school_id = ${req.schoolId}
       WHERE e.id = ${exam_id}
+        AND e.school_id = ${req.schoolId}
+        ${resultVisibility()}
       GROUP BY e.id, e.name, e.exam_type
+      ${resultCompleteness()}
     `;
   } else {
     results = await sql`
@@ -695,6 +757,10 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
       JOIN academic_years ay ON e.academic_year_id = ay.id
       JOIN student_enrollments se ON m.student_enrollment_id = se.id
       WHERE se.student_id = ${studentId}
+        AND e.school_id = ${req.schoolId}
+        AND es.school_id = ${req.schoolId}
+        AND m.school_id = ${req.schoolId}
+        ${resultVisibility()}
         ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
       GROUP BY e.id, e.name, e.exam_type, ay.code
       ORDER BY e.start_date DESC
@@ -795,6 +861,9 @@ router.get('/generate', requirePermission('results.generate'), asyncHandler(asyn
 router.get('/summary/student/:studentId', requirePermission('results.view'), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   const { academic_year_id } = req.query;
+  const resultVisibility = () => canPreviewUnpublishedResults(req)
+    ? sql``
+    : sql`AND e.results_published = TRUE`;
 
   // Query to get counts and latest info for each exam type
   // Only includes exams where the student has at least one mark entry
@@ -808,6 +877,10 @@ router.get('/summary/student/:studentId', requirePermission('results.view'), asy
     JOIN exams e ON es.exam_id = e.id
     JOIN student_enrollments se ON m.student_enrollment_id = se.id
     WHERE se.student_id = ${studentId}
+      AND e.school_id = ${req.schoolId}
+      AND es.school_id = ${req.schoolId}
+      AND m.school_id = ${req.schoolId}
+      ${resultVisibility()}
       ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
     GROUP BY e.exam_type
     ORDER BY MAX(e.start_date) DESC
@@ -832,6 +905,9 @@ router.get('/list/student/:studentId', requirePermission('results.view'), asyncH
   const lim = Math.min(parseInt(limit, 10) || 15, 50);
   const pg = Math.max(parseInt(page, 10) || 1, 1);
   const offset = (pg - 1) * lim;
+  const resultVisibility = () => canPreviewUnpublishedResults(req)
+    ? sql``
+    : sql`AND e.results_published = TRUE`;
 
   const exams = usePaging
     ? await sql`
@@ -849,6 +925,10 @@ router.get('/list/student/:studentId', requirePermission('results.view'), asyncH
     JOIN student_enrollments se ON m.student_enrollment_id = se.id
     WHERE se.student_id = ${studentId}
       AND e.exam_type = ${exam_type}
+      AND e.school_id = ${req.schoolId}
+      AND es.school_id = ${req.schoolId}
+      AND m.school_id = ${req.schoolId}
+      ${resultVisibility()}
       ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
     GROUP BY e.id, e.name, e.exam_type, e.start_date, e.end_date, e.status, ay.code
     ORDER BY e.start_date DESC
@@ -869,6 +949,10 @@ router.get('/list/student/:studentId', requirePermission('results.view'), asyncH
     JOIN student_enrollments se ON m.student_enrollment_id = se.id
     WHERE se.student_id = ${studentId}
       AND e.exam_type = ${exam_type}
+      AND e.school_id = ${req.schoolId}
+      AND es.school_id = ${req.schoolId}
+      AND m.school_id = ${req.schoolId}
+      ${resultVisibility()}
       ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
     GROUP BY e.id, e.name, e.exam_type, e.start_date, e.end_date, e.status, ay.code
     ORDER BY e.start_date DESC
@@ -883,6 +967,10 @@ router.get('/list/student/:studentId', requirePermission('results.view'), asyncH
       JOIN student_enrollments se ON m.student_enrollment_id = se.id
       WHERE se.student_id = ${studentId}
         AND e.exam_type = ${exam_type}
+        AND e.school_id = ${req.schoolId}
+        AND es.school_id = ${req.schoolId}
+        AND m.school_id = ${req.schoolId}
+        ${resultVisibility()}
         ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
     `;
     return sendSuccess(res, req.schoolId, {
@@ -1008,7 +1096,7 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
 
   // 2. Find or Create Exam (B2: school_id scoped)
   let [exam] = await sql`
-    SELECT id, name, exam_type
+    SELECT id, name, exam_type, results_published
     FROM exams
     WHERE academic_year_id = ${academic_year_id}
       AND exam_type = ${exam_category}
@@ -1024,8 +1112,12 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     [exam] = await sql`
       INSERT INTO exams (school_id, name, name_te, academic_year_id, exam_type, start_date, status)
       VALUES (${req.schoolId}, ${sub_exam}, ${autoNameTe}, ${academic_year_id}, ${exam_category}, CURRENT_DATE, 'ongoing')
-      RETURNING id, name, exam_type
+      RETURNING id, name, exam_type, results_published
     `;
+  }
+
+  if (exam.results_published) {
+    return res.status(409).json({ error: 'Results are published. Ask an admin to unpublish them before changing marks.' });
   }
 
   // 3. Find or Create Exam Subject (B2: school_id scoped)
@@ -1122,48 +1214,6 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     }
   }
 
-  // 5. Send Notification (Async)
-  (async () => {
-    try {
-      const { sendNotificationToUsers } = await import('../services/notificationService.js');
-
-      const successEnrollmentIds = processedResults.
-        filter((r) => r.success && r.isNew).
-        map((r) => r.enrollment_id);
-
-      if (successEnrollmentIds.length === 0) return;
-
-      const usersToNotify = await sql`
-        SELECT u.id as user_id 
-        FROM users u
-        JOIN students s ON u.person_id = s.person_id
-        JOIN student_enrollments se ON s.id = se.student_id
-        WHERE se.id IN ${sql(successEnrollmentIds)}
-          AND u.account_status = 'active'
-        UNION
-        SELECT u.id as user_id
-        FROM users u
-        JOIN parents p ON u.person_id = p.person_id
-        JOIN student_parents sp ON p.id = sp.parent_id
-        JOIN students s ON sp.student_id = s.id
-        JOIN student_enrollments se ON s.id = se.student_id
-        WHERE se.id IN ${sql(successEnrollmentIds)}
-          AND u.account_status = 'active'
-      `;
-
-      const userIds = usersToNotify.map((u) => u.user_id);
-      if (userIds.length > 0) {
-        await sendNotificationToUsers(
-          userIds,
-          'RESULT_RELEASED',
-          { message: `Results for ${exam.name} are now available.` }
-        );
-      }
-    } catch (err) {
-
-    }
-  })();
-
   return sendSuccess(res, req.schoolId, {
     message: 'Marks uploaded successfully',
     exam_id: exam.id,
@@ -1217,6 +1267,7 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
     SELECT e.id, e.name, e.name_te, e.exam_type,
            e.start_date::text AS start_date, e.end_date::text AS end_date, e.status,
            e.timetable_published, e.timetable_published_at, e.timetable_params,
+           e.results_published, e.results_published_at, e.results_published_by,
            e.academic_year_id, ay.code AS academic_year
     FROM exams e
     JOIN academic_years ay ON e.academic_year_id = ay.id
@@ -1253,7 +1304,16 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
     ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, c.sort_order NULLS LAST, c.name, s.name
   `;
 
-  return sendSuccess(res, req.schoolId, { exam, papers });
+  const resultReadiness = await getExamResultReadiness({
+    schoolId: req.schoolId,
+    examId: id,
+  });
+
+  return sendSuccess(res, req.schoolId, {
+    exam,
+    papers,
+    result_readiness: resultReadiness,
+  });
 }));
 
 /**
@@ -1386,12 +1446,17 @@ router.patch('/exam-subjects/:id', requirePermission('exams.manage'), asyncHandl
 
   const [paper] = await sql`
     SELECT es.id, es.exam_id, es.exam_date::text AS exam_date,
-           es.max_marks, es.passing_marks, es.start_time::text AS start_time, es.end_time
+           es.max_marks, es.passing_marks, es.start_time::text AS start_time, es.end_time,
+           e.results_published
     FROM exam_subjects es
+    JOIN exams e ON e.id = es.exam_id AND e.school_id = ${req.schoolId}
     WHERE es.id = ${id} AND es.school_id = ${req.schoolId} AND es.deleted_at IS NULL
   `;
   if (!paper) {
     return res.status(404).json({ error: 'Exam paper not found' });
+  }
+  if (paper.results_published) {
+    return res.status(409).json({ error: 'Unpublish the exam results before changing a paper.' });
   }
 
   const newMax = max_marks !== undefined ? Number(max_marks) : Number(paper.max_marks);
@@ -1528,6 +1593,19 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
 router.delete('/exam-subjects/:id', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
 
+  const [paper] = await sql`
+    SELECT es.id, e.results_published
+    FROM exam_subjects es
+    JOIN exams e ON e.id = es.exam_id AND e.school_id = ${req.schoolId}
+    WHERE es.id = ${id} AND es.school_id = ${req.schoolId} AND es.deleted_at IS NULL
+  `;
+  if (!paper) {
+    return res.status(404).json({ error: 'Exam paper not found' });
+  }
+  if (paper.results_published) {
+    return res.status(409).json({ error: 'Unpublish the exam results before removing a paper.' });
+  }
+
   const [hasMarks] = await sql`SELECT 1 FROM marks WHERE exam_subject_id = ${id} LIMIT 1`;
   if (hasMarks) {
     return res.status(400).json({ error: 'Cannot remove: marks already recorded for this paper' });
@@ -1598,6 +1676,45 @@ router.post('/exams/:id/timetable/publish', requirePermission('exams.manage'), a
     message: published ? 'Exam timetable published' : 'Exam timetable unpublished',
     exam: updated,
   });
+}));
+
+/**
+ * POST /results/exams/:id/results/publish
+ * Body: { published: boolean }. Publishing is exam-wide and is allowed only
+ * after every active student has an entry for every scheduled paper.
+ */
+router.post('/exams/:id/results/publish', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
+  if (!canPreviewUnpublishedResults(req)) {
+    return res.status(403).json({ error: 'Only an admin can publish exam results' });
+  }
+  const published = req.body?.published !== false;
+
+  try {
+    const result = await setExamResultsPublished({
+      schoolId: req.schoolId,
+      examId: req.params.id,
+      published,
+      publishedBy: req.user?.internal_id,
+    });
+
+    if (published && result.changed) {
+      void notifyPublishedResultUsers(req.schoolId, result.exam);
+    }
+
+    return sendSuccess(res, req.schoolId, {
+      message: published ? 'Exam results published' : 'Exam results unpublished',
+      exam: result.exam,
+      result_readiness: result.readiness,
+    });
+  } catch (error) {
+    if (error instanceof ExamResultPublishingError) {
+      return res.status(error.status).json({
+        error: error.message,
+        ...(error.details ? { result_readiness: error.details } : {}),
+      });
+    }
+    throw error;
+  }
 }));
 
 /**

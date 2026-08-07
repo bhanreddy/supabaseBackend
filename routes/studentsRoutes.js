@@ -334,15 +334,28 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
 
     const students = await sql`
       SELECT 
-        s.id, s.admission_no, s.pen_number, s.apar_number, s.village, s.admission_date, s.status_id,
+        s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
+        s.aadhaar_number, s.tc_number, s.previous_school,
+        to_char(s.admission_date, 'YYYY-MM-DD') AS admission_date, s.status_id,
         s.category_id, s.religion_id, s.blood_group_id,
-        s.exit_academic_year_id, s.exit_date, exit_year.code AS exit_academic_year,
-        p.first_name, p.middle_name, p.last_name, p.display_name, p.dob, p.gender_id, p.photo_url,
+        s.exit_academic_year_id, to_char(s.exit_date, 'YYYY-MM-DD') AS exit_date,
+        exit_year.code AS exit_academic_year,
+        p.first_name, p.middle_name, p.last_name, p.display_name,
+        to_char(p.dob, 'YYYY-MM-DD') AS dob, p.gender_id, p.photo_url,
+        g.name AS gender_name,
         st.code as status,
         CASE WHEN s.category_id IS NOT NULL THEN
           json_build_object('id', sc.id, 'name', sc.name)
         ELSE NULL END AS category,
         sc.name AS category_name,
+        CASE WHEN s.religion_id IS NOT NULL THEN
+          json_build_object('id', rel.id, 'name', rel.name)
+        ELSE NULL END AS religion,
+        rel.name AS religion_name,
+        CASE WHEN s.blood_group_id IS NOT NULL THEN
+          json_build_object('id', bg.id, 'name', bg.name)
+        ELSE NULL END AS blood_group,
+        bg.name AS blood_group_name,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'email' AND pc.is_primary = true LIMIT 1) as email,
         (SELECT contact_value FROM person_contacts pc WHERE pc.person_id = p.id AND pc.contact_type = 'phone' AND pc.is_primary = true LIMIT 1) as phone,
         json_build_object(
@@ -368,11 +381,15 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
             'status', se.status,
             'start_date', se.start_date,
             'end_date', se.end_date
-        ) as current_enrollment
+        ) as current_enrollment,
+        ${buildParentsSubquery(req.schoolId)}
       FROM students s
       JOIN persons p ON s.person_id = p.id
       JOIN student_statuses st ON s.status_id = st.id
       LEFT JOIN student_categories sc ON sc.id = s.category_id
+      LEFT JOIN religions rel ON rel.id = s.religion_id
+      LEFT JOIN blood_groups bg ON bg.id = s.blood_group_id
+      LEFT JOIN genders g ON g.id = p.gender_id
       LEFT JOIN academic_years exit_year ON exit_year.id = s.exit_academic_year_id
       LEFT JOIN LATERAL (
         SELECT candidate.*
@@ -1481,6 +1498,13 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
                 status = ${desiredEnrollmentStatus},
                 end_date = ${targetIsActive ? null : (currentEnrollment.end_date || resolvedExitDate)},
                 roll_number = CASE
+                  -- Reactivation must clear the stale roll: withdrawn rows keep
+                  -- their old number for history, but classmates were renumbered
+                  -- into that slot. Flipping back to active with the old value
+                  -- hits uq_active_enrollment_roll_number before recalc can run.
+                  WHEN ${desiredEnrollmentStatus} = 'active'
+                       AND ${currentEnrollment.status} IS DISTINCT FROM 'active'
+                    THEN NULL
                   WHEN class_section_id = ${targetCs.id} THEN roll_number
                   ELSE NULL
                 END,
@@ -2466,7 +2490,9 @@ router.post('/:id/parents', requirePermission('students.edit'), async (req, res)
 
 /**
  * GET /students/:id/results
- * Get exam results (marks), attendance %, grading scale for progress report
+ * Get exam results (marks), attendance %, grading scale for progress report.
+ * Subjects are scoped to the student's class (exam_subjects.class_id) so papers
+ * from other classes never appear as duplicate zero-mark rows.
  */
 router.get('/:id/results', requireAuth, async (req, res) => {
   try {
@@ -2474,12 +2500,27 @@ router.get('/:id/results', requireAuth, async (req, res) => {
     const targetStudentId = await resolveStudentParamWithAccess(req, res, id);
     if (!targetStudentId) return;
 
-    // 1. Find student's active enrollment
+    // 1. Active enrollment + class context (class_id is required for exam_subjects)
     const [enrollment] = await sql`
-      SELECT se.id, se.academic_year_id, se.class_section_id,
-             ay.code as academic_year_code
+      SELECT
+        se.id,
+        se.academic_year_id,
+        se.class_section_id,
+        se.roll_number,
+        ay.code AS academic_year_code,
+        cs.class_id,
+        c.name AS class_name,
+        c.code AS class_code,
+        sec.name AS section_name
       FROM student_enrollments se
       JOIN academic_years ay ON se.academic_year_id = ay.id
+      JOIN class_sections cs ON se.class_section_id = cs.id
+        AND cs.school_id = ${req.schoolId}
+        AND cs.deleted_at IS NULL
+      JOIN classes c ON cs.class_id = c.id
+        AND c.school_id = ${req.schoolId}
+      JOIN sections sec ON cs.section_id = sec.id
+        AND sec.school_id = ${req.schoolId}
       WHERE se.student_id = ${targetStudentId}
         AND se.school_id = ${req.schoolId}
         AND se.status = 'active'
@@ -2489,13 +2530,80 @@ router.get('/:id/results', requireAuth, async (req, res) => {
 
     if (!enrollment) {
       return sendSuccess(res, req.schoolId, {
+        student: null,
         exams: [],
         attendance: { present: 0, absent: 0, late: 0, total: 0, percentage: 0 },
         academic_year: 'N/A',
-        grading_scale: []
+        grading_scale: [],
       });
     }
 
+    // Admins may preview mark entry before release; every student, parent and
+    // teacher read is restricted to explicitly published exam results.
+    const canPreviewUnpublishedResults =
+      req.user?.roles?.includes('admin') || Boolean(req.staffPortalAccess?.admin_user_id);
+
+    // 2. Student profile for the report card (all from DB)
+    const [studentRow] = await sql`
+      SELECT
+        s.id,
+        s.admission_no,
+        p.display_name,
+        p.first_name,
+        p.last_name,
+        p.dob,
+        p.photo_url,
+        g.name AS gender,
+        (
+          SELECT COALESCE(
+            NULLIF(TRIM(CONCAT_WS(' ', pp.first_name, pp.last_name)), ''),
+            pp.display_name
+          )
+          FROM student_parents sp
+          JOIN parents par ON sp.parent_id = par.id
+            AND par.school_id = ${req.schoolId}
+            AND par.deleted_at IS NULL
+          JOIN persons pp ON par.person_id = pp.id
+            AND pp.school_id = ${req.schoolId}
+          JOIN relationship_types rt ON sp.relationship_id = rt.id
+          WHERE sp.student_id = s.id
+            AND sp.school_id = ${req.schoolId}
+            AND sp.deleted_at IS NULL
+            AND LOWER(rt.name) = 'father'
+          ORDER BY sp.is_primary_contact DESC
+          LIMIT 1
+        ) AS father_name,
+        (
+          SELECT COALESCE(
+            NULLIF(TRIM(CONCAT_WS(' ', pp.first_name, pp.last_name)), ''),
+            pp.display_name
+          )
+          FROM student_parents sp
+          JOIN parents par ON sp.parent_id = par.id
+            AND par.school_id = ${req.schoolId}
+            AND par.deleted_at IS NULL
+          JOIN persons pp ON par.person_id = pp.id
+            AND pp.school_id = ${req.schoolId}
+          JOIN relationship_types rt ON sp.relationship_id = rt.id
+          WHERE sp.student_id = s.id
+            AND sp.school_id = ${req.schoolId}
+            AND sp.deleted_at IS NULL
+            AND LOWER(rt.name) IN ('mother', 'guardian')
+          ORDER BY CASE WHEN LOWER(rt.name) = 'mother' THEN 0 ELSE 1 END,
+                   sp.is_primary_contact DESC
+          LIMIT 1
+        ) AS mother_or_guardian_name
+      FROM students s
+      JOIN persons p ON s.person_id = p.id
+        AND p.school_id = ${req.schoolId}
+      LEFT JOIN genders g ON g.id = p.gender_id
+      WHERE s.id = ${targetStudentId}
+        AND s.school_id = ${req.schoolId}
+        AND s.deleted_at IS NULL
+      LIMIT 1
+    `;
+
+    // 3. Exam papers for THIS class only — never other classes' exam_subjects
     const subjectMarksRows = await sql`
       SELECT
         e.id AS exam_id,
@@ -2507,9 +2615,11 @@ router.get('/:id/results', requireAuth, async (req, res) => {
           json_agg(
             json_build_object(
               'subject', sub.name,
+              'subjectCode', sub.code,
               'maxMarks', es.max_marks,
               'passingMarks', es.passing_marks,
-              'obtained', COALESCE(m.marks_obtained, 0),
+              'obtained', m.marks_obtained,
+              'hasMarks', (m.id IS NOT NULL),
               'is_absent', COALESCE(m.is_absent, false),
               'remarks', m.remarks
             ) ORDER BY sub.name
@@ -2518,17 +2628,24 @@ router.get('/:id/results', requireAuth, async (req, res) => {
         ) AS subjects
       FROM exams e
       LEFT JOIN exam_subjects es ON es.exam_id = e.id
+        AND es.class_id = ${enrollment.class_id}
         AND es.school_id = ${req.schoolId}
         AND es.deleted_at IS NULL
       LEFT JOIN subjects sub ON es.subject_id = sub.id
+        AND sub.school_id = ${req.schoolId}
+        AND sub.deleted_at IS NULL
       LEFT JOIN marks m ON m.exam_subject_id = es.id
         AND m.student_enrollment_id = ${enrollment.id}
+        AND m.school_id = ${req.schoolId}
       WHERE e.academic_year_id = ${enrollment.academic_year_id}
         AND e.school_id = ${req.schoolId}
         AND e.deleted_at IS NULL
         AND e.status != 'cancelled'
+        ${canPreviewUnpublishedResults ? sql`` : sql`AND e.results_published = TRUE`}
       GROUP BY e.id, e.name, e.exam_type, e.start_date, e.end_date
-      ORDER BY e.start_date ASC
+      HAVING COUNT(es.id) > 0
+        ${canPreviewUnpublishedResults ? sql`` : sql`AND COUNT(m.id) = COUNT(es.id)`}
+      ORDER BY e.start_date ASC NULLS LAST, e.name ASC
     `;
 
     const examResults = subjectMarksRows.map((row) => ({
@@ -2537,32 +2654,43 @@ router.get('/:id/results', requireAuth, async (req, res) => {
       exam_type: row.exam_type,
       start_date: row.start_date,
       end_date: row.end_date,
-      subjects: (row.subjects || []).map((sm) => ({
-        subject: sm.subject,
-        maxMarks: Number(sm.maxMarks),
-        passingMarks: Number(sm.passingMarks),
-        obtained: sm.is_absent ? 0 : Number(sm.obtained),
-        is_absent: sm.is_absent,
-        remarks: sm.remarks,
-      })),
+      subjects: (row.subjects || []).map((sm) => {
+        const hasMarks = Boolean(sm.hasMarks);
+        const isAbsent = Boolean(sm.is_absent);
+        let obtained = null;
+        if (hasMarks) {
+          obtained = isAbsent ? 0 : Number(sm.obtained);
+        }
+        return {
+          subject: sm.subject,
+          subjectCode: sm.subjectCode || null,
+          maxMarks: Number(sm.maxMarks),
+          passingMarks: Number(sm.passingMarks),
+          obtained,
+          hasMarks,
+          is_absent: isAbsent,
+          remarks: sm.remarks || null,
+          grade: '-',
+        };
+      }),
     }));
 
-    // 4. Attendance summary
+    // 4. Attendance for this enrollment / academic year
     const [attSummary] = await sql`
       SELECT
-        COUNT(*) FILTER (WHERE da.status = 'present')::int as present,
-        COUNT(*) FILTER (WHERE da.status = 'absent')::int as absent,
-        COUNT(*) FILTER (WHERE da.status = 'late')::int as late,
-        COUNT(*)::int as total
+        COUNT(*) FILTER (WHERE da.status = 'present')::int AS present,
+        COUNT(*) FILTER (WHERE da.status = 'absent')::int AS absent,
+        COUNT(*) FILTER (WHERE da.status = 'late')::int AS late,
+        COUNT(*)::int AS total
       FROM daily_attendance da
-      JOIN student_enrollments se ON da.student_enrollment_id = se.id
-      WHERE se.student_id = ${targetStudentId}
-        AND se.school_id = ${req.schoolId}
+      WHERE da.student_enrollment_id = ${enrollment.id}
+        AND da.school_id = ${req.schoolId}
         AND da.deleted_at IS NULL
     `;
-    const total = attSummary.total || 0;
-    const presentCount = (attSummary.present || 0) + (attSummary.late || 0);
-    const attendancePercentage = total > 0 ? parseFloat(((presentCount / total) * 100).toFixed(1)) : 0;
+    const total = attSummary?.total || 0;
+    const presentCount = (attSummary?.present || 0) + (attSummary?.late || 0);
+    const attendancePercentage =
+      total > 0 ? parseFloat(((presentCount / total) * 100).toFixed(1)) : 0;
 
     // 5. Grading scale
     const gradingScale = await sql`
@@ -2573,41 +2701,66 @@ router.get('/:id/results', requireAuth, async (req, res) => {
       ORDER BY min_percentage DESC
     `;
 
-    // 6. Compute grades for each subject if grading scale exists
+    // 6. Grades only when marks are entered and student was present
     if (gradingScale.length > 0) {
       for (const exam of examResults) {
         for (const sub of exam.subjects) {
-          if (sub.maxMarks > 0) {
-            const pct = (sub.obtained / sub.maxMarks) * 100;
-            const matched = gradingScale.find(g =>
-              pct >= Number(g.min_percentage) && pct <= Number(g.max_percentage)
-            );
-            sub.grade = matched ? matched.grade : '-';
-          } else {
-            sub.grade = '-';
+          if (!sub.hasMarks || sub.is_absent || !(sub.maxMarks > 0) || sub.obtained == null) {
+            sub.grade = sub.is_absent ? 'AB' : '-';
+            continue;
           }
+          const pct = (sub.obtained / sub.maxMarks) * 100;
+          const matched = gradingScale.find(
+            (g) =>
+              pct >= Number(g.min_percentage) && pct <= Number(g.max_percentage)
+          );
+          sub.grade = matched ? matched.grade : '-';
         }
       }
     }
 
+    const classLabel = [enrollment.class_code || enrollment.class_name, enrollment.section_name]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
     sendSuccess(res, req.schoolId, {
+      student: studentRow
+        ? {
+            id: studentRow.id,
+            admission_no: studentRow.admission_no,
+            name:
+              studentRow.display_name ||
+              [studentRow.first_name, studentRow.last_name].filter(Boolean).join(' ') ||
+              'Student',
+            father_name: studentRow.father_name || null,
+            mother_or_guardian_name: studentRow.mother_or_guardian_name || null,
+            dob: studentRow.dob || null,
+            gender: studentRow.gender || null,
+            photo_url: studentRow.photo_url || null,
+            class: classLabel || 'N/A',
+            class_name: enrollment.class_name,
+            class_code: enrollment.class_code,
+            section_name: enrollment.section_name,
+            roll_number: enrollment.roll_number != null ? String(enrollment.roll_number) : null,
+          }
+        : null,
       exams: examResults,
       attendance: {
-        present: attSummary.present || 0,
-        absent: attSummary.absent || 0,
-        late: attSummary.late || 0,
+        present: attSummary?.present || 0,
+        absent: attSummary?.absent || 0,
+        late: attSummary?.late || 0,
         total,
-        percentage: attendancePercentage
+        percentage: attendancePercentage,
       },
       academic_year: enrollment.academic_year_code,
-      grading_scale: gradingScale.map(g => ({
+      grading_scale: gradingScale.map((g) => ({
         grade: g.grade,
         min: Number(g.min_percentage),
         max: Number(g.max_percentage),
-        gpa: Number(g.grade_point)
-      }))
+        gpa: Number(g.grade_point),
+      })),
     });
-
   } catch (error) {
     console.error('[GET /:id/results] Error:', error.message);
     res.status(500).json({ error: 'Failed to fetch results', details: error.message });
