@@ -256,6 +256,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
       page = 1,
       class_id,
       section_id,
+      academic_year_id,
       status_id,
       admission_type,
       lifecycle,
@@ -273,6 +274,9 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     }
     if (section_id) {
       whereClause = sql`${whereClause} AND sec.id = ${section_id}`;
+    }
+    if (academic_year_id) {
+      whereClause = sql`${whereClause} AND ay.id = ${academic_year_id}`;
     }
     if (status_id) {
       whereClause = sql`${whereClause} AND s.status_id = ${status_id}`;
@@ -398,6 +402,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
         WHERE candidate.student_id = s.id
           AND candidate.school_id = ${req.schoolId}
           AND candidate.deleted_at IS NULL
+          ${academic_year_id ? sql`AND candidate.academic_year_id = ${academic_year_id}` : sql``}
         ORDER BY
           CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
           candidate_year.start_date DESC,
@@ -425,6 +430,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
         WHERE candidate.student_id = s.id
           AND candidate.school_id = ${req.schoolId}
           AND candidate.deleted_at IS NULL
+          ${academic_year_id ? sql`AND candidate.academic_year_id = ${academic_year_id}` : sql``}
         ORDER BY
           CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
           candidate_year.start_date DESC,
@@ -2497,6 +2503,7 @@ router.post('/:id/parents', requirePermission('students.edit'), async (req, res)
 router.get('/:id/results', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const academicYearId = req.query.academic_year_id || null;
     const targetStudentId = await resolveStudentParamWithAccess(req, res, id);
     if (!targetStudentId) return;
 
@@ -2523,8 +2530,14 @@ router.get('/:id/results', requireAuth, async (req, res) => {
         AND sec.school_id = ${req.schoolId}
       WHERE se.student_id = ${targetStudentId}
         AND se.school_id = ${req.schoolId}
-        AND se.status = 'active'
         AND se.deleted_at IS NULL
+        ${academicYearId
+          ? sql`AND se.academic_year_id = ${academicYearId}`
+          : sql`AND se.status = 'active'`}
+      ORDER BY
+        CASE WHEN se.status = 'active' THEN 0 ELSE 1 END,
+        se.start_date DESC,
+        se.created_at DESC
       LIMIT 1
     `;
 
