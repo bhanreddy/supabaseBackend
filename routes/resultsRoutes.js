@@ -19,6 +19,7 @@ import {
   getExamResultReadiness,
   setExamResultsPublished,
 } from '../services/examResultPublishingService.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 
@@ -43,13 +44,21 @@ async function notifyPublishedResultUsers(schoolId, exam) {
          AND se.school_id = ${schoolId}
          AND se.status = 'active'
          AND se.deleted_at IS NULL
+        JOIN students active_student
+          ON active_student.id = se.student_id
+         AND active_student.school_id = ${schoolId}
+         AND active_student.deleted_at IS NULL
+         AND active_student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
         WHERE es.exam_id = ${exam.id}
           AND es.school_id = ${schoolId}
           AND es.deleted_at IS NULL
       )
       SELECT DISTINCT u.id AS user_id
       FROM result_students rs
-      JOIN students st ON st.id = rs.student_id AND st.school_id = ${schoolId}
+      JOIN students st ON st.id = rs.student_id
+        AND st.school_id = ${schoolId}
+        AND st.deleted_at IS NULL
+        AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
       JOIN users u
         ON u.person_id = st.person_id
        AND u.school_id = ${schoolId}
@@ -570,6 +579,8 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
         AND es.exam_id = ${examId}
         AND es.subject_id = ${subject_id}
         AND se.status = 'active'
+        AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        AND s.deleted_at IS NULL
       ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
     `;
   } else {
@@ -593,6 +604,7 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
       WHERE cs.class_id = ${classId}
         AND se.status = 'active'
         AND s.deleted_at IS NULL
+        AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
         AND s.school_id = ${req.schoolId}
       GROUP BY s.id, s.admission_no, se.roll_number, p.display_name
       ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
@@ -832,6 +844,7 @@ router.get('/generate', requirePermission('results.generate'), asyncHandler(asyn
       AND se.school_id = ${req.schoolId}
       AND se.status = 'active'
       AND st.deleted_at IS NULL
+      AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
       AND st.school_id = ${req.schoolId}
     GROUP BY st.id, st.admission_no, p.display_name
     ORDER BY percentage DESC NULLS LAST
@@ -1054,6 +1067,10 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
       m.is_absent,
       m.remarks
     FROM student_enrollments se
+    JOIN students st ON st.id = se.student_id
+      AND st.school_id = ${req.schoolId}
+      AND st.deleted_at IS NULL
+      AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     JOIN marks m ON m.student_enrollment_id = se.id AND m.school_id = ${req.schoolId}
     WHERE se.class_section_id = ${class_section_id}
       AND se.school_id = ${req.schoolId}
@@ -1162,12 +1179,16 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     // We need student_enrollment_id, not student_id directly for the marks table
     // But we have student_id and class_section_id
     const [enrollment] = await sql`
-      SELECT id 
-      FROM student_enrollments 
-      WHERE student_id = ${student_id} 
-        AND class_section_id = ${class_section_id}
-        AND school_id = ${req.schoolId}
-        AND status = 'active'
+      SELECT se.id
+      FROM student_enrollments se
+      JOIN students s ON s.id = se.student_id
+        AND s.school_id = ${req.schoolId}
+        AND s.deleted_at IS NULL
+        AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+      WHERE se.student_id = ${student_id}
+        AND se.class_section_id = ${class_section_id}
+        AND se.school_id = ${req.schoolId}
+        AND se.status = 'active'
       LIMIT 1
     `;
 
@@ -1413,6 +1434,7 @@ router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHand
       AND se.status = 'active'
       AND se.deleted_at IS NULL
       AND st.deleted_at IS NULL
+      AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     ORDER BY se.roll_number NULLS LAST, p.display_name, st.admission_no
   `;
 

@@ -36,6 +36,10 @@ import {
   listStudentBulkUpdateFields,
   parseStudentBulkUpdateBuffer,
 } from '../services/studentBulkUpdateService.js';
+import {
+  ACTIVE_STUDENT_STATUS_ID,
+  resolveStudentListLifecycle,
+} from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 
@@ -278,15 +282,26 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     if (academic_year_id) {
       whereClause = sql`${whereClause} AND ay.id = ${academic_year_id}`;
     }
-    if (status_id) {
+    // Operational lists (staff attendance/results/complaints pickers, etc.)
+    // default to active students. Archive / history callers pass lifecycle
+    // explicitly (`archived` | `all`) or an exact status_id.
+    const resolvedLifecycle = resolveStudentListLifecycle(lifecycle, status_id);
+    if (resolvedLifecycle === 'status') {
       whereClause = sql`${whereClause} AND s.status_id = ${status_id}`;
-    } else if (lifecycle === 'active') {
-      whereClause = sql`${whereClause} AND s.status_id = 1`;
-    } else if (lifecycle === 'archived') {
+    } else if (resolvedLifecycle === 'active') {
+      whereClause = sql`${whereClause} AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}`;
+    } else if (resolvedLifecycle === 'archived') {
       // Passed-out and withdrawn students remain fully retained, but live in
       // the archive instead of operational student lists.
       whereClause = sql`${whereClause} AND s.status_id IN (2, 3)`;
     }
+    // resolvedLifecycle === 'all' → no status filter
+
+    // For active operational lists, class/section filters must only match
+    // current active enrollments — never historical withdrawn placements.
+    const enrollmentStatusFilter = resolvedLifecycle === 'active'
+      ? sql`AND candidate.status = 'active'`
+      : sql``;
     if (admission_type) {
       const normalizedAdmissionType = String(admission_type).trim().toLowerCase();
       if (normalizedAdmissionType === 'dummy') {
@@ -403,6 +418,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
           AND candidate.school_id = ${req.schoolId}
           AND candidate.deleted_at IS NULL
           ${academic_year_id ? sql`AND candidate.academic_year_id = ${academic_year_id}` : sql``}
+          ${enrollmentStatusFilter}
         ORDER BY
           CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
           candidate_year.start_date DESC,
@@ -431,6 +447,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
           AND candidate.school_id = ${req.schoolId}
           AND candidate.deleted_at IS NULL
           ${academic_year_id ? sql`AND candidate.academic_year_id = ${academic_year_id}` : sql``}
+          ${enrollmentStatusFilter}
         ORDER BY
           CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
           candidate_year.start_date DESC,

@@ -3,6 +3,7 @@ import sql from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/apiResponse.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -214,6 +215,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
       ON student.id = enrollment.student_id
      AND student.school_id = ${req.schoolId}
      AND student.deleted_at IS NULL
+     AND student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     JOIN persons person ON person.id = student.person_id
     LEFT JOIN genders gender ON gender.id = person.gender_id
     LEFT JOIN LATERAL (
@@ -379,6 +381,7 @@ router.get('/:studentId', requireAuth, asyncHandler(async (req, res) => {
       ON student.id = enrollment.student_id
      AND student.school_id = ${req.schoolId}
      AND student.deleted_at IS NULL
+     AND student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     JOIN persons person ON person.id = student.person_id
     JOIN class_sections class_section ON class_section.id = enrollment.class_section_id
     JOIN classes class ON class.id = class_section.class_id

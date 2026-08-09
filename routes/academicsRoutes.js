@@ -3,6 +3,7 @@ import sql from '../db.js';
 import { requirePermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 
@@ -437,6 +438,7 @@ router.get('/class-sections/:id/students', requirePermission('academics.view'), 
       AND se.status = 'active'
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
+      AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 

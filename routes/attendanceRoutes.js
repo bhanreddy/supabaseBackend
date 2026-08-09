@@ -3,6 +3,7 @@ import sql from '../db.js';
 import { requirePermission, requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 import { sendNotificationToUsers } from '../services/notificationService.js';
@@ -299,6 +300,7 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
         AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
         AND se.deleted_at IS NULL
         AND s.deleted_at IS NULL
+        AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
         AND s.school_id = ${req.schoolId}
         ${lastSyncedAt ? sql`AND (da.updated_at >= ${lastSyncedAt} OR da.marked_at >= ${lastSyncedAt})` : sql``}
       ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
@@ -437,6 +439,10 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     const enrollments = await tx`
       SELECT se.id AS enrollment_id, se.student_id
       FROM student_enrollments se
+      JOIN students s ON s.id = se.student_id
+        AND s.school_id = ${req.schoolId}
+        AND s.deleted_at IS NULL
+        AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
       WHERE se.class_section_id = ${class_section_id}
         AND se.school_id = ${req.schoolId}
         AND se.status = 'active'
@@ -813,6 +819,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
       AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
+      AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
@@ -891,6 +898,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
       AND ${date}::date BETWEEN se.start_date AND COALESCE(se.end_date, '9999-12-31'::date)
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
+      AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
