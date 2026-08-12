@@ -15,6 +15,7 @@
 
 import sql from '../db.js';
 import { ExamTimetableError } from './examTimetableService.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const UNTIMED = '00:00:00';
 
@@ -373,6 +374,7 @@ export async function generateExamAllocations({ schoolId, examId, params: rawPar
       AND se.status = 'active'
       AND se.deleted_at IS NULL
       AND s.deleted_at IS NULL
+      AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     ORDER BY c.sort_order NULLS LAST, c.name, sec.name, se.roll_number NULLS LAST, p.display_name
   `;
   const studentsByClass = new Map();

@@ -1,4 +1,5 @@
 import sql from '../db.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 export class ExamResultPublishingError extends Error {
   constructor(message, status = 400, details = null) {
@@ -43,7 +44,7 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
       es.id AS exam_subject_id,
       c.name AS class_name,
       sub.name AS subject_name,
-      COUNT(DISTINCT se.id)::int AS expected_entries,
+      COUNT(DISTINCT st.id)::int AS expected_entries,
       COUNT(DISTINCT m.student_enrollment_id)::int AS entered_entries
     FROM exam_subjects es
     JOIN exams e
@@ -63,10 +64,16 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
      AND se.school_id = ${schoolId}
      AND se.status = 'active'
      AND se.deleted_at IS NULL
+    LEFT JOIN students st
+      ON st.id = se.student_id
+     AND st.school_id = ${schoolId}
+     AND st.deleted_at IS NULL
+     AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     LEFT JOIN marks m
       ON m.exam_subject_id = es.id
      AND m.student_enrollment_id = se.id
      AND m.school_id = ${schoolId}
+     AND st.id IS NOT NULL
     WHERE es.exam_id = ${examId}
       AND es.school_id = ${schoolId}
       AND es.deleted_at IS NULL

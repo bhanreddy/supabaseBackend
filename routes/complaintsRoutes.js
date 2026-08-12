@@ -5,6 +5,7 @@ import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { translateFields } from '../services/geminiTranslator.js';
 import { resolveStudentId } from '../utils/studentPortal.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 
@@ -15,6 +16,10 @@ async function assertCanRaiseComplaintForStudent(req, raised_for_student_id) {
   const [enrollment] = await sql`
     SELECT se.class_section_id, cs.class_teacher_id
     FROM student_enrollments se
+    JOIN students s ON s.id = se.student_id
+      AND s.school_id = ${req.schoolId}
+      AND s.deleted_at IS NULL
+      AND s.status_id = ${ACTIVE_STUDENT_STATUS_ID}
     JOIN class_sections cs ON se.class_section_id = cs.id AND cs.school_id = ${req.schoolId}
     WHERE se.student_id = ${raised_for_student_id}
       AND se.school_id = ${req.schoolId}

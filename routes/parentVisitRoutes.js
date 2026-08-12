@@ -3,6 +3,7 @@ import sql from '../db.js';
 import { requirePermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/apiResponse.js';
+import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -178,9 +179,10 @@ router.post('/', requirePermission('students.edit'), asyncHandler(async (req, re
     WHERE id = ${studentId}
       AND school_id = ${schoolId}
       AND deleted_at IS NULL
+      AND status_id = ${ACTIVE_STUDENT_STATUS_ID}
     LIMIT 1
   `;
-  if (!student) return res.status(404).json({ error: 'Student not found' });
+  if (!student) return res.status(404).json({ error: 'Active student not found' });
 
   if (parentId) {
     const [linkedParent] = await sql`
