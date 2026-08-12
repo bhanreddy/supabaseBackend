@@ -84,13 +84,14 @@ function firstAfternoonPeriodNumber(schoolId) {
 
 /**
  * Auto-detect which class section a teacher should mark for the given session.
- *   morning   → the class where they teach the first period of the day (period 1)
+ *   morning   → their assigned class-teacher section, then their period-1 section
  *   afternoon → the class where they teach the first period AFTER lunch
- * Each session is driven strictly by the timetable so the two tabs fetch
- * different rosters. Morning keeps a static class-teacher fallback (class
- * teachers are auto-assigned period 1, so it's just a safety net); afternoon
- * does NOT fall back — a teacher with no post-lunch first period gets no
- * afternoon class, rather than wrongly reusing their morning class.
+ * An exact-date substitution always wins. For morning attendance, the assigned
+ * class-teacher section must win over another period-1 subject slot: a class
+ * teacher can teach period 1 in a different section, and sending them there
+ * makes their own class disappear. Afternoon does NOT use a class-teacher
+ * fallback — a teacher with no post-lunch first period gets no afternoon class,
+ * rather than wrongly reusing their morning class.
  * Returns the class_section_id (uuid) or null.
  */
 async function detectSubstitutionClassForSession(
@@ -159,7 +160,21 @@ async function detectClassSectionForSession(
     return row?.id || null;
   }
 
-  // Morning → the class where they teach period 1.
+  // Morning: class teachers must see their own section even when they also
+  // teach Period 1 in another section. This is intentionally before the
+  // Period-1 lookup; the latter remains the fallback for subject teachers.
+  const [classTeacherRow] = await exec`
+    SELECT id FROM class_sections
+    WHERE class_teacher_id = ${staffId}
+      AND academic_year_id = ${yearId}
+      AND school_id = ${schoolId}
+      AND deleted_at IS NULL
+    ORDER BY id
+    LIMIT 1
+  `;
+  if (classTeacherRow) return classTeacherRow.id;
+
+  // Non-class-teacher morning attendance belongs to their Period-1 section.
   const [row] = await exec`
     SELECT ts.class_section_id AS id
     FROM timetable_slots ts
@@ -172,18 +187,7 @@ async function detectClassSectionForSession(
     ORDER BY ts.class_section_id
     LIMIT 1
   `;
-  if (row) return row.id;
-
-  // Morning fallback: static class-teacher assignment.
-  const [staticRow] = await exec`
-    SELECT id FROM class_sections
-    WHERE class_teacher_id = ${staffId}
-      AND academic_year_id = ${yearId}
-      AND school_id = ${schoolId}
-      AND deleted_at IS NULL
-    LIMIT 1
-  `;
-  return staticRow?.id || null;
+  return row?.id || null;
 }
 
 /** Exact-date capability granted by an active cover assignment. */
@@ -764,8 +768,8 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   const dayOfWeek = await timetableDayForDate(req.schoolId, date);
 
   // 3. Find the class section this teacher marks for the requested session.
-  //    Morning → first period of the day; Afternoon → first period after lunch;
-  //    fallback → static class-teacher assignment.
+  //    Morning → assigned class-teacher section, then Period 1;
+  //    Afternoon → first period after lunch.
   const session = resolveSession(req.query.session);
   const classSectionId = await detectClassSectionForSession(sql, {
     staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId,
@@ -864,8 +868,8 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
       const [currentYear] = await sql`SELECT id FROM academic_years WHERE now() BETWEEN start_date AND end_date AND school_id = ${req.schoolId} LIMIT 1`;
 
       if (staff && currentYear) {
-        // Session-aware: morning → period 1, afternoon → first period after lunch,
-        // fallback → static class-teacher assignment.
+        // Session-aware: morning → assigned class-teacher section, then Period 1;
+        // afternoon → first period after lunch.
         const session = resolveSession(req.query.session);
         classSectionId = await detectClassSectionForSession(sql, {
           staffId: staff.id, yearId: currentYear.id, schoolId: req.schoolId,
