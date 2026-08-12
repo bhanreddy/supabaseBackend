@@ -62,6 +62,69 @@ router.post('/unregister', async (req, res, next) => {
 });
 
 /**
+ * GET /inbox — A recipient's durable notification history. The account and
+ * school are always derived from the authenticated request; no user id is
+ * accepted from the client.
+ */
+router.get('/inbox', async (req, res, next) => {
+    try {
+        const userId = req.user?.id;
+        const schoolId = req.schoolId;
+        if (!userId || !schoolId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const requested = Number.parseInt(String(req.query.limit || '50'), 10);
+        const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 100) : 50;
+
+        const notifications = await sql`
+            SELECT
+                n.id,
+                n.title,
+                n.body,
+                n.action_url AS "actionUrl",
+                n.created_at AS "createdAt",
+                n.read_at AS "readAt",
+                e.event_type AS type
+            FROM notifications n
+            LEFT JOIN notification_events e ON e.id = n.event_id
+            WHERE n.user_id = ${userId}
+              AND n.school_id = ${schoolId}
+              AND n.deleted_at IS NULL
+            ORDER BY n.created_at DESC
+            LIMIT ${limit}
+        `;
+
+        return sendSuccess(res, schoolId, { notifications });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/** Mark a notification as read only when it belongs to the signed-in user. */
+router.post('/:notificationId/read', async (req, res, next) => {
+    try {
+        const userId = req.user?.id;
+        const schoolId = req.schoolId;
+        const notificationId = req.params.notificationId;
+        if (!userId || !schoolId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const rows = await sql`
+            UPDATE notifications
+            SET read_at = COALESCE(read_at, NOW()), status = 'READ'
+            WHERE id = ${notificationId}
+              AND user_id = ${userId}
+              AND school_id = ${schoolId}
+              AND deleted_at IS NULL
+            RETURNING id, read_at AS "readAt"
+        `;
+
+        if (!rows[0]) return res.status(404).json({ error: 'Notification not found' });
+        return sendSuccess(res, schoolId, { notification: rows[0] });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
  * POST /register-multi  — Phase 3a multi-account FCM fan-out.
  *
  * Body: { fcmToken, accounts: [{ accessToken }], platform?, language_code? }

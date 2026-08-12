@@ -1362,8 +1362,13 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
     RETURNING *
   `;
 
-  // Phase A calibration capture (fire-and-forget; never blocks the response)
-  setImmediate(() => recordArrivalCalibration({
+  // Persist the learning sample before acknowledging a manual mark. In
+  // particular, the last stop can be marked and the trip ended immediately;
+  // deferring this write lets finalization evaluate that trip before its GPS
+  // sample is present, leaving a four-trip route stuck in manual mode.
+  // recordArrivalCalibration contains its own error handling, so a failed
+  // optional GPS sample never prevents the driver from marking the stop.
+  await recordArrivalCalibration({
     schoolId: req.schoolId,
     tripId,
     routeId: trip.route_id,
@@ -1376,7 +1381,7 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
     longitude,
     accuracy,
     isMocked: !!is_mocked,
-  }));
+  });
 
   setImmediate(() => notifyParentsAtNextStop(req.schoolId, tripId, stopId));
 
@@ -2479,8 +2484,10 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
   `;
   if (!stopStatus) return res.status(409).json({ error: 'Stop already reached or not found' });
 
-  // Phase A calibration capture (fire-and-forget; never blocks the response)
-  setImmediate(() => recordArrivalCalibration({
+  // See the legacy arrive endpoint above: await this optional, internally
+  // guarded write so completing the trip right after the final stop includes
+  // the final calibration sample in the graduation calculation.
+  await recordArrivalCalibration({
     schoolId: req.schoolId,
     tripId,
     routeId: trip.route_id,
@@ -2493,7 +2500,7 @@ router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler
     longitude,
     accuracy,
     isMocked: !!is_mocked,
-  }));
+  });
 
   setImmediate(() => Promise.allSettled([
     notifyBoardingStopDeparted(req.schoolId, tripId, stopId),
@@ -2834,7 +2841,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
 
   const today = kolkataDate();
   const [trip] = await sql`
-    SELECT t.id, t.status, t.started_at, t.ended_at, t.trip_direction,
+    SELECT t.id, t.bus_id, t.status, t.started_at, t.ended_at, t.trip_direction,
            p.display_name AS driver_name
     FROM trips t
     JOIN staff st ON t.driver_id = st.id AND st.school_id = ${req.schoolId}
@@ -2853,6 +2860,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
   `;
 
   let stops;
+  let location = null;
   if (trip) {
     stops = await sql`
       SELECT ts.id, ts.name, ts.stop_order, COALESCE(tss.stop_order, ts.stop_order) AS exec_order,
@@ -2883,10 +2891,37 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
     `;
   }
 
+  // Admin tracking uses the exact same tenant-scoped live fix as parent
+  // tracking. A fix from a previous trip is never displayed as current.
+  if (trip?.bus_id) {
+    const [latestLocation] = await sql`
+      SELECT latitude, longitude, speed, heading, recorded_at
+      FROM bus_locations
+      WHERE school_id = ${req.schoolId}
+        AND bus_id = ${trip.bus_id}
+        AND recorded_at >= ${trip.started_at}
+      ORDER BY recorded_at DESC
+      LIMIT 1
+    `;
+    if (latestLocation) {
+      const ageSeconds = Math.max(0, (Date.now() - new Date(latestLocation.recorded_at).getTime()) / 1000);
+      location = {
+        latitude: Number(latestLocation.latitude),
+        longitude: Number(latestLocation.longitude),
+        speed: latestLocation.speed == null ? null : Number(latestLocation.speed),
+        heading: latestLocation.heading == null ? null : Number(latestLocation.heading),
+        recorded_at: latestLocation.recorded_at,
+        age_seconds: ageSeconds,
+        is_fresh: ageSeconds <= LOCATION_FRESH_SECONDS,
+      };
+    }
+  }
+
   return sendSuccess(res, req.schoolId, {
     route: route.name,
     trip: trip ? { ...trip, ui_status: mapTripUiStatus(trip.status) } : null,
     stops,
+    location,
   });
 }));
 
