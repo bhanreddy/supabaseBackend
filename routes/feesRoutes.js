@@ -1444,6 +1444,8 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
     SELECT 
       r.id, r.receipt_no, r.student_id, r.total_amount,
       r.issued_at, r.issued_by, r.remarks, r.created_at,
+      r.fee_type as receipt_fee_type,
+      r.transport_payment_id,
       s.admission_no, p.display_name as student_name,
       enroll.class_name, enroll.section_name,
       father_info.father_name, father_info.father_mobile,
@@ -1495,8 +1497,9 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
     return res.status(404).json({ error: 'Receipt not found' });
   }
 
-  // Get receipt items
-  const items = await sql`
+  // Tuition receipts are populated via receipt_items → fee_transactions.
+  // Transport collect writes receipts.transport_payment_id but no receipt_items.
+  let items = await sql`
     SELECT 
       ri.amount,
       ft.name as fee_type,
@@ -1509,7 +1512,38 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
     WHERE ri.receipt_id = ${id}
   `;
 
-  return sendSuccess(res, req.schoolId, { ...receipt, items });
+  if (items.length === 0 && receipt.transport_payment_id) {
+    items = await sql`
+      SELECT
+        tfp.amount,
+        'Transport Fee'::text AS fee_type,
+        tfp.payment_method,
+        tfp.transaction_ref,
+        tfp.paid_at
+      FROM transport_fee_payments tfp
+      WHERE tfp.id = ${receipt.transport_payment_id}
+        AND tfp.school_id = ${req.schoolId}
+    `;
+  } else if (
+    items.length === 0
+    && String(receipt.receipt_fee_type || '').toLowerCase() === 'transport'
+  ) {
+    items = [{
+      amount: receipt.total_amount,
+      fee_type: 'Transport Fee',
+      payment_method: null,
+      transaction_ref: null,
+      paid_at: receipt.issued_at,
+    }];
+  }
+
+  const {
+    receipt_fee_type: _receiptFeeType,
+    transport_payment_id: _transportPaymentId,
+    ...receiptPublic
+  } = receipt;
+
+  return sendSuccess(res, req.schoolId, { ...receiptPublic, items });
 }));
 
 /**

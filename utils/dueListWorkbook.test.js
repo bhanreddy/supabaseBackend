@@ -18,7 +18,8 @@ const sampleRow = {
     final_fee: '14000',
     paid_fee: '9000',
     due_amount: '5000',
-    fee_item_count: 2,
+    transport_pending_fee: '2400',
+    fee_item_count: 3,
     earliest_due_date: '2026-07-15',
     is_overdue: true,
 };
@@ -32,7 +33,7 @@ function readWorkbook(buffer) {
     };
 }
 
-test('due-list workbook includes guardian and fallback contact columns without shifting fee totals', () => {
+test('due-list workbook includes father, linked mobile, and transport pending fee without shifting school fee totals', () => {
     const { worksheet, rows } = readWorkbook(buildDueListWorkbook({
         schoolName: 'Slate School',
         academicYear: '2026-27',
@@ -44,8 +45,8 @@ test('due-list workbook includes guardian and fallback contact columns without s
         'S.No.',
         'Admission No.',
         'Student Name',
-        "Father's / Guardian Name",
-        'Contact Number',
+        "Father's Name",
+        'Mobile Number',
         'Class',
         'Section',
         'Roll No.',
@@ -55,19 +56,20 @@ test('due-list workbook includes guardian and fallback contact columns without s
         'Discount Given',
         'Final Fee',
         'Paid Fee',
-        'Due Amount',
+        'School Due Amount',
+        'Transport Pending Fee',
         'Fee Items',
         'Earliest Due Date',
         'Overdue',
     ]);
     assert.equal(rows[8][3], 'Suresh Reddy');
     assert.equal(rows[8][4], '+91 98765 43210');
-    assert.deepEqual(rows[8].slice(10, 15), [15000, 1000, 14000, 9000, 5000]);
-    assert.deepEqual(rows[10].slice(10, 15), [15000, 1000, 14000, 9000, 5000]);
-    assert.equal(worksheet['!autofilter'].ref, 'A8:R9');
+    assert.deepEqual(rows[8].slice(10, 16), [15000, 1000, 14000, 9000, 5000, 2400]);
+    assert.deepEqual(rows[10].slice(10, 16), [15000, 1000, 14000, 9000, 5000, 2400]);
+    assert.equal(worksheet['!autofilter'].ref, 'A8:S9');
 });
 
-test('due-list workbook keeps missing guardian data blank', () => {
+test('due-list workbook keeps missing father and linked mobile data blank', () => {
     const { rows } = readWorkbook(buildDueListWorkbook({
         schoolName: 'Slate School',
         academicYear: '2026-27',
@@ -77,4 +79,19 @@ test('due-list workbook keeps missing guardian data blank', () => {
 
     assert.equal(rows[8][3], '');
     assert.equal(rows[8][4], '');
+});
+
+test('due-list workbook leaves unavailable transport fee blank but keeps configured zero', () => {
+    const { rows } = readWorkbook(buildDueListWorkbook({
+        schoolName: 'Slate School',
+        academicYear: '2026-27',
+        rows: [
+            { ...sampleRow, transport_pending_fee: null },
+            { ...sampleRow, transport_pending_fee: '0' },
+        ],
+        filters: {},
+    }));
+
+    assert.equal(rows[8][15], '');
+    assert.equal(rows[9][15], 0);
 });

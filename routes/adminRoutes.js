@@ -1050,14 +1050,15 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
 
 /**
  * GET /admin/pending-fees/export
- * One row per student with outstanding school-fee dues OR any fee waiver.
+ * One row per student with outstanding school/transport dues OR any fee waiver.
  * Money columns aggregate ALL of that student's fee lines for the academic
  * year — including fully waived / paid lines — so waivers appear under
  * Discount Given even when they cleared the balance to zero. Discount Given
  * is the greater of student_fees.discount and the fee_adjustments waive
  * ledger (covers rows where discount was not denormalized). Due Amount is
  * school total − discount − paid at the student level so it stays consistent
- * with the Discount Given column. Transport is used only for village/route.
+ * with the Discount Given column. Transport pending fee is derived from the
+ * active stop's configured fee, adjustments, and payments for the same year.
  */
 router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
@@ -1138,6 +1139,63 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
                 OR COALESCE(SUM(sf.discount), 0) > 0
                 OR COALESCE(MAX(wl.waived_amount), 0) > 0
         ),
+        transport_agg AS (
+            SELECT
+                st.student_id,
+                GREATEST(
+                    tf.fee_amount
+                    + COALESCE(adj.net_amount, 0)
+                    - COALESCE(pay.paid_amount, 0),
+                    0
+                )::numeric AS transport_pending_fee,
+                ay.end_date AS transport_due_date,
+                (
+                    ay.end_date < CURRENT_DATE
+                    AND GREATEST(
+                        tf.fee_amount
+                        + COALESCE(adj.net_amount, 0)
+                        - COALESCE(pay.paid_amount, 0),
+                        0
+                    ) > 0
+                ) AS is_transport_overdue
+            FROM student_transport st
+            JOIN academic_years ay
+              ON ay.id = st.academic_year_id
+             AND ay.school_id = ${schoolId}
+             AND ay.deleted_at IS NULL
+            JOIN transport_fee tf
+              ON tf.stop_id = st.stop_id
+             AND tf.route_id = st.route_id
+             AND tf.academic_year = ay.code
+             AND tf.school_id = ${schoolId}
+             AND tf.is_active = TRUE
+            LEFT JOIN LATERAL (
+                SELECT SUM(
+                    CASE WHEN fadj.adjustment_type = 'add' THEN fadj.amount ELSE -fadj.amount END
+                )::numeric AS net_amount
+                FROM fee_adjustments fadj
+                WHERE fadj.school_id = ${schoolId}
+                  AND fadj.student_id = st.student_id
+                  AND fadj.transport_fee_id = tf.id
+            ) adj ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(tfp.amount), 0)::numeric AS paid_amount
+                FROM transport_fee_payments tfp
+                WHERE tfp.school_id = ${schoolId}
+                  AND tfp.student_id = st.student_id
+                  AND tfp.academic_year = ay.code
+            ) pay ON TRUE
+            WHERE st.school_id = ${schoolId}
+              AND st.academic_year_id = ${academicYear.id}
+              AND st.is_active = TRUE
+        ),
+        report_students AS (
+            SELECT student_id FROM fee_agg
+            UNION
+            SELECT student_id
+            FROM transport_agg
+            WHERE transport_pending_fee > 0
+        ),
         enroll AS (
             SELECT DISTINCT ON (se.student_id)
                 se.student_id,
@@ -1162,16 +1220,26 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
             en.roll_number,
             ts.name AS village,
             tr.name AS route_name,
-            fa.school_total_fee,
-            fa.discount_given,
-            fa.final_fee,
-            fa.paid_fee,
-            fa.due_amount,
-            fa.fee_item_count,
-            fa.earliest_due_date,
-            fa.is_overdue
-        FROM fee_agg fa
-        JOIN students s ON s.id = fa.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
+            COALESCE(fa.school_total_fee, 0)::numeric AS school_total_fee,
+            COALESCE(fa.discount_given, 0)::numeric AS discount_given,
+            COALESCE(fa.final_fee, 0)::numeric AS final_fee,
+            COALESCE(fa.paid_fee, 0)::numeric AS paid_fee,
+            COALESCE(fa.due_amount, 0)::numeric AS due_amount,
+            ta.transport_pending_fee,
+            (
+                COALESCE(fa.fee_item_count, 0)
+                + CASE WHEN COALESCE(ta.transport_pending_fee, 0) > 0 THEN 1 ELSE 0 END
+            )::int AS fee_item_count,
+            CASE
+                WHEN fa.earliest_due_date IS NULL THEN ta.transport_due_date
+                WHEN ta.transport_pending_fee > 0 THEN LEAST(fa.earliest_due_date, ta.transport_due_date)
+                ELSE fa.earliest_due_date
+            END AS earliest_due_date,
+            (COALESCE(fa.is_overdue, FALSE) OR COALESCE(ta.is_transport_overdue, FALSE)) AS is_overdue
+        FROM report_students rs
+        LEFT JOIN fee_agg fa ON fa.student_id = rs.student_id
+        LEFT JOIN transport_agg ta ON ta.student_id = rs.student_id
+        JOIN students s ON s.id = rs.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
         JOIN persons p ON p.id = s.person_id
         LEFT JOIN LATERAL (
             SELECT
@@ -1184,13 +1252,8 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
                     WHERE sp.student_id = s.id
                       AND sp.school_id = ${schoolId}
                       AND sp.deleted_at IS NULL
-                    ORDER BY
-                        CASE
-                            WHEN rt.name = 'Father' THEN 0
-                            WHEN COALESCE(sp.is_primary_contact, false) THEN 1
-                            ELSE 2
-                        END,
-                        sp.created_at
+                      AND rt.name = 'Father'
+                    ORDER BY sp.created_at
                     LIMIT 1
                 ) AS father_name,
                 COALESCE(
@@ -1233,10 +1296,10 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
                     )
                 ) AS contact_number
         ) father_info ON true
-        JOIN enroll en ON en.student_id = fa.student_id
+        JOIN enroll en ON en.student_id = rs.student_id
         JOIN classes c ON c.id = en.class_id AND c.deleted_at IS NULL
         JOIN sections sec ON sec.id = en.section_id AND sec.deleted_at IS NULL
-        LEFT JOIN student_transport st ON st.student_id = fa.student_id
+        LEFT JOIN student_transport st ON st.student_id = rs.student_id
           AND st.academic_year_id = ${academicYear.id}
           AND st.school_id = ${schoolId}
           AND st.is_active = TRUE
@@ -1246,7 +1309,11 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
           ${class_id ? sql`AND c.id = ${class_id}` : sql``}
           ${section_id ? sql`AND sec.id = ${section_id}` : sql``}
           ${village_id ? sql`AND ts.id = ${village_id}` : sql``}
-          AND (${overdue_only === 'true'} = FALSE OR fa.is_overdue)
+          AND (
+              ${overdue_only === 'true'} = FALSE
+              OR COALESCE(fa.is_overdue, FALSE)
+              OR COALESCE(ta.is_transport_overdue, FALSE)
+          )
         ORDER BY c.name, sec.name, p.display_name
     `;
 
