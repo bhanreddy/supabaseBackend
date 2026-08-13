@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getStudentTransportDue } from '../services/transportFeeService.js';
+import {
+  getStudentTransportDue,
+  transportDueToStudentFee,
+} from '../services/transportFeeService.js';
 
 function transportDueDb({ baseFee, adjustmentTotal, addedAmount, waivedAmount, paidAmount }) {
   return async (strings) => {
@@ -71,4 +74,34 @@ test('transport debit increases the adjusted due and remaining balance', async (
   assert.equal(due.fee_amount, 1200);
   assert.equal(due.balance_due, 900);
   assert.equal(due.added_amount, 200);
+});
+
+test('fully paid transport due remains visible as a paid student fee row', () => {
+  const fee = transportDueToStudentFee({
+    transport_fee_id: 'transport-fee-1',
+    fee_amount: 1200,
+    paid_amount: 1200,
+    balance_due: 0,
+    due_date: '2027-03-31',
+    academic_year: '2026-27',
+    fee_not_set: false,
+  }, 'student-1');
+
+  assert.equal(fee.id, 'transport-fee-1');
+  assert.equal(fee.fee_type, 'Transport Fee');
+  assert.equal(fee.status, 'paid');
+  assert.equal(fee.amount_paid, 1200);
+  assert.equal(fee.is_transport, true);
+});
+
+test('transport fee without a configured stop fee is not added to the ledger', () => {
+  const fee = transportDueToStudentFee({
+    transport_fee_id: null,
+    fee_amount: null,
+    paid_amount: 0,
+    balance_due: null,
+    fee_not_set: true,
+  }, 'student-2');
+
+  assert.equal(fee, null);
 });

@@ -41,7 +41,8 @@ export async function getStudentTransportDue(studentId, academicYear, schoolId, 
       COALESCE(adj.added_amount, 0)::numeric AS added_amount,
       COALESCE(adj.waived_amount, 0)::numeric AS waived_amount,
       COALESCE(adj.adjustment_count, 0)::int AS adjustment_count,
-      ay.code AS academic_year
+      ay.code AS academic_year,
+      ay.end_date AS due_date
     FROM student_transport st
     JOIN academic_years ay ON st.academic_year_id = ay.id
     JOIN transport_routes tr ON st.route_id = tr.id AND tr.school_id = ${schoolId}
@@ -92,6 +93,44 @@ export async function getStudentTransportDue(studentId, academicYear, schoolId, 
     balance_due: balanceDue,
     fee_not_set: feeNotSet,
     fee_type: 'transport',
+  };
+}
+
+/**
+ * Present a stop-derived transport due as a regular student fee ledger row.
+ * Paid rows are deliberately retained: the student ledger is a billing history,
+ * not just a list of outstanding balances.
+ */
+export function transportDueToStudentFee(transportDue, studentId) {
+  if (!transportDue || transportDue.fee_not_set || transportDue.fee_amount == null) {
+    return null;
+  }
+
+  const amountDue = Number(transportDue.fee_amount);
+  const amountPaid = Number(transportDue.paid_amount || 0);
+  const balanceDue = Number(
+    transportDue.balance_due ?? Math.max(amountDue - amountPaid, 0),
+  );
+
+  return {
+    id: transportDue.transport_fee_id,
+    student_id: studentId,
+    amount_due: amountDue,
+    amount_paid: amountPaid,
+    discount: 0,
+    status: balanceDue <= 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'pending',
+    due_date: transportDue.due_date,
+    fee_type_id: null,
+    fee_type: 'Transport Fee',
+    fee_type_te: null,
+    fee_code: 'TRANSPORT',
+    fee_type_sort_order: Number.MAX_SAFE_INTEGER,
+    adjustment_count: Number(transportDue.adjustment_count || 0),
+    academic_year: transportDue.academic_year,
+    is_transport: true,
+    transport_fee_id: transportDue.transport_fee_id,
+    route_name: transportDue.route_name,
+    stop_name: transportDue.stop_name,
   };
 }
 

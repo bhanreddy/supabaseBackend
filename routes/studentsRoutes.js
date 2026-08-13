@@ -40,6 +40,11 @@ import {
   ACTIVE_STUDENT_STATUS_ID,
   resolveStudentListLifecycle,
 } from '../utils/activeStudentFilter.js';
+import {
+  getStudentTransportDue,
+  resolveAcademicYearCode,
+  transportDueToStudentFee,
+} from '../services/transportFeeService.js';
 
 const router = express.Router();
 
@@ -2392,6 +2397,27 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         ${structureFilter}
     `;
 
+    const academicYearCode = academic_year_id
+      ? (await sql`
+          SELECT code
+          FROM academic_years
+          WHERE id = ${academic_year_id}
+            AND school_id = ${req.schoolId}
+            AND deleted_at IS NULL
+        `)[0]?.code
+      : await resolveAcademicYearCode(req.schoolId);
+
+    const transportDue = academicYearCode
+      ? await getStudentTransportDue(targetStudentId, academicYearCode, req.schoolId)
+      : null;
+    const transportFee = transportDueToStudentFee(transportDue, targetStudentId);
+    const combinedSummary = {
+      total_due: Number(summary[0]?.total_due || 0) + Number(transportFee?.amount_due || 0),
+      total_paid: Number(summary[0]?.total_paid || 0) + Number(transportFee?.amount_paid || 0),
+      balance: Number(summary[0]?.balance || 0)
+        + Number(transportDue && !transportDue.fee_not_set ? transportDue.balance_due || 0 : 0),
+    };
+
     if (usePaging) {
       let countSql;
       if (academic_year_id) {
@@ -2415,23 +2441,37 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         `;
       }
       const [countResult] = await countSql;
+      const tuitionCount = Number(countResult.total || 0);
+      const transportCount = transportFee ? 1 : 0;
+      const totalCount = tuitionCount + transportCount;
+
+      // Transport is the final ledger line. Include it only on the page whose
+      // range contains that final position, preserving the requested page size.
+      if (transportFee && offset <= tuitionCount && offset + lim > tuitionCount) {
+        fees.push(transportFee);
+      }
+
       return sendSuccess(res, req.schoolId, {
         student_id: targetStudentId,
-        summary: summary[0],
+        summary: combinedSummary,
         fees,
+        transport_due: transportDue,
         meta: {
-          total: countResult.total,
+          total: totalCount,
           page: pg,
           limit: lim,
-          total_pages: Math.ceil(countResult.total / lim) || 1,
+          total_pages: Math.ceil(totalCount / lim) || 1,
         },
       });
     }
 
+    if (transportFee) fees.push(transportFee);
+
     sendSuccess(res, req.schoolId, {
       student_id: targetStudentId,
-      summary: summary[0],
-      fees
+      summary: combinedSummary,
+      fees,
+      transport_due: transportDue,
     });
   } catch (error) {
 
