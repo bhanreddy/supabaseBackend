@@ -20,11 +20,19 @@ import {
   setExamResultsPublished,
 } from '../services/examResultPublishingService.js';
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
+import { RESULT_PUBLICATION_GATED_EXAM_TYPES } from '../utils/examResultVisibility.js';
 
 const router = express.Router();
 
 const canPreviewUnpublishedResults = (req) =>
   req.user?.roles?.includes('admin') || Boolean(req.staffPortalAccess?.admin_user_id);
+
+const familyResultVisibility = () => sql`
+  AND (
+    e.results_published = TRUE
+    OR NOT (e.exam_type::text = ANY(${sql.array(RESULT_PUBLICATION_GATED_EXAM_TYPES)}::text[]))
+  )
+`;
 
 async function notifyPublishedResultUsers(schoolId, exam) {
   try {
@@ -667,10 +675,14 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
   const { exam_id, academic_year_id } = req.query;
   const resultVisibility = () => canPreviewUnpublishedResults(req)
     ? sql``
-    : sql`AND e.results_published = TRUE`;
+    : familyResultVisibility();
   const resultCompleteness = () => canPreviewUnpublishedResults(req)
     ? sql``
-    : sql`HAVING COUNT(m.id) = COUNT(es.id)`;
+    : sql`
+        HAVING
+          NOT (e.exam_type::text = ANY(${sql.array(RESULT_PUBLICATION_GATED_EXAM_TYPES)}::text[]))
+          OR COUNT(m.id) = COUNT(es.id)
+      `;
 
   // Get student info
   const [student] = await sql`
@@ -876,7 +888,7 @@ router.get('/summary/student/:studentId', requirePermission('results.view'), asy
   const { academic_year_id } = req.query;
   const resultVisibility = () => canPreviewUnpublishedResults(req)
     ? sql``
-    : sql`AND e.results_published = TRUE`;
+    : familyResultVisibility();
 
   // Query to get counts and latest info for each exam type
   // Only includes exams where the student has at least one mark entry
@@ -920,7 +932,7 @@ router.get('/list/student/:studentId', requirePermission('results.view'), asyncH
   const offset = (pg - 1) * lim;
   const resultVisibility = () => canPreviewUnpublishedResults(req)
     ? sql``
-    : sql`AND e.results_published = TRUE`;
+    : familyResultVisibility();
 
   const exams = usePaging
     ? await sql`
