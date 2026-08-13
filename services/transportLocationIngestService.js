@@ -83,6 +83,8 @@ export function normalizeLocationBatch(rawFixes, now = new Date()) {
 /**
  * Persist all accepted history fixes idempotently and advance the one live row
  * only when the newest client timestamp is at least five seconds newer.
+ * Automation still receives the newest newly-persisted GPS point: UI map
+ * throttling must never suppress an arrival/departure decision.
  */
 export async function ingestLocationBatch({ schoolId, busId, fixes: rawFixes, now = new Date() }, db = sql) {
   const normalized = normalizeLocationBatch(rawFixes, now);
@@ -105,12 +107,18 @@ export async function ingestLocationBatch({ schoolId, busId, fixes: rawFixes, no
       is_mocked boolean
     )
     ON CONFLICT (bus_id, recorded_at) DO NOTHING
-    RETURNING id
+    RETURNING id, recorded_at
   `;
 
   // Mocked fixes remain in immutable history for audit evidence, but never
   // replace a real public live location or drive automation.
-  const newest = [...normalized.fixes].reverse().find((fix) => !fix.is_mocked);
+  // Only evaluate a newly recorded point, never an offline retry that was
+  // already processed. The live-location row is intentionally rate-limited
+  // for map traffic, but geofence debounce needs every fresh GPS observation.
+  const insertedAtMs = new Set(inserted.map((row) => Date.parse(row.recorded_at)));
+  const newest = [...normalized.fixes].reverse().find(
+    (fix) => !fix.is_mocked && insertedAtMs.has(Date.parse(fix.recorded_at)),
+  );
   if (!newest) {
     return {
       ...normalized,
@@ -144,7 +152,7 @@ export async function ingestLocationBatch({ schoolId, busId, fixes: rawFixes, no
     ...normalized,
     insertedCount: inserted.length,
     realtimeUpdated: Boolean(live),
-    newestForEvaluation: live && !newest.is_mocked ? newest : null,
+    newestForEvaluation: newest,
     location: live || null,
   };
 }

@@ -51,6 +51,13 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
     return { successCount: 0, failureCount: 0 };
   }
 
+  // Create a durable per-recipient inbox record before attempting delivery.
+  // This lets a user catch up in the app even when an OS banner was missed,
+  // dismissed, or the device was offline at send time. A failure here must not
+  // block the existing FCM delivery path.
+  const deepLink = context?.deepLink || renderResult.deepLink;
+  const inboxIdsByUser = await createInboxEntries(userIds, type, params, deepLink, context);
+
   // 3️⃣ Fetch Tokens with language preference
   // Keep the recipient identity with each token. The same physical device can
   // be registered for several vaulted accounts, so a notification tap must be
@@ -97,6 +104,7 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
         channelId: `${channelId}_custom`,
         type,
         recipientUserId: userId,
+        notificationId: inboxIdsByUser.get(String(userId)) || '',
         customSound: true
       }));
     }
@@ -260,6 +268,7 @@ async function sendBatch(tokens, {
   channelId,
   type,
   recipientUserId = null,
+  notificationId = '',
   customSound = true,
 }) {
   if (tokens.length === 0) return { success: 0, failure: 0, tokenResults: [] };
@@ -268,6 +277,7 @@ async function sendBatch(tokens, {
   // FCM will automatically add .wav/.mp3 when playing; the raw resource must be
   // named exactly <soundBase>.wav in android/app/src/main/res/raw/.
   const soundBase = soundFile && soundFile !== 'default' ? soundFile.replace(/\.[^/.]+$/, "") : 'default';
+  const presentation = notificationPresentation(type);
 
   const message = {
     tokens,
@@ -286,6 +296,7 @@ async function sendBatch(tokens, {
       notification: {
         title,                 // Override for Android-specific customization
         body,
+        color: presentation.color,
         channelId: channelId,  // Must match a channel created on the device
         sound: soundBase,      // Raw resource name WITHOUT extension (e.g. "voice_alert")
         defaultSound: false,
@@ -305,11 +316,13 @@ async function sendBatch(tokens, {
         aps: {
           alert: {
             title,
-            body
+            body,
+            subtitle: presentation.subtitle
           },
           sound: soundFile || 'default',   // iOS expects the full filename (with .wav)
           badge: 1,
-          'mutable-content': 1             // Allow Notification Service Extension
+          'mutable-content': 1,            // Allow Notification Service Extension
+          category: presentation.category  // Enables the matching native action button
           // NOTE: Do NOT set 'content-available: 1' together with alert.
           // That combo makes iOS treat the message as silent/background-only
           // and the banner may not appear reliably in killed state.
@@ -328,6 +341,7 @@ async function sendBatch(tokens, {
       // account identity that the client uses to select a vaulted session on
       // notification tap; it is never trusted for API authorization.
       recipientUserId: String(recipientUserId || ''),
+      notificationId: String(notificationId || ''),
       messageId: String(randomUUID())
     }
   };
@@ -391,6 +405,126 @@ async function sendBatch(tokens, {
       tokenResults: buildTokenResults(tokens, null, 'dispatch_error'),
     };
   }
+}
+
+/**
+ * Native notification surfaces are system-owned, so use semantic accents and
+ * a small category label instead of a fragile custom layout. Category values
+ * match the Expo action categories registered by the mobile app.
+ */
+function notificationPresentation(type = '') {
+  if (type.startsWith('TRANSPORT_') || type.startsWith('BUS_') || type.startsWith('STUDENT_BUS_')) {
+    return { color: '#0082C8', subtitle: 'SchoolIMS · Transport', category: 'schoolims_track_transport' };
+  }
+  if (type.startsWith('FEE_') || type === 'ARREARS_REMINDER') {
+    return { color: '#F26522', subtitle: 'SchoolIMS · Fees', category: 'schoolims_view_fees' };
+  }
+  if (
+    type.startsWith('LEAVE_') ||
+    type.startsWith('EXPENSE_') ||
+    type === 'COMPLAINT_CREATED' ||
+    type === 'COMPLAINT_RESPONSE' ||
+    type === 'ACCESS_RESPONSE'
+  ) {
+    return { color: '#D97706', subtitle: 'SchoolIMS · Action needed', category: 'schoolims_review' };
+  }
+  if (type.startsWith('ATTENDANCE_')) {
+    return { color: '#3535A8', subtitle: 'SchoolIMS · Attendance', category: 'schoolims_open' };
+  }
+  if (type === 'RESULT_RELEASED') {
+    return { color: '#7C3AED', subtitle: 'SchoolIMS · Results', category: 'schoolims_open' };
+  }
+  if (type === 'DIARY_UPDATED' || type === 'LMS_CONTENT' || type === 'TIMETABLE_UPDATED') {
+    return { color: '#3535A8', subtitle: 'SchoolIMS · Academics', category: 'schoolims_open' };
+  }
+  if (type === 'NOTICE_ADMIN_STUDENT') {
+    return { color: '#0082C8', subtitle: 'SchoolIMS · Notice', category: 'schoolims_open' };
+  }
+  if (type === 'PAYROLL_SUCCESS') {
+    return { color: '#10B981', subtitle: 'SchoolIMS · Payroll', category: 'schoolims_open' };
+  }
+  if (type === 'MESSAGE_RECEIVED') {
+    return { color: '#3535A8', subtitle: 'SchoolIMS · Messages', category: 'schoolims_open' };
+  }
+  return { color: '#3535A8', subtitle: 'SchoolIMS', category: 'schoolims_open' };
+}
+
+/**
+ * Store one inbox row for every intended recipient. Notification events are
+ * immutable delivery records; the companion `notifications` row tracks each
+ * user's read state and supplies the in-app history screen.
+ */
+async function createInboxEntries(userIds, type, params, deepLink, context = {}) {
+  const ids = [...new Set((userIds || []).filter(Boolean).map(String))];
+  const inboxIdsByUser = new Map();
+  if (ids.length === 0) return inboxIdsByUser;
+
+  try {
+    const recipients = await sql`
+      SELECT
+        u.id AS user_id,
+        u.school_id,
+        COALESCE((
+          SELECT ud.language_code
+          FROM user_devices ud
+          WHERE ud.user_id = u.id
+            AND ud.school_id = u.school_id
+            AND ud.is_active = TRUE
+          ORDER BY ud.last_used_at DESC NULLS LAST
+          LIMIT 1
+        ), 'en') AS language_code
+      FROM users u
+      WHERE u.id = ANY(${ids})
+        AND u.deleted_at IS NULL
+    `;
+
+    // Bound concurrent inserts so a large broadcast does not spike the DB.
+    for (let offset = 0; offset < recipients.length; offset += 50) {
+      const batch = recipients.slice(offset, offset + 50);
+      const created = await Promise.all(batch.map(async (recipient) => {
+        let rendered;
+        try {
+          rendered = NotificationTemplateService.render(type, params, recipient.language_code || 'en');
+        } catch {
+          rendered = NotificationTemplateService.render(type, params);
+        }
+
+        const [row] = await sql`
+          WITH event AS (
+            INSERT INTO notification_events (
+              school_id, idempotency_key, event_type, actor_id, target_user_id, payload, status
+            ) VALUES (
+              ${recipient.school_id},
+              ${randomUUID()},
+              ${type},
+              ${null},
+              ${recipient.user_id},
+              ${JSON.stringify({ type, deepLink })},
+              'PROCESSED'
+            )
+            RETURNING id
+          )
+          INSERT INTO notifications (
+            school_id, event_id, user_id, title, body, action_url, status
+          )
+          SELECT
+            ${recipient.school_id}, event.id, ${recipient.user_id},
+            ${rendered.title}, ${rendered.body}, ${deepLink || null}, 'DELIVERED'
+          FROM event
+          RETURNING id, user_id
+        `;
+        return row;
+      }));
+
+      created.forEach((row) => {
+        if (row?.id && row?.user_id) inboxIdsByUser.set(String(row.user_id), String(row.id));
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, event: 'notification_inbox_persist_failed', type }, 'Notification inbox persistence failed; continuing push delivery');
+  }
+
+  return inboxIdsByUser;
 }
 
 /**
@@ -544,6 +678,14 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     };
   }
 
+  const inboxIdsByUser = await createInboxEntries(
+    userIds,
+    type,
+    params,
+    context?.deepLink || renderResult.deepLink,
+    context
+  );
+
   // Tracked broadcasts must not misreport a database outage as "no app installed".
   const userDevices = await fetchTokensWithUserId(userIds, { throwOnError: true });
   const usersWithTokens = new Set(userDevices.map((d) => d.user_id));
@@ -612,6 +754,7 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
           channelId: `${channelId}_custom`,
           type,
           recipientUserId: userId,
+          notificationId: inboxIdsByUser.get(String(userId)) || '',
           customSound: true,
         }).then((batchRes) => ({ deviceChunk, batchRes }))
       );
