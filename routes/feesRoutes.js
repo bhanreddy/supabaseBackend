@@ -7,7 +7,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import { translateFields } from '../services/geminiTranslator.js';
 import { ACCOUNTS_STAT_KEYS, resolveAccountsDashboardConfig } from '../utils/constants.js';
-import { getStudentTransportDue, resolveAcademicYearCode } from '../services/transportFeeService.js';
+import { getStudentTransportDue, resolveAcademicYearCode, transportCollectionActiveFilter } from '../services/transportFeeService.js';
 import {
   resolveStudentIdForSelfService,
 } from '../utils/studentPortal.js';
@@ -1707,9 +1707,12 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
         tfp.received_by as received_by_id,
         NULL::uuid as student_fee_id,
         'transport'::text as transaction_source,
-        FALSE as can_delete,
-        NULL::uuid as deletion_approval_id,
-        NULL::text as deletion_status,
+        TRUE as can_delete,
+        deletion_request.id as deletion_approval_id,
+        CASE
+          WHEN reversal.id IS NOT NULL THEN 'DELETED'
+          ELSE deletion_request.status
+        END as deletion_status,
         tfp.student_id,
         s.admission_no, p.display_name as student_name,
         enroll.class_name, enroll.section_name,
@@ -1729,6 +1732,24 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
       LEFT JOIN receipts r ON r.transport_payment_id = tfp.id AND r.school_id = ${req.schoolId}
       LEFT JOIN users u ON tfp.received_by = u.id
       LEFT JOIN persons receiver ON u.person_id = receiver.id
+      LEFT JOIN LATERAL (
+        SELECT ar.id, ar.status
+        FROM approval_requests ar
+        WHERE ar.school_id = ${req.schoolId}
+          AND ar.type = 'fee_payment_deletion'
+          AND ar.requested_by = tfp.received_by
+          AND ar.payload->>'scope_key' = 'transaction:' || tfp.id::text
+        ORDER BY ar.created_at DESC
+        LIMIT 1
+      ) deletion_request ON true
+      LEFT JOIN LATERAL (
+        SELECT rev.id
+        FROM transport_fee_payments rev
+        WHERE rev.school_id = ${req.schoolId}
+          AND rev.refund_of = tfp.id
+          AND rev.transaction_ref LIKE 'VOID-%'
+        LIMIT 1
+      ) reversal ON true
       LEFT JOIN LATERAL (
         SELECT SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END) AS net_amount
         FROM fee_adjustments fa
@@ -1779,6 +1800,7 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
         LIMIT 1
       ) father_info ON true
       WHERE tfp.school_id = ${req.schoolId}
+        AND tfp.refund_of IS NULL
         ${from_date ? sql`AND tfp.paid_at >= ${from_date}` : sql``}
         ${to_date ? sql`AND tfp.paid_at <= ${to_date}` : sql``}
         ${payment_method ? sql`AND tfp.payment_method = ${payment_method}` : sql``}
@@ -1908,9 +1930,12 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       tfp.received_by as received_by_id,
       NULL::uuid as student_fee_id,
       'transport'::text as transaction_source,
-      FALSE as can_delete,
-      NULL::uuid as deletion_approval_id,
-      NULL::text as deletion_status,
+      TRUE as can_delete,
+      deletion_request.id as deletion_approval_id,
+      CASE
+        WHEN reversal.id IS NOT NULL THEN 'DELETED'
+        ELSE deletion_request.status
+      END as deletion_status,
       tfp.student_id,
       s.admission_no, p.display_name as student_name,
       enroll.class_name, enroll.section_name,
@@ -1932,6 +1957,24 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     LEFT JOIN receipts r ON r.transport_payment_id = tfp.id AND r.school_id = ${req.schoolId}
     LEFT JOIN users u ON tfp.received_by = u.id
     LEFT JOIN persons receiver ON u.person_id = receiver.id
+    LEFT JOIN LATERAL (
+      SELECT ar.id, ar.status
+      FROM approval_requests ar
+      WHERE ar.school_id = ${req.schoolId}
+        AND ar.type = 'fee_payment_deletion'
+        AND ar.requested_by = tfp.received_by
+        AND ar.payload->>'scope_key' = 'transaction:' || tfp.id::text
+      ORDER BY ar.created_at DESC
+      LIMIT 1
+    ) deletion_request ON true
+    LEFT JOIN LATERAL (
+      SELECT rev.id
+      FROM transport_fee_payments rev
+      WHERE rev.school_id = ${req.schoolId}
+        AND rev.refund_of = tfp.id
+        AND rev.transaction_ref LIKE 'VOID-%'
+      LIMIT 1
+    ) reversal ON true
     LEFT JOIN LATERAL (
       SELECT SUM(CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END) AS net_amount
       FROM fee_adjustments fa
@@ -1982,6 +2025,7 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       LIMIT 1
     ) father_info ON true
     WHERE tfp.school_id = ${req.schoolId}
+      AND tfp.refund_of IS NULL
       AND tfp.received_by = ${collectorId}
       AND tfp.paid_at >= CURRENT_DATE
       AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
@@ -2018,6 +2062,7 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       AND tfp.received_by = ${collectorId}
       AND tfp.paid_at >= CURRENT_DATE
       AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+      ${transportCollectionActiveFilter}
     GROUP BY tfp.payment_method
   `;
 
@@ -2055,6 +2100,7 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
       AND tfp.received_by = ${collectorId}
       AND tfp.paid_at >= CURRENT_DATE
       AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+      ${transportCollectionActiveFilter}
   `;
 
   const [todayRow] = await sql`SELECT CURRENT_DATE::text as today`;
@@ -2130,6 +2176,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
         WHERE DATE(tfp.paid_at) = ${date}
           AND tfp.school_id = ${req.schoolId}
           ${transportReceivedByFilter}
+          ${transportCollectionActiveFilter}
         GROUP BY tfp.payment_method
       `,
       sql`
@@ -2151,6 +2198,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
         WHERE DATE(tfp.paid_at) = ${date}
           AND tfp.school_id = ${req.schoolId}
           ${transportReceivedByFilter}
+          ${transportCollectionActiveFilter}
       `,
     ]);
 
@@ -2188,6 +2236,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
           WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
             AND tfp.school_id = ${req.schoolId}
             ${transportReceivedByFilter}
+            ${transportCollectionActiveFilter}
           GROUP BY DATE_TRUNC('month', tfp.paid_at)
           ORDER BY period
         `,
@@ -2217,6 +2266,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
           WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
             AND tfp.school_id = ${req.schoolId}
             ${transportReceivedByFilter}
+            ${transportCollectionActiveFilter}
           GROUP BY DATE(tfp.paid_at)
           ORDER BY period
         `,
@@ -2243,6 +2293,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
         WHERE tfp.paid_at BETWEEN ${from_date} AND ${to_date}
           AND tfp.school_id = ${req.schoolId}
           ${transportReceivedByFilter}
+          ${transportCollectionActiveFilter}
       `,
     ]);
 
@@ -2273,6 +2324,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
         WHERE DATE(tfp.paid_at) = ${today}
           AND tfp.school_id = ${req.schoolId}
           ${transportReceivedByFilter}
+          ${transportCollectionActiveFilter}
       `,
     ]);
 
@@ -2444,6 +2496,7 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
           SELECT SUM(tfp.amount)
           FROM transport_fee_payments tfp
           WHERE tfp.school_id = ${schoolId}
+            ${transportCollectionActiveFilter}
         ), 0) AS total
     `,
     sql`
@@ -2502,6 +2555,7 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
           FROM transport_fee_payments tfp
           WHERE date_trunc('month', tfp.paid_at) = date_trunc('month', CURRENT_DATE)
             AND tfp.school_id = ${schoolId}
+            ${transportCollectionActiveFilter}
         ), 0) AS total
     `;
     stats.total_collection_month = Number(monthlyStats[0]?.total || 0);
@@ -2523,6 +2577,7 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
           FROM transport_fee_payments tfp
           WHERE tfp.paid_at::date = CURRENT_DATE
             AND tfp.school_id = ${schoolId}
+            ${transportCollectionActiveFilter}
         ), 0) AS total
     `;
     stats.todays_collection = Number(todayStats[0]?.total || 0);
@@ -2685,7 +2740,8 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
  * Apply a direction-aware fee adjustment (waive = credit, add = debit)
  */
 router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
-  const { student_fee_id, transport_fee_id, student_id, amount, reason, adjustment_type } = req.body;
+  const { student_fee_id, transport_fee_id, student_id, amount, reason, adjustment_type, send_notification } = req.body;
+  const sendNotification = send_notification === true || send_notification === 'true';
   const isTransportAdjustment = Boolean(transport_fee_id);
 
   if ((!student_fee_id && !transport_fee_id) || (student_fee_id && transport_fee_id)) {
@@ -2895,36 +2951,38 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
 
   const signPrefix = isWaive ? '-' : '+';
 
-  // Send Notification to Student + Parents (Async)
-  (async () => {
-    try {
-      const recipients = await sql`
-        SELECT u.id as user_id FROM users u
-        JOIN students s ON u.person_id = s.person_id
-        WHERE s.id = ${adjustment.student_id}
-          AND s.school_id = ${req.schoolId}
-          AND u.school_id = ${req.schoolId}
-          AND u.account_status = 'active'
-        UNION
-        SELECT u.id as user_id FROM users u
-        JOIN parents p ON u.person_id = p.person_id AND p.school_id = ${req.schoolId}
-        JOIN student_parents sp ON p.id = sp.parent_id AND sp.school_id = ${req.schoolId}
-        WHERE sp.student_id = ${adjustment.student_id}
-          AND u.school_id = ${req.schoolId}
-          AND u.account_status = 'active'
-      `;
+  // Notify student + parents only when the admin opts in
+  if (sendNotification) {
+    (async () => {
+      try {
+        const recipients = await sql`
+          SELECT u.id as user_id FROM users u
+          JOIN students s ON u.person_id = s.person_id
+          WHERE s.id = ${adjustment.student_id}
+            AND s.school_id = ${req.schoolId}
+            AND u.school_id = ${req.schoolId}
+            AND u.account_status = 'active'
+          UNION
+          SELECT u.id as user_id FROM users u
+          JOIN parents p ON u.person_id = p.person_id AND p.school_id = ${req.schoolId}
+          JOIN student_parents sp ON p.id = sp.parent_id AND sp.school_id = ${req.schoolId}
+          WHERE sp.student_id = ${adjustment.student_id}
+            AND u.school_id = ${req.schoolId}
+            AND u.account_status = 'active'
+        `;
 
-      if (recipients.length > 0) {
-        await sendNotificationToUsers(
-          recipients.map((r) => r.user_id),
-          'FEE_ADJUSTED',
-          { message: `A fee adjustment of ${signPrefix}₹${parsedAmount} has been applied to ${adjustment.fee_component} for your student.` }
-        );
+        if (recipients.length > 0) {
+          await sendNotificationToUsers(
+            recipients.map((r) => r.user_id),
+            'FEE_ADJUSTED',
+            { message: `A fee adjustment of ${signPrefix}₹${parsedAmount} has been applied to ${adjustment.fee_component} for your student.` }
+          );
+        }
+      } catch (err) {
+        // suppress async notify error
       }
-    } catch (err) {
-      // suppress async notify error
-    }
-  })();
+    })();
+  }
 
   return sendSuccess(res, req.schoolId, {
     message: 'Adjustment applied successfully',

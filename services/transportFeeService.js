@@ -10,7 +10,22 @@ export async function resolveAcademicYearCode(schoolId, academicYearParam, db = 
 }
 
 /**
+ * Exclude reversal rows and originals that have already been voided.
+ * Outer query alias must be `tfp`.
+ */
+export const transportCollectionActiveFilter = sql`
+  AND tfp.refund_of IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM transport_fee_payments rev
+    WHERE rev.school_id = tfp.school_id
+      AND rev.refund_of = tfp.id
+      AND rev.transaction_ref LIKE 'VOID-%'
+  )
+`;
+
+/**
  * Sum of transport payments for a student in a given academic year.
+ * Includes negative reversals so an approved deletion restores the due.
  */
 export async function getTransportPaidTotal(studentId, academicYear, schoolId, db = sql) {
   const [row] = await db`

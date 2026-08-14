@@ -12,6 +12,7 @@ import {
     normalizeCollectionReceiptColumns,
 } from '../utils/collectionReceiptsWorkbook.js';
 import { buildDueListWorkbook } from '../utils/dueListWorkbook.js';
+import { transportCollectionActiveFilter } from '../services/transportFeeService.js';
 
 const router = express.Router();
 
@@ -1474,6 +1475,7 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
             ) father_info ON true
             WHERE tfp.school_id = ${schoolId}
               AND tfp.paid_at::DATE BETWEEN ${fromDate}::DATE AND ${toDate}::DATE
+              ${transportCollectionActiveFilter}
             ORDER BY tfp.paid_at ASC
         `,
     ]);
@@ -1532,6 +1534,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 FROM transport_fee_payments tfp
                 WHERE tfp.paid_at::DATE = ${targetDate}::DATE
                   AND tfp.school_id = ${schoolId}
+                  ${transportCollectionActiveFilter}
               ), 0) AS total
         `,
         sql`
@@ -1549,6 +1552,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 FROM transport_fee_payments tfp
                 WHERE date_trunc('month', tfp.paid_at) = date_trunc('month', ${targetDate}::DATE)
                   AND tfp.school_id = ${schoolId}
+                  ${transportCollectionActiveFilter}
               ), 0) AS total
         `,
         sql`
@@ -1564,6 +1568,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 SELECT SUM(tfp.amount)
                 FROM transport_fee_payments tfp
                 WHERE tfp.school_id = ${schoolId}
+                  ${transportCollectionActiveFilter}
               ), 0) AS total
         `,
         sql`
@@ -1663,7 +1668,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 tfp.received_by as received_by_id,
                 NULL::uuid as student_fee_id,
                 'transport'::text as transaction_source,
-                FALSE as can_delete,
+                TRUE as can_delete,
                 tfp.student_id,
                 s.admission_no,
                 p.display_name as student_name,
@@ -1722,6 +1727,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             ) father_info ON true
             WHERE tfp.school_id = ${schoolId}
               AND tfp.paid_at::DATE = ${targetDate}::DATE
+              ${transportCollectionActiveFilter}
             ORDER BY tfp.paid_at DESC
             LIMIT 1000
         `,
