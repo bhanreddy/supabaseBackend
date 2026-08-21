@@ -24,7 +24,10 @@ const SETTING_KEYS = [
   'school_medium',
   'school_board',
   'enable_driver_bus_attendance',
+  'result_ranking_method',
 ];
+
+const RESULT_RANKING_METHODS = new Set(['competition', 'attendance_tiebreak', 'dense']);
 
 function normalizeSettingValue(value) {
   if (value == null) return '';
@@ -116,6 +119,11 @@ router.put(
     for (const [key, value] of Object.entries(updates)) {
       if (!validKeys.includes(key)) {
         return res.status(400).json({ error: `Invalid setting key: ${key}` });
+      }
+      if (key === 'result_ranking_method' && !RESULT_RANKING_METHODS.has(value)) {
+        return res.status(400).json({
+          error: 'result_ranking_method must be competition, attendance_tiebreak, or dense',
+        });
       }
 
       // SS2: UPSERT with (school_id, key) unique constraint — no cross-tenant writes possible

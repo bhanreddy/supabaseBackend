@@ -58,6 +58,9 @@ const JWT_SCHOOL_ID_PATHS = [
   // there is never a window where the route trusts a client-supplied school_id.
   /^\/api\/v1\/admin\/payments\/credentials\/?$/i,
   /^\/api\/v1\/admin\/payments\/status\/?$/i,
+  // SaaS subscription portal / PhonePe checkout: tenant is always the verified
+  // admin's school, never the build-time/query school_id supplied by a client.
+  /^\/api\/v1\/admin\/subscription(?:\/.*)?$/i,
   // Self-service profile picture (all portals): multipart PATCH runs before
   // multer parses the body, and this is a strictly self-scoped route — school_id
   // is taken from the JWT, never from client query/body.
@@ -85,6 +88,11 @@ const JWT_SCHOOL_ID_PATHS = [
 
 const OPTIONAL_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/app\/version-check\/?$/i,
+  // PhonePe reaches these routes without a SchoolIMS access token. The signed
+  // callback is validated by the gateway SDK; neither endpoint accepts a
+  // request-provided school_id.
+  /^\/api\/v1\/admin\/subscription\/phonepe\/callback\/?$/i,
+  /^\/api\/v1\/admin\/subscription\/phonepe\/return\/?$/i,
   // Notification fan-out (Phase 3a): the request carries NO single school_id —
   // each account's {userId, schoolId} is derived server-side from its own access
   // token inside the handler, so no request-level school_id is required here.

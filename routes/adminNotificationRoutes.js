@@ -8,8 +8,14 @@ import {
   dispatchBroadcast,
   getBroadcastStatus,
   getClassTargets,
+  normalizeFeePaidRange,
   retryBroadcast,
 } from '../services/broadcastDispatchService.js';
+import {
+  getSchoolNotificationSettings,
+  notificationCategoryForEvent,
+  setSchoolNotificationSetting,
+} from '../services/schoolNotificationSettingsService.js';
 
 const router = express.Router();
 
@@ -41,6 +47,50 @@ async function isPlatformKillSwitchActive() {
   }
 }
 
+async function isSchoolNotificationEnabled(schoolId, eventType) {
+  const categoryId = notificationCategoryForEvent(eventType);
+  if (!categoryId) return true;
+  const settings = await getSchoolNotificationSettings(schoolId);
+  return settings.find((setting) => setting.id === categoryId)?.enabled !== false;
+}
+
+// ── GET/PUT /settings ─────────────────────────────────────────────────────────
+// Master, school-scoped controls. Defaults are ON until an admin explicitly
+// disables a category, preserving existing notification behaviour.
+router.get(
+  '/settings',
+  requireAuth,
+  requirePermission('admin.manage'),
+  asyncHandler(async (req, res) => {
+    const settings = await getSchoolNotificationSettings(req.schoolId);
+    return sendSuccess(res, req.schoolId, { settings });
+  })
+);
+
+router.put(
+  '/settings/:categoryId',
+  requireAuth,
+  requirePermission('admin.manage'),
+  asyncHandler(async (req, res) => {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be true or false' });
+    }
+    try {
+      const settings = await setSchoolNotificationSetting(
+        req.schoolId,
+        req.params.categoryId,
+        req.body.enabled
+      );
+      return sendSuccess(res, req.schoolId, { settings });
+    } catch (error) {
+      if (error?.message?.startsWith('Unknown notification category:')) {
+        return res.status(400).json({ error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
 // ── GET /classes/targets ───────────────────────────────────────────────────────
 // Class list with type-aware recipient counts for broadcast targeting.
 router.get(
@@ -59,7 +109,18 @@ router.get(
       return res.status(503).json({ error: 'Notifications are globally paused via Kill Switch.' });
     }
 
-    const targets = await getClassTargets(schoolId, channelType);
+    if (!(await isSchoolNotificationEnabled(schoolId, channelType))) {
+      return sendSuccess(res, req.schoolId, {
+        classes: [],
+        all_school_recipient_count: 0,
+        notification_enabled: false,
+      });
+    }
+
+    const targets = await getClassTargets(schoolId, channelType, {
+      min: req.query.fee_paid_min_percent,
+      max: req.query.fee_paid_max_percent,
+    });
     return sendSuccess(res, req.schoolId, targets);
   })
 );
@@ -71,7 +132,14 @@ router.post(
   requireAuth,
   requirePermission('dashboard.view'),
   asyncHandler(async (req, res) => {
-    const { type, class_ids, section_ids, idempotency_key } = req.body;
+    const {
+      type,
+      class_ids,
+      section_ids,
+      idempotency_key,
+      fee_paid_min_percent,
+      fee_paid_max_percent,
+    } = req.body;
     const adminId = req.user.internal_id;
     const schoolId = req.schoolId;
 
@@ -86,6 +154,14 @@ router.post(
 
     if (await isPlatformKillSwitchActive()) {
       return res.status(503).json({ error: 'Notifications are globally paused via Kill Switch.' });
+    }
+
+
+    if (!(await isSchoolNotificationEnabled(schoolId, type))) {
+      return res.status(409).json({
+        error: 'This notification type is disabled in Notification controls.',
+        code: 'NOTIFICATION_DISABLED',
+      });
     }
 
     const classIds = Array.isArray(class_ids)
@@ -118,6 +194,10 @@ router.post(
       classIds,
       sectionIds,
       idempotencyKey,
+      feePaidRange: {
+        min: fee_paid_min_percent,
+        max: fee_paid_max_percent,
+      },
     });
 
     return sendSuccess(res, req.schoolId, result);
@@ -156,6 +236,15 @@ router.post(
       return res.status(503).json({ error: 'Notifications are globally paused via Kill Switch.' });
     }
 
+    const sourceStatus = await getBroadcastStatus(batchId, schoolId);
+    if (!sourceStatus) return res.status(404).json({ error: 'Broadcast batch not found' });
+    if (!(await isSchoolNotificationEnabled(schoolId, sourceStatus.channel_type))) {
+      return res.status(409).json({
+        error: 'This notification type is disabled in Notification controls.',
+        code: 'NOTIFICATION_DISABLED',
+      });
+    }
+
     try {
       const result = await retryBroadcast(batchId, schoolId, adminId);
       return sendSuccess(res, req.schoolId, result);
@@ -187,6 +276,18 @@ router.post(
 
     if (!month) {
       return res.status(400).json({ error: 'Month is required (e.g., "September")' });
+    }
+
+    const paidRange = normalizeFeePaidRange({
+      min: filters?.fee_paid_min_percent,
+      max: filters?.fee_paid_max_percent,
+    });
+
+    if (!(await isSchoolNotificationEnabled(schoolId, 'FEE_REMINDER'))) {
+      return res.status(409).json({
+        error: 'Fee notifications are disabled in Notification controls.',
+        code: 'NOTIFICATION_DISABLED',
+      });
     }
 
     // Guard: Platform Kill Switch (AN4 — global, not per-school)
@@ -227,13 +328,35 @@ router.post(
 
     // AN1: Resolve target students scoped to this school
     let query = sql`
+      WITH fee_totals AS (
+        SELECT
+          sf.student_id,
+          SUM(GREATEST(sf.amount_due - sf.discount, 0)) AS net_due,
+          SUM(GREATEST(sf.amount_paid, 0)) AS paid_amount,
+          SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) AS balance
+        FROM student_fees sf
+        JOIN students owned_student ON owned_student.id = sf.student_id
+          AND owned_student.school_id = ${schoolId}
+        WHERE sf.school_id = ${schoolId}
+          AND sf.deleted_at IS NULL
+        GROUP BY sf.student_id
+      ), eligible_fees AS (
+        SELECT
+          student_id,
+          balance,
+          CASE WHEN net_due <= 0 THEN 0 ELSE LEAST(100, (paid_amount / net_due) * 100) END AS paid_percentage
+        FROM fee_totals
+        WHERE balance > 0
+      )
       SELECT
         s.id   AS student_id,
         s.admission_no,
         p.display_name,
         u_parent.id AS parent_user_id,
-        d.fcm_token
+        eligible_fees.balance,
+        eligible_fees.paid_percentage
       FROM students s
+      JOIN eligible_fees ON eligible_fees.student_id = s.id
       JOIN persons p             ON s.person_id          = p.id
       JOIN student_enrollments se ON s.id               = se.student_id
         AND se.status = 'active'
@@ -244,10 +367,10 @@ router.post(
       LEFT JOIN parents par         ON sp.parent_id     = par.id
       LEFT JOIN users u_parent      ON par.person_id    = u_parent.person_id
         AND u_parent.school_id = ${schoolId}
-      LEFT JOIN user_devices d      ON u_parent.id      = d.user_id
       WHERE s.school_id   = ${schoolId}
         AND s.deleted_at  IS NULL
-        AND d.fcm_token IS NOT NULL
+        AND u_parent.id IS NOT NULL
+        AND eligible_fees.paid_percentage BETWEEN ${paidRange.min} AND ${paidRange.max}
     `;
 
     if (filters && filters.class_id) {
@@ -263,11 +386,10 @@ router.post(
           student_id:    row.student_id,
           name:          row.display_name,
           admission_no:  row.admission_no,
-          tokens:         new Set(),
+          balance:        Number(row.balance || 0),
           parent_user_ids: new Set(),
         });
       }
-      if (row.fcm_token)      uniqueTargets.get(row.student_id).tokens.add(row.fcm_token);
       if (row.parent_user_id) uniqueTargets.get(row.student_id).parent_user_ids.add(row.parent_user_id);
     });
 
@@ -277,6 +399,9 @@ router.post(
       return sendSuccess(res, req.schoolId, {
         message:        'Dry run successful',
         total_students: totalStudents,
+        total_outstanding: Array.from(uniqueTargets.values()).reduce((sum, target) => sum + target.balance, 0),
+        fee_paid_min_percent: paidRange.min,
+        fee_paid_max_percent: paidRange.max,
         sample_message: `Fee Reminder: ₹[Amount] due for ${month}.`,
       });
     }
@@ -286,7 +411,12 @@ router.post(
       INSERT INTO notification_batches
         (school_id, admin_id, type, filters, status, total_targets)
       VALUES
-        (${schoolId}, ${adminId}, 'FEES', ${JSON.stringify({ month, ...filters })}, 'processing', ${totalStudents})
+        (${schoolId}, ${adminId}, 'FEES', ${JSON.stringify({
+          month,
+          ...filters,
+          fee_paid_min_percent: paidRange.min,
+          fee_paid_max_percent: paidRange.max,
+        })}, 'processing', ${totalStudents})
       RETURNING id
     `;
 

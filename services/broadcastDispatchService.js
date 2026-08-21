@@ -41,6 +41,17 @@ function normalizeSectionIds(sectionIds) {
   return [...new Set(sectionIds.filter(Boolean))];
 }
 
+export function normalizeFeePaidRange(range = {}) {
+  const min = range.min == null || range.min === '' ? 0 : Number(range.min);
+  const max = range.max == null || range.max === '' ? 100 : Number(range.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max > 100 || min > max) {
+    const error = new Error('Fee paid range must be between 0 and 100, with minimum not greater than maximum');
+    error.status = 400;
+    throw error;
+  }
+  return { min, max };
+}
+
 function buildClassFilterClause(classIds, sectionIds) {
   const classes = normalizeClassIds(classIds);
   const sections = normalizeSectionIds(sectionIds);
@@ -113,7 +124,7 @@ async function withDatabaseRetry(operation, label) {
 /**
  * Class list with type-aware recipient counts (distinct active student + parent users).
  */
-export async function getClassTargets(schoolId, channelType) {
+export async function getClassTargets(schoolId, channelType, feePaidRange = {}) {
   assertBroadcastType(channelType);
 
   const classes = await sql`
@@ -129,6 +140,7 @@ export async function getClassTargets(schoolId, channelType) {
       classIds: [cls.id],
       sectionIds: [],
       channelType,
+      feePaidRange,
     });
     return {
       class_id: cls.id,
@@ -142,6 +154,7 @@ export async function getClassTargets(schoolId, channelType) {
     classIds: [],
     sectionIds: [],
     channelType,
+    feePaidRange,
   });
 
   return {
@@ -153,7 +166,10 @@ export async function getClassTargets(schoolId, channelType) {
 /**
  * Resolve broadcast recipients for a channel, optionally scoped to classes (v1) or sections (future).
  */
-export async function resolveRecipients(schoolId, { classIds = [], sectionIds = [], channelType }) {
+export async function resolveRecipients(
+  schoolId,
+  { classIds = [], sectionIds = [], channelType, feePaidRange = {} }
+) {
   assertBroadcastType(channelType);
   const classFilter = buildClassFilterClause(classIds, sectionIds);
 
@@ -215,47 +231,67 @@ export async function resolveRecipients(schoolId, { classIds = [], sectionIds = 
   }
 
   if (channelType === 'FEE_REMINDER') {
+    const paidRange = normalizeFeePaidRange(feePaidRange);
     return sql`
-      WITH pending_students AS (
-        SELECT sf.student_id,
-               SUM(sf.amount_due - sf.discount - sf.amount_paid) AS balance
+      WITH fee_totals AS (
+        SELECT
+          sf.student_id,
+          SUM(GREATEST(sf.amount_due - sf.discount, 0)) AS net_due,
+          SUM(GREATEST(sf.amount_paid, 0)) AS paid_amount,
+          SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) AS balance
         FROM student_fees sf
         JOIN students s ON sf.student_id = s.id
           AND s.school_id = ${schoolId}
         WHERE sf.school_id = ${schoolId}
-          AND sf.status IN ('pending', 'overdue', 'partial')
+          AND sf.deleted_at IS NULL
         GROUP BY sf.student_id
-        HAVING SUM(sf.amount_due - sf.discount - sf.amount_paid) > 0
+      ),
+      pending_students AS (
+        SELECT
+          student_id,
+          balance,
+          CASE
+            WHEN net_due <= 0 THEN 0
+            ELSE LEAST(100, (paid_amount / net_due) * 100)
+          END AS paid_percentage
+        FROM fee_totals
+        WHERE balance > 0
       )
-      SELECT DISTINCT u.id, ps.balance
-      FROM users u
-      JOIN students s ON u.person_id = s.person_id
-        AND s.school_id = ${schoolId}
-      JOIN pending_students ps ON s.id = ps.student_id
-      JOIN student_enrollments se ON s.id = se.student_id
-        AND se.school_id = ${schoolId}
-      JOIN class_sections cs ON se.class_section_id = cs.id
-        AND cs.school_id = ${schoolId}
-      WHERE u.account_status = 'active'
-        AND u.school_id = ${schoolId}
-        AND se.status = 'active'
-        ${classFilter}
-      UNION
-      SELECT DISTINCT u.id, ps.balance
-      FROM users u
-      JOIN parents p ON u.person_id = p.person_id
-      JOIN student_parents sp ON p.id = sp.parent_id
-      JOIN students s ON sp.student_id = s.id
-        AND s.school_id = ${schoolId}
-      JOIN pending_students ps ON sp.student_id = ps.student_id
-      JOIN student_enrollments se ON s.id = se.student_id
-        AND se.school_id = ${schoolId}
-      JOIN class_sections cs ON se.class_section_id = cs.id
-        AND cs.school_id = ${schoolId}
-      WHERE u.account_status = 'active'
-        AND u.school_id = ${schoolId}
-        AND se.status = 'active'
-        ${classFilter}
+      SELECT recipient.id, SUM(recipient.balance) AS balance, MIN(recipient.paid_percentage) AS paid_percentage
+      FROM (
+        SELECT DISTINCT u.id, s.id AS student_id, ps.balance, ps.paid_percentage
+        FROM users u
+        JOIN students s ON u.person_id = s.person_id
+          AND s.school_id = ${schoolId}
+        JOIN pending_students ps ON s.id = ps.student_id
+        JOIN student_enrollments se ON s.id = se.student_id
+          AND se.school_id = ${schoolId}
+        JOIN class_sections cs ON se.class_section_id = cs.id
+          AND cs.school_id = ${schoolId}
+        WHERE u.account_status = 'active'
+          AND u.school_id = ${schoolId}
+          AND se.status = 'active'
+          AND ps.paid_percentage BETWEEN ${paidRange.min} AND ${paidRange.max}
+          ${classFilter}
+        UNION ALL
+        SELECT DISTINCT u.id, s.id AS student_id, ps.balance, ps.paid_percentage
+        FROM users u
+        JOIN parents p ON u.person_id = p.person_id
+        JOIN student_parents sp ON p.id = sp.parent_id
+        JOIN students s ON sp.student_id = s.id
+          AND s.school_id = ${schoolId}
+        JOIN pending_students ps ON sp.student_id = ps.student_id
+        JOIN student_enrollments se ON s.id = se.student_id
+          AND se.school_id = ${schoolId}
+        JOIN class_sections cs ON se.class_section_id = cs.id
+          AND cs.school_id = ${schoolId}
+        WHERE u.account_status = 'active'
+          AND u.school_id = ${schoolId}
+          AND se.status = 'active'
+          AND ps.paid_percentage BETWEEN ${paidRange.min} AND ${paidRange.max}
+          ${classFilter}
+      ) recipient
+      GROUP BY recipient.id
     `;
   }
 
@@ -526,6 +562,7 @@ export async function dispatchBroadcast({
   sectionIds = [],
   parentBatchId = null,
   idempotencyKey = null,
+  feePaidRange = {},
 }) {
   assertBroadcastType(channelType);
 
@@ -544,6 +581,7 @@ export async function dispatchBroadcast({
     classIds: normalizedClassIds,
     sectionIds,
     channelType,
+    feePaidRange,
   });
 
   const filters = {
@@ -551,6 +589,11 @@ export async function dispatchBroadcast({
     class_ids: normalizedClassIds,
     section_ids: normalizeSectionIds(sectionIds),
   };
+  if (channelType === 'FEE_REMINDER') {
+    const paidRange = normalizeFeePaidRange(feePaidRange);
+    filters.fee_paid_min_percent = paidRange.min;
+    filters.fee_paid_max_percent = paidRange.max;
+  }
   if (parentBatchId) filters.parent_batch_id = parentBatchId;
   if (idempotencyKey) filters.idempotency_key = idempotencyKey;
 
@@ -730,6 +773,10 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
   const { idempotency_key: _ignoredKey, ...filters } = sourceBatch.filters || {};
   const classIds = filters.class_ids || [];
   const sectionIds = filters.section_ids || [];
+  const feePaidRange = {
+    min: filters.fee_paid_min_percent,
+    max: filters.fee_paid_max_percent,
+  };
 
   // Users we can prove already got it — never resend to these.
   const sentRows = await sql`
@@ -748,6 +795,7 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
     classIds,
     sectionIds,
     channelType,
+    feePaidRange,
   });
   const recipients = currentTargets.filter((r) => !alreadySent.has(r.id));
 

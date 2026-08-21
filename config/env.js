@@ -105,6 +105,17 @@ const config = {
         // LLM generation and document export may take longer than status calls.
         generationTimeoutMs: Number(optional('PAPERFORGE_GENERATION_TIMEOUT_MS', '180000')),
     },
+    phonePe: {
+        // SaaS subscription checkout is owned by this backend. Credentials are
+        // server-only and are never returned to the SchoolIMS application.
+        clientId: optional('PHONEPE_CLIENT_ID'),
+        clientSecret: optional('PHONEPE_CLIENT_SECRET'),
+        clientVersion: Number(optional('PHONEPE_CLIENT_VERSION', '1')),
+        environment: optional('PHONEPE_ENVIRONMENT', 'SANDBOX').toUpperCase(),
+        redirectUrl: optional('PHONEPE_REDIRECT_URL'),
+        callbackUsername: optional('PHONEPE_CALLBACK_USERNAME'),
+        callbackPassword: optional('PHONEPE_CALLBACK_PASSWORD'),
+    },
     rateLimit: {
         // Dev churns requests via hot-reload/multi-tab remounts against one
         // per-user bucket — keep it high so local testing never trips the limiter.
@@ -135,6 +146,7 @@ Object.freeze(config.rateLimit);
 Object.freeze(config.transportJobs);
 Object.freeze(config.diaryDigestJobs);
 Object.freeze(config.paperforge);
+Object.freeze(config.phonePe);
 
 /**
  * Whether the PaperForge integration is configured. When the engine URL env var

@@ -5,6 +5,7 @@ import admin from '../config/firebase.js';
 import sql from '../db.js';
 import { NotificationEventConfig } from './notificationEventConfig.js';
 import { NotificationTemplateService } from './notificationTemplateService.js';
+import { filterEnabledNotificationRecipients } from './schoolNotificationSettingsService.js';
 import logger from '../utils/logger.js';
 
 // Constants
@@ -32,6 +33,16 @@ const CACHE_TTL = 60000; // 60 seconds
  */
 export async function sendNotificationToUsers(userIds = [], type, params = {}, context = {}) {
   if (!userIds || userIds.length === 0) return { successCount: 0, failureCount: 0 };
+
+  const notificationAccess = await filterEnabledNotificationRecipients(userIds, type);
+  userIds = notificationAccess.enabledUserIds;
+  if (userIds.length === 0) {
+    return {
+      successCount: 0,
+      failureCount: 0,
+      disabledCount: notificationAccess.disabledUserIds.length,
+    };
+  }
 
   // 1️⃣ Validate Event Mapping & Render
   let renderResult;
@@ -63,7 +74,13 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
   // be registered for several vaulted accounts, so a notification tap must be
   // able to switch to the account it was actually sent to.
   let userTokens = await fetchTokensWithUserId(userIds);
-  if (!userTokens || userTokens.length === 0) return { successCount: 0, failureCount: 0 };
+  if (!userTokens || userTokens.length === 0) {
+    return {
+      successCount: 0,
+      failureCount: 0,
+      disabledCount: notificationAccess.disabledUserIds.length,
+    };
+  }
 
   // 4️⃣ Group tokens by language and render per-language templates
   let totalSuccess = 0;
@@ -132,7 +149,11 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
     role: context.role || null
   });
 
-  return { successCount: totalSuccess, failureCount: totalFailure };
+  return {
+    successCount: totalSuccess,
+    failureCount: totalFailure,
+    disabledCount: notificationAccess.disabledUserIds.length,
+  };
 }
 
 /**
@@ -640,6 +661,26 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     };
   }
 
+  const notificationAccess = await filterEnabledNotificationRecipients(userIds, type);
+  userIds = notificationAccess.enabledUserIds;
+  const disabledRecipientRows = notificationAccess.disabledUserIds.map((userId) => ({
+    user_id: userId,
+    fcm_token: null,
+    status: 'skipped',
+    error_code: 'notification_disabled',
+  }));
+
+  if (userIds.length === 0) {
+    return {
+      successCount: 0,
+      failureCount: notificationAccess.disabledUserIds.length,
+      noTokenCount: 0,
+      disabledCount: notificationAccess.disabledUserIds.length,
+      tokenResults: [],
+      recipientRows: disabledRecipientRows,
+    };
+  }
+
   let renderResult;
   try {
     renderResult = NotificationTemplateService.render(type, params);
@@ -648,15 +689,18 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     await logNotificationSummary({ type, errorMessage: err.message });
     return {
       successCount: 0,
-      failureCount: userIds.length,
+      failureCount: userIds.length + notificationAccess.disabledUserIds.length,
       noTokenCount: 0,
       tokenResults: [],
-      recipientRows: userIds.map((userId) => ({
-        user_id: userId,
-        fcm_token: null,
-        status: 'failed',
-        error_code: 'template_error',
-      })),
+      recipientRows: [
+        ...disabledRecipientRows,
+        ...userIds.map((userId) => ({
+          user_id: userId,
+          fcm_token: null,
+          status: 'failed',
+          error_code: 'template_error',
+        })),
+      ],
     };
   }
 
@@ -666,15 +710,18 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   if (await isKillSwitchActive(type)) {
     return {
       successCount: 0,
-      failureCount: userIds.length,
+      failureCount: userIds.length + notificationAccess.disabledUserIds.length,
       noTokenCount: 0,
       tokenResults: [],
-      recipientRows: userIds.map((userId) => ({
-        user_id: userId,
-        fcm_token: null,
-        status: 'failed',
-        error_code: 'kill_switch',
-      })),
+      recipientRows: [
+        ...disabledRecipientRows,
+        ...userIds.map((userId) => ({
+          user_id: userId,
+          fcm_token: null,
+          status: 'failed',
+          error_code: 'kill_switch',
+        })),
+      ],
     };
   }
 
@@ -691,12 +738,15 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   const usersWithTokens = new Set(userDevices.map((d) => d.user_id));
   const noTokenUserIds = userIds.filter((id) => !usersWithTokens.has(id));
 
-  const recipientRows = noTokenUserIds.map((userId) => ({
-    user_id: userId,
-    fcm_token: null,
-    status: 'no_token',
-    error_code: null,
-  }));
+  const recipientRows = [
+    ...disabledRecipientRows,
+    ...noTokenUserIds.map((userId) => ({
+      user_id: userId,
+      fcm_token: null,
+      status: 'no_token',
+      error_code: null,
+    })),
+  ];
 
   if (userDevices.length === 0) {
     await logNotificationSummary({
@@ -711,8 +761,9 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     });
     return {
       successCount: 0,
-      failureCount: 0,
+      failureCount: notificationAccess.disabledUserIds.length,
       noTokenCount: noTokenUserIds.length,
+      disabledCount: notificationAccess.disabledUserIds.length,
       tokenResults: [],
       recipientRows,
     };
@@ -803,8 +854,9 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
 
   return {
     successCount: totalSuccess,
-    failureCount: totalFailure,
+    failureCount: totalFailure + notificationAccess.disabledUserIds.length,
     noTokenCount: noTokenUserIds.length,
+    disabledCount: notificationAccess.disabledUserIds.length,
     tokenResults: allTokenResults,
     recipientRows,
   };

@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchFeeReminder } from './broadcastDispatchService.js';
+import { dispatchFeeReminder, normalizeFeePaidRange } from './broadcastDispatchService.js';
+
+test('fee paid range defaults to all unpaid students and validates custom percentages', () => {
+  assert.deepEqual(normalizeFeePaidRange(), { min: 0, max: 100 });
+  assert.deepEqual(normalizeFeePaidRange({ min: '25', max: '75.5' }), { min: 25, max: 75.5 });
+  assert.throws(() => normalizeFeePaidRange({ min: 80, max: 20 }), /minimum not greater/);
+  assert.throws(() => normalizeFeePaidRange({ min: -1, max: 50 }), /between 0 and 100/);
+  assert.throws(() => normalizeFeePaidRange({ min: 0, max: 101 }), /between 0 and 100/);
+});
 
 test('fee reminders bound recipient concurrency and persist incremental progress', async () => {
   const recipients = Array.from({ length: 12 }, (_, index) => ({

@@ -205,6 +205,104 @@ router.get('/dashboard-stats', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 /**
+ * GET /admin/quick-action-usage
+ * Return today's school-wide quick-action click totals. All admins in a school
+ * read the same aggregate, so the dashboard order is consistent between them.
+ */
+router.get('/quick-action-usage', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+    // This tenant boundary is intentionally JWT-derived. Never let the client
+    // choose which school's shared usage totals it can read.
+    const schoolId = req.user.schoolId;
+
+    const rows = await sql`
+        WITH school_clock AS (
+            SELECT (
+                CURRENT_TIMESTAMP AT TIME ZONE COALESCE(
+                    (
+                        SELECT ss.value
+                        FROM school_settings ss
+                        JOIN pg_timezone_names tz ON tz.name = ss.value
+                        WHERE ss.school_id = ${schoolId}
+                          AND ss.key = 'school_timezone'
+                        LIMIT 1
+                    ),
+                    'Asia/Kolkata'
+                )
+            )::date AS usage_date
+        )
+        SELECT action_key, click_count::int, usage_date::text
+        FROM admin_quick_action_daily_usage
+        WHERE school_id = ${schoolId}
+          AND usage_date = (SELECT usage_date FROM school_clock)
+        ORDER BY click_count DESC, action_key ASC
+    `;
+
+    const counts = Object.fromEntries(
+        rows.map((row) => [row.action_key, Number(row.click_count) || 0])
+    );
+
+    return sendSuccess(res, schoolId, {
+        usageDate: rows[0]?.usage_date || null,
+        counts,
+    });
+}));
+
+/**
+ * POST /admin/quick-action-usage
+ * Atomically increment today's school-wide total for one admin quick action.
+ */
+router.post('/quick-action-usage', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+    const schoolId = req.user.schoolId;
+    const actionKey = typeof req.body?.action_key === 'string'
+        ? req.body.action_key.trim()
+        : '';
+
+    // Quick-action identifiers are admin routes. The dashboard ignores unknown
+    // keys, but rejecting malformed input prevents unbounded metric cardinality.
+    if (!/^\/admin\/[a-z0-9][a-z0-9/-]*$/i.test(actionKey) || actionKey.length > 160) {
+        return res.status(400).json({ error: 'Invalid quick action' });
+    }
+
+    const [usage] = await sql`
+        WITH school_clock AS (
+            SELECT (
+                CURRENT_TIMESTAMP AT TIME ZONE COALESCE(
+                    (
+                        SELECT ss.value
+                        FROM school_settings ss
+                        JOIN pg_timezone_names tz ON tz.name = ss.value
+                        WHERE ss.school_id = ${schoolId}
+                          AND ss.key = 'school_timezone'
+                        LIMIT 1
+                    ),
+                    'Asia/Kolkata'
+                )
+            )::date AS usage_date
+        )
+        INSERT INTO admin_quick_action_daily_usage (
+            school_id,
+            action_key,
+            usage_date,
+            click_count,
+            updated_at
+        )
+        SELECT ${schoolId}, ${actionKey}, usage_date, 1, NOW()
+        FROM school_clock
+        ON CONFLICT (school_id, usage_date, action_key)
+        DO UPDATE SET
+            click_count = admin_quick_action_daily_usage.click_count + 1,
+            updated_at = NOW()
+        RETURNING action_key, click_count::int, usage_date::text
+    `;
+
+    return sendSuccess(res, schoolId, {
+        actionKey: usage.action_key,
+        clickCount: Number(usage.click_count),
+        usageDate: usage.usage_date,
+    });
+}));
+
+/**
  * GET /admin/diary/options
  * Return the current academic year's class-sections and the subjects actually
  * assigned to each mapping. Admin diary writes use class_section_id directly;
