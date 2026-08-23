@@ -22,6 +22,12 @@ import {
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 import { RESULT_PUBLICATION_GATED_EXAM_TYPES } from '../utils/examResultVisibility.js';
 import {
+  componentMaximumsFromRow,
+  componentTotalMax,
+  componentWeightage20,
+  parseComponentMaximums,
+} from '../utils/componentMaximums.js';
+import {
   normalizeResultRankingMethod,
   rankResultRows,
 } from '../services/resultRankingService.js';
@@ -1194,7 +1200,7 @@ router.get('/exam-analytics', requirePermission('admin.manage'), asyncHandler(as
  * GET /results/progress-card-assistant/context
  * Class-teacher-only roster and exam context for physical progress-card work.
  */
-router.get('/progress-card-assistant/context', requirePermission('results.view'), asyncHandler(async (req, res) => {
+router.get('/progress-card-assistant/context', requireAnyPermission(['results.view', 'marks.view']), asyncHandler(async (req, res) => {
   const context = await resolveProgressCardClassTeacher(req, res);
   if (!context) return;
   const { classSection } = context;
@@ -1258,7 +1264,7 @@ router.get('/progress-card-assistant/context', requirePermission('results.view')
  * GET /results/progress-card-assistant/student/:studentId?exam_id=...
  * Full subject-detail worksheet for one student in the class teacher's class.
  */
-router.get('/progress-card-assistant/student/:studentId', requirePermission('results.view'), asyncHandler(async (req, res) => {
+router.get('/progress-card-assistant/student/:studentId', requireAnyPermission(['results.view', 'marks.view']), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   const examId = typeof req.query.exam_id === 'string' ? req.query.exam_id.trim() : '';
   if (!UUID_RE.test(studentId) || !UUID_RE.test(examId)) {
@@ -1306,6 +1312,8 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
     SELECT
       subject.id AS subject_id, subject.name AS subject_name,
       paper.assessment_schema, paper.max_marks, paper.consolidated_max_marks,
+      paper.participation_max_marks, paper.written_work_max_marks,
+      paper.project_work_max_marks, paper.slip_test_max_marks,
       mark.id AS mark_id, mark.marks_obtained, mark.consolidated_marks_obtained,
       mark.participation_marks, mark.written_work_marks,
       mark.project_work_marks, mark.slip_test_marks, mark.is_absent
@@ -1331,6 +1339,7 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
     ].reduce((total, value) => total + Number(value || 0), 0);
     const obtained = numberOrNull(subject.marks_obtained);
     const maximum = Number(subject.max_marks || 0);
+    const componentMaximums = componentMaximumsFromRow(subject);
     return {
       ...subject,
       max_marks: maximum,
@@ -1341,9 +1350,10 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
       written_work_marks: numberOrNull(subject.written_work_marks),
       project_work_marks: numberOrNull(subject.project_work_marks),
       slip_test_marks: numberOrNull(subject.slip_test_marks),
+      component_maximums: componentMaximums,
       component_total: subject.mark_id ? componentTotal : null,
       weightage_20: subject.mark_id && subject.assessment_schema === 'component'
-        ? Number(((componentTotal / 50) * 20).toFixed(2))
+        ? componentWeightage20(componentTotal, componentMaximums)
         : null,
       percentage: subject.mark_id && maximum > 0
         ? Number(((Number(obtained || 0) / maximum) * 100).toFixed(2))
@@ -1400,13 +1410,47 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
         2
       ) AS attendance_percentage
     FROM student_enrollments enrollment
+    JOIN academic_years year ON year.id = enrollment.academic_year_id
+      AND year.id = ${classSection.academic_year_id}
+      AND year.school_id = ${req.schoolId}
+      AND year.deleted_at IS NULL
     LEFT JOIN daily_attendance daily ON daily.student_enrollment_id = enrollment.id
       AND daily.school_id = ${req.schoolId}
+      AND daily.attendance_date BETWEEN year.start_date AND year.end_date
       AND daily.deleted_at IS NULL
     WHERE enrollment.class_section_id = ${classSection.id}
       AND enrollment.school_id = ${req.schoolId}
       AND enrollment.status = 'active'
     GROUP BY enrollment.student_id
+  `;
+  const monthlyAttendanceRows = await sql`
+    SELECT
+      TO_CHAR(DATE_TRUNC('month', daily.attendance_date), 'YYYY-MM') AS month,
+      TO_CHAR(DATE_TRUNC('month', daily.attendance_date), 'FMMonth YYYY') AS month_label,
+      COUNT(daily.id)::int AS working_days,
+      COALESCE(SUM(CASE
+        WHEN daily.status IN ('present', 'late') THEN 1
+        WHEN daily.status = 'half_day' THEN 0.5
+        ELSE 0
+      END), 0)::float AS days_present,
+      ROUND(
+        100 * COALESCE(SUM(CASE
+          WHEN daily.status IN ('present', 'late') THEN 1
+          WHEN daily.status = 'half_day' THEN 0.5
+          ELSE 0
+        END), 0)::numeric / NULLIF(COUNT(daily.id), 0),
+        2
+      ) AS percentage
+    FROM daily_attendance daily
+    JOIN academic_years year ON year.id = ${classSection.academic_year_id}
+      AND year.school_id = ${req.schoolId}
+      AND year.deleted_at IS NULL
+    WHERE daily.student_enrollment_id = ${student.enrollment_id}
+      AND daily.school_id = ${req.schoolId}
+      AND daily.attendance_date BETWEEN year.start_date AND year.end_date
+      AND daily.deleted_at IS NULL
+    GROUP BY DATE_TRUNC('month', daily.attendance_date)
+    ORDER BY DATE_TRUNC('month', daily.attendance_date)
   `;
   const attendanceByStudent = new Map(attendanceRows.map((row) => [String(row.student_id), row]));
   const rankingMethod = await getSchoolRankingMethod(req.schoolId);
@@ -1449,6 +1493,13 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
       working_days: Number(attendance.working_days || 0),
       days_present: Number(attendance.days_present || 0),
       percentage: numberOrNull(attendance.attendance_percentage),
+      monthly: monthlyAttendanceRows.map((month) => ({
+        month: month.month,
+        month_label: month.month_label,
+        working_days: Number(month.working_days || 0),
+        days_present: Number(month.days_present || 0),
+        percentage: numberOrNull(month.percentage),
+      })),
     },
   });
 }));
@@ -1457,7 +1508,7 @@ router.get('/progress-card-assistant/student/:studentId', requirePermission('res
  * GET /results/progress-card-assistant/student/:studentId/final-calculations
  * Derived Summative-I, Summative-II and Annual results from FA-1…FA-4 + SA-1…SA-2.
  */
-router.get('/progress-card-assistant/student/:studentId/final-calculations', requirePermission('results.view'), asyncHandler(async (req, res) => {
+router.get('/progress-card-assistant/student/:studentId/final-calculations', requireAnyPermission(['results.view', 'marks.view']), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   if (!UUID_RE.test(studentId)) return res.status(400).json({ error: 'Invalid studentId' });
 
@@ -1958,13 +2009,16 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
       attendance,
       max_marks: defaultMaximum,
       consolidated_max_marks: defaultMaximum,
-      assessment_schema: 'consolidated'
+      assessment_schema: 'consolidated',
+      component_maximums: parseComponentMaximums(),
     });
   }
 
   // 3. Find Exam Subject (B2: school_id scoped)
   const [examSubject] = await sql`
-    SELECT id, max_marks, assessment_schema, consolidated_max_marks
+    SELECT id, max_marks, assessment_schema, consolidated_max_marks,
+      participation_max_marks, written_work_max_marks,
+      project_work_max_marks, slip_test_max_marks
     FROM exam_subjects
     WHERE exam_id = ${exam.id}
       AND subject_id = ${subject_id}
@@ -1981,7 +2035,8 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
       attendance,
       max_marks: defaultMaximum,
       consolidated_max_marks: defaultMaximum,
-      assessment_schema: 'consolidated'
+      assessment_schema: 'consolidated',
+      component_maximums: parseComponentMaximums(),
     });
   }
 
@@ -2014,7 +2069,8 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
     attendance,
     max_marks: examSubject.max_marks || 25,
     consolidated_max_marks: examSubject.consolidated_max_marks || 25,
-    assessment_schema: examSubject.assessment_schema || 'consolidated'
+    assessment_schema: examSubject.assessment_schema || 'consolidated',
+    component_maximums: componentMaximumsFromRow(examSubject),
   });
 }));
 
@@ -2037,9 +2093,12 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     return res.status(400).json({ error: 'assessment_schema must be component or consolidated' });
   }
 
-  const requestedMaxMarks = assessmentSchema === 'component' ? 50 : Number(max_marks || 25);
-  if (!Number.isFinite(requestedMaxMarks) || requestedMaxMarks <= 0 || requestedMaxMarks > 999) {
-    return res.status(400).json({ error: 'max_marks must be between 1 and 999' });
+  const componentMaximums = parseComponentMaximums(req.body.component_maximums);
+  const requestedMaxMarks = assessmentSchema === 'component'
+    ? componentTotalMax(componentMaximums)
+    : Number(max_marks || 25);
+  if (!Number.isFinite(requestedMaxMarks) || requestedMaxMarks <= 0 || requestedMaxMarks > 3996) {
+    return res.status(400).json({ error: 'max_marks must be between 1 and 3996' });
   }
 
   const normalizedResults = [];
@@ -2056,10 +2115,13 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
       const componentValues = [participation, writtenWork, projectWork, slipTest];
       if (
         componentValues.some((value) => !Number.isFinite(value) || value < 0) ||
-        participation > 10 || writtenWork > 10 || projectWork > 10 || slipTest > 20
+        participation > componentMaximums.participation ||
+        writtenWork > componentMaximums.written_work ||
+        projectWork > componentMaximums.project_work ||
+        slipTest > componentMaximums.slip_test
       ) {
         return res.status(400).json({
-          error: 'Component marks exceed their limits (10, 10, 10, 20)'
+          error: `Component marks exceed their limits (${componentMaximums.participation}, ${componentMaximums.written_work}, ${componentMaximums.project_work}, ${componentMaximums.slip_test})`
         });
       }
       normalizedResults.push({
@@ -2120,7 +2182,9 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
 
   // 3. Find or Create Exam Subject (B2: school_id scoped)
   let [examSubject] = await sql`
-    SELECT id, max_marks, assessment_schema, consolidated_max_marks
+    SELECT id, max_marks, assessment_schema, consolidated_max_marks,
+      participation_max_marks, written_work_max_marks,
+      project_work_max_marks, slip_test_max_marks
     FROM exam_subjects
     WHERE exam_id = ${exam.id}
       AND subject_id = ${subject_id}
@@ -2135,33 +2199,52 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
   const consolidatedMaxMarks = assessmentSchema === 'consolidated'
     ? targetMaxMarks
     : Number(examSubject?.consolidated_max_marks || 25);
+  const storedComponentMaximums = componentMaximumsFromRow(examSubject);
+  const componentMaximumsChanged =
+    storedComponentMaximums.participation !== componentMaximums.participation ||
+    storedComponentMaximums.written_work !== componentMaximums.written_work ||
+    storedComponentMaximums.project_work !== componentMaximums.project_work ||
+    storedComponentMaximums.slip_test !== componentMaximums.slip_test;
 
   if (!examSubject) {
     [examSubject] = await sql`
       INSERT INTO exam_subjects (
         school_id, exam_id, subject_id, class_id, max_marks, passing_marks,
-        assessment_schema, consolidated_max_marks
+        assessment_schema, consolidated_max_marks,
+        participation_max_marks, written_work_max_marks,
+        project_work_max_marks, slip_test_max_marks
       )
       VALUES (
         ${req.schoolId}, ${exam.id}, ${subject_id}, ${class_id}, ${targetMaxMarks},
-        ${targetPassingMarks}, ${assessmentSchema}, ${consolidatedMaxMarks}
+        ${targetPassingMarks}, ${assessmentSchema}, ${consolidatedMaxMarks},
+        ${componentMaximums.participation}, ${componentMaximums.written_work},
+        ${componentMaximums.project_work}, ${componentMaximums.slip_test}
       )
-      RETURNING id, max_marks, assessment_schema, consolidated_max_marks
+      RETURNING id, max_marks, assessment_schema, consolidated_max_marks,
+        participation_max_marks, written_work_max_marks,
+        project_work_max_marks, slip_test_max_marks
     `;
   } else if (
     Number(examSubject.max_marks) !== targetMaxMarks ||
     examSubject.assessment_schema !== assessmentSchema ||
-    Number(examSubject.consolidated_max_marks) !== consolidatedMaxMarks
+    Number(examSubject.consolidated_max_marks) !== consolidatedMaxMarks ||
+    componentMaximumsChanged
   ) {
     [examSubject] = await sql`
       UPDATE exam_subjects
       SET max_marks = ${targetMaxMarks},
           passing_marks = ${targetPassingMarks},
           assessment_schema = ${assessmentSchema},
-          consolidated_max_marks = ${consolidatedMaxMarks}
+          consolidated_max_marks = ${consolidatedMaxMarks},
+          participation_max_marks = ${componentMaximums.participation},
+          written_work_max_marks = ${componentMaximums.written_work},
+          project_work_max_marks = ${componentMaximums.project_work},
+          slip_test_max_marks = ${componentMaximums.slip_test}
       WHERE id = ${examSubject.id}
       AND school_id = ${req.schoolId}
-      RETURNING id, max_marks, assessment_schema, consolidated_max_marks
+      RETURNING id, max_marks, assessment_schema, consolidated_max_marks,
+        participation_max_marks, written_work_max_marks,
+        project_work_max_marks, slip_test_max_marks
     `;
   }
 

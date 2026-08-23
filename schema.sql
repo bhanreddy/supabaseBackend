@@ -251,44 +251,89 @@ CREATE OR REPLACE FUNCTION recalculate_section_rolls(
 RETURNS VOID
 SET search_path = public
 AS $$
+DECLARE
+    v_manual BOOLEAN := false;
+    v_start INTEGER := 1;
 BEGIN
     PERFORM pg_advisory_xact_lock(
         hashtext(p_class_section_id::text),
         hashtext(p_academic_year_id::text)
     );
 
-    UPDATE student_enrollments
-    SET roll_number = NULL
-    WHERE class_section_id = p_class_section_id
-      AND academic_year_id = p_academic_year_id
-      AND status = 'active'
-      AND deleted_at IS NULL
-      AND roll_number IS NOT NULL;
+    SELECT COALESCE(manual_roll_numbers, false), COALESCE(roll_number_start, 1)
+      INTO v_manual, v_start
+    FROM class_sections
+    WHERE id = p_class_section_id;
 
-    WITH ordered_students AS (
-        SELECT 
-            se.id AS enrollment_id,
-            ROW_NUMBER() OVER (
-                ORDER BY
-                    LOWER(BTRIM(COALESCE(p.first_name, ''))) ASC,
-                    LOWER(BTRIM(COALESCE(p.middle_name, ''))) ASC,
-                    LOWER(BTRIM(COALESCE(p.last_name, ''))) ASC,
-                    s.admission_no ASC,
-                    s.id ASC
-            )::INTEGER as new_roll
-        FROM student_enrollments se
-        JOIN students s ON se.student_id = s.id
-        JOIN persons p ON s.person_id = p.id
-        WHERE se.class_section_id = p_class_section_id
-          AND se.academic_year_id = p_academic_year_id
-          AND se.status = 'active'
-          AND se.deleted_at IS NULL
-          AND s.deleted_at IS NULL
-    )
-    UPDATE student_enrollments se
-    SET roll_number = os.new_roll
-    FROM ordered_students os
-    WHERE se.id = os.enrollment_id;
+    IF v_manual THEN
+        UPDATE student_enrollments
+        SET roll_number = -roll_number
+        WHERE class_section_id = p_class_section_id
+          AND academic_year_id = p_academic_year_id
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND roll_number IS NOT NULL
+          AND roll_number > 0;
+
+        WITH ordered_students AS (
+            SELECT
+                se.id AS enrollment_id,
+                (v_start - 1 + ROW_NUMBER() OVER (
+                    ORDER BY
+                        ABS(se.roll_number) ASC NULLS LAST,
+                        LOWER(BTRIM(COALESCE(p.first_name, ''))) ASC,
+                        LOWER(BTRIM(COALESCE(p.middle_name, ''))) ASC,
+                        LOWER(BTRIM(COALESCE(p.last_name, ''))) ASC,
+                        s.admission_no ASC,
+                        s.id ASC
+                ))::INTEGER AS new_roll
+            FROM student_enrollments se
+            JOIN students s ON se.student_id = s.id
+            JOIN persons p ON s.person_id = p.id
+            WHERE se.class_section_id = p_class_section_id
+              AND se.academic_year_id = p_academic_year_id
+              AND se.status = 'active'
+              AND se.deleted_at IS NULL
+              AND s.deleted_at IS NULL
+        )
+        UPDATE student_enrollments se
+        SET roll_number = ordered_students.new_roll
+        FROM ordered_students
+        WHERE se.id = ordered_students.enrollment_id;
+    ELSE
+        UPDATE student_enrollments
+        SET roll_number = NULL
+        WHERE class_section_id = p_class_section_id
+          AND academic_year_id = p_academic_year_id
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND roll_number IS NOT NULL;
+
+        WITH ordered_students AS (
+            SELECT
+                se.id AS enrollment_id,
+                ROW_NUMBER() OVER (
+                    ORDER BY
+                        LOWER(BTRIM(COALESCE(p.first_name, ''))) ASC,
+                        LOWER(BTRIM(COALESCE(p.middle_name, ''))) ASC,
+                        LOWER(BTRIM(COALESCE(p.last_name, ''))) ASC,
+                        s.admission_no ASC,
+                        s.id ASC
+                )::INTEGER AS new_roll
+            FROM student_enrollments se
+            JOIN students s ON se.student_id = s.id
+            JOIN persons p ON s.person_id = p.id
+            WHERE se.class_section_id = p_class_section_id
+              AND se.academic_year_id = p_academic_year_id
+              AND se.status = 'active'
+              AND se.deleted_at IS NULL
+              AND s.deleted_at IS NULL
+        )
+        UPDATE student_enrollments se
+        SET roll_number = ordered_students.new_roll
+        FROM ordered_students
+        WHERE se.id = ordered_students.enrollment_id;
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -3695,6 +3740,9 @@ CREATE TABLE IF NOT EXISTS class_sections (
     section_id UUID NOT NULL REFERENCES sections(id) ON DELETE RESTRICT,
     academic_year_id UUID NOT NULL REFERENCES academic_years(id) ON DELETE RESTRICT,
     class_teacher_id UUID, -- FK added after staff table is created (Fix 10)
+    manual_roll_numbers BOOLEAN NOT NULL DEFAULT false,
+    roll_number_start INTEGER NOT NULL DEFAULT 1
+        CONSTRAINT class_sections_roll_number_start_positive CHECK (roll_number_start BETWEEN 1 AND 9999),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
     UNIQUE (school_id, class_id, section_id, academic_year_id)

@@ -189,6 +189,7 @@ import studentsRouter from './routes/studentsRoutes.js';
 import studentDashboardRouter from './routes/studentDashboardRoutes.js';
 import teachersRouter from './routes/teachersRoutes.js';
 import staffRouter from './routes/staffRoutes.js';
+import staffRollNumberRouter from './routes/staffRollNumberRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import academicsRouter from './routes/academicsRoutes.js';
 import attendanceRouter from './routes/attendanceRoutes.js';
@@ -299,6 +300,7 @@ app.use('/api/v1/student', studentDashboardRouter);
 app.use('/api/v1/teachers', teachersRouter);
 // Must precede /staff because staffRouter has a GET /:id catch-all.
 app.use('/api/v1/staff/student-portfolio', studentPortfolioRouter);
+app.use('/api/v1/staff/roll-numbers', staffRollNumberRouter);
 app.use('/api/v1/staff', staffRouter);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/academics', academicsRouter);
