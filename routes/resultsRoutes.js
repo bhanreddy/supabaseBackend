@@ -2107,7 +2107,21 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
       return res.status(400).json({ error: 'Every result requires student_id' });
     }
 
-    if (assessmentSchema === 'component') {
+    const isAbsent = result.is_absent === true || (
+      typeof result.marks === 'string' && result.marks.trim().toUpperCase() === 'A'
+    );
+
+    if (isAbsent) {
+      normalizedResults.push({
+        student_id: result.student_id,
+        marks: null,
+        participation_marks: null,
+        written_work_marks: null,
+        project_work_marks: null,
+        slip_test_marks: null,
+        is_absent: true,
+      });
+    } else if (assessmentSchema === 'component') {
       const participation = Number(result.participation_marks);
       const writtenWork = Number(result.written_work_marks);
       const projectWork = Number(result.project_work_marks);
@@ -2130,14 +2144,15 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
         participation_marks: participation,
         written_work_marks: writtenWork,
         project_work_marks: projectWork,
-        slip_test_marks: slipTest
+        slip_test_marks: slipTest,
+        is_absent: false,
       });
     } else {
       const marks = Number(result.marks);
       if (!Number.isFinite(marks) || marks < 0 || marks > requestedMaxMarks) {
         return res.status(400).json({ error: `Marks must be between 0 and ${requestedMaxMarks}` });
       }
-      normalizedResults.push({ student_id: result.student_id, marks });
+      normalizedResults.push({ student_id: result.student_id, marks, is_absent: false });
     }
   }
 
@@ -2301,21 +2316,21 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
           ${r.written_work_marks ?? null},
           ${r.project_work_marks ?? null},
           ${r.slip_test_marks ?? null},
-          FALSE,
+          ${r.is_absent},
           ${enteredBy}
         )
         ON CONFLICT (school_id, exam_subject_id, student_enrollment_id)
         DO UPDATE SET
           marks_obtained = EXCLUDED.marks_obtained,
-          consolidated_marks_obtained = COALESCE(
-            EXCLUDED.consolidated_marks_obtained,
-            marks.consolidated_marks_obtained
-          ),
-          participation_marks = COALESCE(EXCLUDED.participation_marks, marks.participation_marks),
-          written_work_marks = COALESCE(EXCLUDED.written_work_marks, marks.written_work_marks),
-          project_work_marks = COALESCE(EXCLUDED.project_work_marks, marks.project_work_marks),
-          slip_test_marks = COALESCE(EXCLUDED.slip_test_marks, marks.slip_test_marks),
-          is_absent = FALSE,
+          consolidated_marks_obtained = CASE
+            WHEN EXCLUDED.is_absent THEN NULL
+            ELSE COALESCE(EXCLUDED.consolidated_marks_obtained, marks.consolidated_marks_obtained)
+          END,
+          participation_marks = CASE WHEN EXCLUDED.is_absent THEN NULL ELSE COALESCE(EXCLUDED.participation_marks, marks.participation_marks) END,
+          written_work_marks = CASE WHEN EXCLUDED.is_absent THEN NULL ELSE COALESCE(EXCLUDED.written_work_marks, marks.written_work_marks) END,
+          project_work_marks = CASE WHEN EXCLUDED.is_absent THEN NULL ELSE COALESCE(EXCLUDED.project_work_marks, marks.project_work_marks) END,
+          slip_test_marks = CASE WHEN EXCLUDED.is_absent THEN NULL ELSE COALESCE(EXCLUDED.slip_test_marks, marks.slip_test_marks) END,
+          is_absent = EXCLUDED.is_absent,
           entered_by = EXCLUDED.entered_by,
           updated_at = NOW()
         RETURNING id

@@ -28,9 +28,18 @@ ALTER TABLE marks
 ALTER TABLE marks
   ADD COLUMN IF NOT EXISTS slip_test_marks DECIMAL(5,2);
 
+-- Some schools contain legacy marks that predate the current max-mark
+-- validation trigger. This backfill does not change marks_obtained, so suspend
+-- user triggers while copying the same value into the consolidated snapshot.
+-- The migration runner wraps this file in a transaction; trigger state is
+-- restored automatically on rollback if any later statement fails.
+ALTER TABLE marks DISABLE TRIGGER USER;
+
 UPDATE marks
 SET consolidated_marks_obtained = marks_obtained
 WHERE consolidated_marks_obtained IS NULL;
+
+ALTER TABLE marks ENABLE TRIGGER USER;
 
 ALTER TABLE marks DROP CONSTRAINT IF EXISTS marks_consolidated_nonnegative_check;
 ALTER TABLE marks ADD CONSTRAINT marks_consolidated_nonnegative_check
