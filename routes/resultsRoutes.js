@@ -297,12 +297,71 @@ router.get('/exams', requirePermission('exams.view'), asyncHandler(async (req, r
       e.id, e.name, e.name_te, e.exam_type,
       e.start_date::text AS start_date, e.end_date::text AS end_date, e.status,
       e.timetable_published, e.results_published, e.results_published_at,
-      (SELECT COUNT(*)::int FROM exam_subjects es
-        WHERE es.exam_id = e.id AND es.deleted_at IS NULL) AS papers_count,
+      result_progress.papers_total AS papers_count,
+      result_progress.scheduled_papers_total AS scheduled_papers_count,
+      json_build_object(
+        'ready', (
+          result_progress.papers_total > 0
+          AND result_progress.expected_entries > 0
+          AND result_progress.missing_entries = 0
+        ),
+        'papers_total', result_progress.papers_total,
+        'papers_complete', result_progress.papers_complete,
+        'expected_entries', result_progress.expected_entries,
+        'entered_entries', result_progress.entered_entries,
+        'missing_entries', result_progress.missing_entries
+      ) AS result_readiness,
       ay.code as academic_year
     FROM exams e
     JOIN academic_years ay ON e.academic_year_id = ay.id
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*)::int AS papers_total,
+        COUNT(*) FILTER (WHERE paper_progress.exam_date IS NOT NULL)::int AS scheduled_papers_total,
+        COUNT(*) FILTER (
+          WHERE paper_progress.expected_entries = paper_progress.entered_entries
+        )::int AS papers_complete,
+        COALESCE(SUM(paper_progress.expected_entries), 0)::int AS expected_entries,
+        COALESCE(SUM(paper_progress.entered_entries), 0)::int AS entered_entries,
+        COALESCE(SUM(
+          GREATEST(paper_progress.expected_entries - paper_progress.entered_entries, 0)
+        ), 0)::int AS missing_entries
+      FROM LATERAL (
+        SELECT
+          es.id,
+          es.exam_date,
+          COUNT(DISTINCT st.id)::int AS expected_entries,
+          COUNT(DISTINCT m.student_enrollment_id)::int AS entered_entries
+        FROM exam_subjects es
+        LEFT JOIN class_sections cs
+          ON cs.class_id = es.class_id
+         AND cs.academic_year_id = e.academic_year_id
+         AND cs.school_id = ${req.schoolId}
+         AND cs.deleted_at IS NULL
+        LEFT JOIN student_enrollments se
+          ON se.class_section_id = cs.id
+         AND se.academic_year_id = e.academic_year_id
+         AND se.school_id = ${req.schoolId}
+         AND se.status = 'active'
+         AND se.deleted_at IS NULL
+        LEFT JOIN students st
+          ON st.id = se.student_id
+         AND st.school_id = ${req.schoolId}
+         AND st.deleted_at IS NULL
+         AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        LEFT JOIN marks m
+          ON m.exam_subject_id = es.id
+         AND m.student_enrollment_id = se.id
+         AND m.school_id = ${req.schoolId}
+         AND st.id IS NOT NULL
+        WHERE es.exam_id = e.id
+          AND es.school_id = ${req.schoolId}
+          AND es.deleted_at IS NULL
+        GROUP BY es.id, es.exam_date
+      ) paper_progress
+    ) result_progress ON TRUE
     WHERE e.school_id = ${req.schoolId}
+      AND e.deleted_at IS NULL
       ${academic_year_id ? sql`AND e.academic_year_id = ${academic_year_id}` : sql``}
       ${status ? sql`AND e.status = ${status}` : sql``}
     ORDER BY e.start_date DESC

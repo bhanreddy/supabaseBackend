@@ -13,6 +13,7 @@ import {
 } from '../utils/collectionReceiptsWorkbook.js';
 import { buildDueListWorkbook } from '../utils/dueListWorkbook.js';
 import { transportCollectionActiveFilter } from '../services/transportFeeService.js';
+import { isFeatureEnabled, setFeatureOverride } from '../utils/featureRegistry.js';
 
 const router = express.Router();
 
@@ -561,6 +562,41 @@ router.put('/payroll-distribution', requireAuth, requireRole('admin', 'principal
         message: blocked
             ? 'Payroll distribution blocked for accounts'
             : 'Payroll distribution enabled for accounts',
+    });
+}));
+
+const STUDENT_HOSTEL_CARD_KEY = 'quick.hostel';
+
+/**
+ * GET /admin/student-hostel-card
+ * Read whether the Hostel card is shown on the student dashboard.
+ */
+router.get('/student-hostel-card', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    const enabled = await isFeatureEnabled(req.schoolId, STUDENT_HOSTEL_CARD_KEY);
+    return sendSuccess(res, req.schoolId, { enabled });
+}));
+
+/**
+ * PUT /admin/student-hostel-card
+ * Show or hide the Hostel card on the student dashboard (and parent menu).
+ */
+router.put('/student-hostel-card', requireAuth, requireRole('admin', 'principal'), asyncHandler(async (req, res) => {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled boolean is required in request body' });
+    }
+
+    const next = await setFeatureOverride(
+        req.schoolId,
+        STUDENT_HOSTEL_CARD_KEY,
+        enabled,
+        req.user.internal_id || req.user.id || null,
+    );
+    return sendSuccess(res, req.schoolId, {
+        enabled: next,
+        message: next
+            ? 'Hostel card shown on the student dashboard'
+            : 'Hostel card hidden from the student dashboard',
     });
 }));
 

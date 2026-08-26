@@ -98,3 +98,40 @@ export async function isFeatureEnabled(schoolId, featureKey) {
   `;
   return row ? row.enabled === true : feature.default_enabled;
 }
+
+/**
+ * Validate that a school admin may flip this student feature.
+ * Unknown or core (non-toggleable) keys are rejected before any DB write.
+ */
+export function assertToggleableFeature(featureKey) {
+  const feature = getFeature(featureKey);
+  if (!feature) {
+    const error = new Error('Unknown student feature');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!feature.toggleable) {
+    const error = new Error('This student feature cannot be turned off');
+    error.statusCode = 400;
+    throw error;
+  }
+  return feature;
+}
+
+/**
+ * Upsert a school override for a toggleable student feature.
+ * Absent row still means registry default; this writes an explicit override.
+ */
+export async function setFeatureOverride(schoolId, featureKey, enabled, updatedBy = null) {
+  assertToggleableFeature(featureKey);
+  await sql`
+    INSERT INTO school_feature_flags (school_id, role, feature_key, enabled, updated_by, updated_at)
+    VALUES (${schoolId}, ${STUDENT_ROLE}, ${featureKey}, ${enabled}, ${updatedBy}, NOW())
+    ON CONFLICT (school_id, role, feature_key)
+    DO UPDATE SET
+      enabled = EXCLUDED.enabled,
+      updated_by = EXCLUDED.updated_by,
+      updated_at = NOW()
+  `;
+  return isFeatureEnabled(schoolId, featureKey);
+}
