@@ -2686,9 +2686,22 @@ router.get('/:id/results', requireAuth, async (req, res) => {
             json_build_object(
               'subject', sub.name,
               'subjectCode', sub.code,
+              'assessmentSchema', es.assessment_schema,
               'maxMarks', es.max_marks,
               'passingMarks', es.passing_marks,
+              'consolidatedMaxMarks', es.consolidated_max_marks,
+              'componentMaximums', json_build_object(
+                'participation', es.participation_max_marks,
+                'writtenWork', es.written_work_max_marks,
+                'projectWork', es.project_work_max_marks,
+                'slipTest', es.slip_test_max_marks
+              ),
               'obtained', m.marks_obtained,
+              'consolidatedMarksObtained', m.consolidated_marks_obtained,
+              'participationMarks', m.participation_marks,
+              'writtenWorkMarks', m.written_work_marks,
+              'projectWorkMarks', m.project_work_marks,
+              'slipTestMarks', m.slip_test_marks,
               'hasMarks', (m.id IS NOT NULL),
               'is_absent', COALESCE(m.is_absent, false),
               'remarks', m.remarks
@@ -2734,9 +2747,29 @@ router.get('/:id/results', requireAuth, async (req, res) => {
         return {
           subject: sm.subject,
           subjectCode: sm.subjectCode || null,
+          assessmentSchema: sm.assessmentSchema || 'consolidated',
           maxMarks: Number(sm.maxMarks),
           passingMarks: Number(sm.passingMarks),
+          consolidatedMaxMarks: Number(sm.consolidatedMaxMarks || sm.maxMarks || 0),
+          componentMaximums: {
+            participation: Number(sm.componentMaximums?.participation || 10),
+            writtenWork: Number(sm.componentMaximums?.writtenWork || 10),
+            projectWork: Number(sm.componentMaximums?.projectWork || 10),
+            slipTest: Number(sm.componentMaximums?.slipTest || 20),
+          },
           obtained,
+          consolidatedMarksObtained:
+            sm.consolidatedMarksObtained == null
+              ? null
+              : Number(sm.consolidatedMarksObtained),
+          participationMarks:
+            sm.participationMarks == null ? null : Number(sm.participationMarks),
+          writtenWorkMarks:
+            sm.writtenWorkMarks == null ? null : Number(sm.writtenWorkMarks),
+          projectWorkMarks:
+            sm.projectWorkMarks == null ? null : Number(sm.projectWorkMarks),
+          slipTestMarks:
+            sm.slipTestMarks == null ? null : Number(sm.slipTestMarks),
           hasMarks,
           is_absent: isAbsent,
           remarks: sm.remarks || null,
