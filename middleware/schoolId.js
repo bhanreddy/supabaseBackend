@@ -15,6 +15,7 @@ const JWT_SCHOOL_ID_PATHS = [
   // Keep this broad rule before the legacy transport exceptions below so every
   // current and future transport endpoint inherits the same contract.
   /^\/api\/v1\/transport(?:\/.*)?$/i,
+  /^\/api\/v1\/hostel(?:\/.*)?$/i,
   /^\/api\/v1\/settings\/upi\/?$/i,
   /^\/api\/settings\/upi\/?$/i,
   // School settings and every nested asset route (for example the multipart

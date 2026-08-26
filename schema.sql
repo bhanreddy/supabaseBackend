@@ -2943,6 +2943,7 @@ BEGIN
     ('results.view', 'View Results'), ('results.generate', 'Generate Results'),
     ('transport.view', 'View Transport'), ('transport.manage', 'Manage Transport'),
     ('hostel.view', 'View Hostel'), ('hostel.manage', 'Manage Hostel'),
+    ('hostel.allocate', 'Assign and Vacate Hostel Students'),
     ('events.view', 'View Events'), ('events.manage', 'Manage Events'),
     ('lms.view', 'View LMS'), ('lms.create', 'Create LMS Content'),
     ('lms.manage', 'Manage LMS'),
@@ -3064,7 +3065,7 @@ BEGIN
       'receipts.generate', 'reports.financial', 'notices.view', 'staff.view',
       'staff.create', 'staff.edit', 'staff.delete', 'dashboard.view', 'academics.view',
       'students.view', 'students.create', 'students.edit', 'students.delete',
-      'certificates.issue'
+      'certificates.issue', 'hostel.view', 'hostel.allocate'
     )
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp
@@ -5136,6 +5137,7 @@ CREATE TABLE IF NOT EXISTS hostel_blocks (
     warden_id UUID REFERENCES staff(id),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ,
     UNIQUE (school_id, name)
 );
 
@@ -5175,6 +5177,33 @@ CREATE TABLE IF NOT EXISTS hostel_allocations (
 CREATE INDEX IF NOT EXISTS idx_hostel_alloc_school_id ON hostel_allocations(school_id);
 
 CREATE INDEX IF NOT EXISTS idx_hostel_allocations_room ON hostel_allocations(room_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hostel_active_bed
+ON hostel_allocations(school_id, room_id, academic_year_id, bed_no)
+WHERE is_active = TRUE AND bed_no IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS hostel_permission_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    request_type VARCHAR(40) NOT NULL CHECK (request_type IN ('outing', 'overnight_leave', 'late_return', 'visitor', 'other')),
+    reason TEXT NOT NULL,
+    starts_on DATE NOT NULL,
+    ends_on DATE NOT NULL CHECK (ends_on >= starts_on),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
+    requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMPTZ,
+    admin_note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hostel_permission_requests_school_status
+ON hostel_permission_requests(school_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hostel_permission_requests_student
+ON hostel_permission_requests(school_id, student_id, created_at DESC);
 
 
 -- 16. EVENTS
@@ -5898,7 +5927,7 @@ DECLARE rls_tables TEXT[] := ARRAY[
   'complaints', 'leave_applications', 'diary_entries',
   'periods', 'transport_routes', 'transport_stops', 'buses',
   'student_transport', 'bus_locations',
-  'hostel_blocks', 'hostel_rooms', 'hostel_allocations',
+  'hostel_blocks', 'hostel_rooms', 'hostel_allocations', 'hostel_permission_requests',
   'lms_courses', 'money_science_modules', 'science_projects',
   'audit_logs', 'user_roles', 'users', 'blood_groups',
   'student_statuses', 'parents', 'student_parents',
@@ -7282,7 +7311,7 @@ DECLARE tables_needing_policies TEXT[] := ARRAY[
   'exams', 'exam_subjects', 'grading_scales', 'marks',
   'complaints', 'parent_visits', 'leave_applications', 'diary_entries', 'periods',
   'transport_routes', 'transport_stops', 'buses', 'student_transport', 'bus_locations',
-  'hostel_blocks', 'hostel_rooms', 'hostel_allocations',
+  'hostel_blocks', 'hostel_rooms', 'hostel_allocations', 'hostel_permission_requests',
   'lms_courses', 'lms_materials',
   'money_science_modules', 'science_projects',
   'student_money_science_progress', 'student_science_projects',

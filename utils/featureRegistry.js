@@ -27,6 +27,7 @@ export const FEATURE_REGISTRY = [
   { key: 'quick.complaints',      label: 'Complaints',      group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.life_values',     label: 'Life Values',     group: 'quick_actions', default_enabled: true, data_bearing: false, toggleable: true },
   { key: 'quick.transport',       label: 'Transport',       group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
+  { key: 'quick.hostel',          label: 'Hostel',          group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.science_projects',label: 'Science Projects',group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'quick.profile',         label: 'Profile',         group: 'quick_actions', default_enabled: true, data_bearing: true,  toggleable: true },
   // Relocated quick actions (stable keys retained for existing overrides and API guards)

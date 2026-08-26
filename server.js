@@ -321,7 +321,7 @@ app.use('/api/v1/substitutions', substitutionRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportImportRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportFeeRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportRouter);
-app.use('/api/v1/hostel', hostelRouter);
+app.use('/api/v1/hostel', requireFeature('quick.hostel'), hostelRouter);
 app.use('/api/v1/events', eventsRouter);
 app.use('/api/v1', websiteGalleryRouter);
 app.use('/api/v1/admin', adminRouter);
