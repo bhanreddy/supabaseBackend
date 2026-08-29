@@ -6,6 +6,8 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { translateFields } from '../services/geminiTranslator.js';
 import {
   generateExamTimetable,
+  getSectionExamSchedule,
+  getTeacherExamSchedule,
   normalizeSyllabus,
   ExamTimetableError,
 } from '../services/examTimetableService.js';
@@ -37,6 +39,7 @@ import {
   summarizeCalculatedSubjects,
   weightedContribution,
 } from '../services/finalResultCalculationService.js';
+import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -880,29 +883,40 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
     results = await sql`
       SELECT 
         e.id as exam_id, e.name as exam_name, e.name_te as exam_name_te, e.exam_type,
-        json_agg(json_build_object(
-          'subject', sub.name,
-          'marks_obtained', m.marks_obtained,
-          'max_marks', es.max_marks,
-          'passing_marks', es.passing_marks,
-          'is_absent', COALESCE(m.is_absent, false),
-          'remarks', m.remarks,
-          'percentage', CASE
-            WHEN m.id IS NULL THEN NULL
-            WHEN m.is_absent THEN 0
-            ELSE ROUND((m.marks_obtained / es.max_marks) * 100, 2)
-          END,
-          'passed', CASE
-            WHEN m.id IS NULL THEN NULL
-            WHEN m.is_absent THEN false
-            ELSE m.marks_obtained >= es.passing_marks
-          END
-        ) ORDER BY sub.name) as subjects,
-        SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END) as total_obtained,
-        SUM(es.max_marks) as total_max,
+        COALESCE(
+          json_agg(json_build_object(
+            'subject', sub.name,
+            'marks_obtained', m.marks_obtained,
+            'max_marks', es.max_marks,
+            'passing_marks', es.passing_marks,
+            'is_absent', COALESCE(m.is_absent, false),
+            'remarks', m.remarks,
+            'percentage', CASE
+              WHEN m.is_absent THEN 0
+              ELSE ROUND((m.marks_obtained / es.max_marks) * 100, 2)
+            END,
+            'passed', CASE
+              WHEN m.is_absent THEN false
+              ELSE m.marks_obtained >= es.passing_marks
+            END
+          ) ORDER BY sub.name) FILTER (WHERE m.id IS NOT NULL),
+          '[]'::json
+        ) as subjects,
+        COALESCE(
+          SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END)
+            FILTER (WHERE m.id IS NOT NULL),
+          0
+        ) as total_obtained,
+        COALESCE(SUM(es.max_marks) FILTER (WHERE m.id IS NOT NULL), 0) as total_max,
         ROUND(
-          CAST(SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END) AS NUMERIC)
-          / NULLIF(SUM(es.max_marks), 0) * 100,
+          CAST(
+            COALESCE(
+              SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END)
+                FILTER (WHERE m.id IS NOT NULL),
+              0
+            ) AS NUMERIC
+          )
+          / NULLIF(SUM(es.max_marks) FILTER (WHERE m.id IS NOT NULL), 0) * 100,
           2
         ) as percentage
       FROM exams e
@@ -1389,7 +1403,8 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
   `;
 
   const numberOrNull = (value) => value == null ? null : Number(value);
-  const subjects = rawSubjects.map((subject) => {
+  const enteredRawSubjects = filterEnteredProgressReportSubjects(rawSubjects);
+  const subjects = enteredRawSubjects.map((subject) => {
     const componentTotal = [
       subject.participation_marks,
       subject.written_work_marks,
@@ -1424,11 +1439,19 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
   const cohort = await sql`
     SELECT
       enrolled_student.id AS student_id, enrolled_student.admission_no,
-      SUM(CASE WHEN mark.is_absent OR mark.id IS NULL THEN 0 ELSE mark.marks_obtained END) AS total_obtained,
-      SUM(paper.max_marks) AS total_max,
+      COALESCE(
+        SUM(CASE WHEN mark.is_absent THEN 0 ELSE mark.marks_obtained END)
+          FILTER (WHERE mark.id IS NOT NULL),
+        0
+      ) AS total_obtained,
+      COALESCE(SUM(paper.max_marks) FILTER (WHERE mark.id IS NOT NULL), 0) AS total_max,
       ROUND(
-        SUM(CASE WHEN mark.is_absent OR mark.id IS NULL THEN 0 ELSE mark.marks_obtained END)::numeric
-        / NULLIF(SUM(paper.max_marks), 0) * 100,
+        COALESCE(
+          SUM(CASE WHEN mark.is_absent THEN 0 ELSE mark.marks_obtained END)
+            FILTER (WHERE mark.id IS NOT NULL),
+          0
+        )::numeric
+        / NULLIF(SUM(paper.max_marks) FILTER (WHERE mark.id IS NOT NULL), 0) * 100,
         2
       ) AS percentage
     FROM student_enrollments enrollment
@@ -1543,9 +1566,9 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       total_max: totalMax,
       percentage,
       rank: rankedStudent?.rank ?? null,
-      subject_count: subjects.length,
-      completed_subjects: subjects.filter((subject) => subject.entry_status !== 'missing').length,
-      missing_subjects: subjects.filter((subject) => subject.entry_status === 'missing').length,
+      subject_count: rawSubjects.length,
+      completed_subjects: subjects.length,
+      missing_subjects: rawSubjects.length - subjects.length,
       ranking_method: rankingMethod,
     },
     attendance: {
@@ -1784,16 +1807,31 @@ router.get('/generate', requirePermission('results.generate'), asyncHandler(asyn
     SELECT 
       st.id as student_id, st.admission_no,
       p.display_name as student_name,
-      json_agg(json_build_object(
-        'subject', sub.name,
-        'marks_obtained', m.marks_obtained,
-        'is_absent', m.is_absent,
-        'remarks', m.remarks,
-        'max_marks', es.max_marks
-      ) ORDER BY sub.name) as subjects,
-      SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END) as total_obtained,
-      SUM(es.max_marks) as total_max,
-      ROUND(SUM(CASE WHEN m.is_absent OR m.id IS NULL THEN 0 ELSE m.marks_obtained END)::numeric / NULLIF(SUM(es.max_marks), 0) * 100, 2) as percentage
+      COALESCE(
+        json_agg(json_build_object(
+          'subject', sub.name,
+          'marks_obtained', m.marks_obtained,
+          'is_absent', m.is_absent,
+          'remarks', m.remarks,
+          'max_marks', es.max_marks
+        ) ORDER BY sub.name) FILTER (WHERE m.id IS NOT NULL),
+        '[]'::json
+      ) as subjects,
+      COALESCE(
+        SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END)
+          FILTER (WHERE m.id IS NOT NULL),
+        0
+      ) as total_obtained,
+      COALESCE(SUM(es.max_marks) FILTER (WHERE m.id IS NOT NULL), 0) as total_max,
+      ROUND(
+        COALESCE(
+          SUM(CASE WHEN m.is_absent THEN 0 ELSE m.marks_obtained END)
+            FILTER (WHERE m.id IS NOT NULL),
+          0
+        )::numeric
+        / NULLIF(SUM(es.max_marks) FILTER (WHERE m.id IS NOT NULL), 0) * 100,
+        2
+      ) as percentage
     FROM student_enrollments se
     JOIN students st ON se.student_id = st.id
     JOIN persons p ON st.person_id = p.id
@@ -2865,6 +2903,7 @@ router.post('/exams/:id/timetable/publish', requirePermission('exams.manage'), a
     RETURNING id, timetable_published, timetable_published_at
   `;
 
+  res.set('Cache-Control', 'no-store');
   return sendSuccess(res, req.schoolId, {
     message: published ? 'Exam timetable published' : 'Exam timetable unpublished',
     exam: updated,
@@ -2993,38 +3032,19 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
 router.get('/exam-timetable/section/:classSectionId', requireAuth, asyncHandler(async (req, res) => {
   const { classSectionId } = req.params;
 
-  const [section] = await sql`
-    SELECT cs.class_id, cs.academic_year_id
-    FROM class_sections cs
-    WHERE cs.id = ${classSectionId} AND cs.school_id = ${req.schoolId} AND cs.deleted_at IS NULL
-  `;
-  if (!section) {
-    return res.status(404).json({ error: 'Class section not found' });
-  }
-
   const canSeeUnpublished =
     req.user.roles?.includes('admin') || req.user.permissions?.includes('exams.manage');
 
-  const rows = await sql`
-    SELECT
-      e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
-      e.exam_type, e.status, e.timetable_published,
-      es.id, es.exam_date::text AS exam_date,
-      es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
-      es.syllabus,
-      s.name AS subject_name, s.name_te AS subject_name_te
-    FROM exams e
-    JOIN exam_subjects es ON es.exam_id = e.id AND es.deleted_at IS NULL
-    JOIN subjects s ON es.subject_id = s.id
-    WHERE e.school_id = ${req.schoolId}
-      AND e.deleted_at IS NULL
-      AND e.status <> 'cancelled'
-      AND e.academic_year_id = ${section.academic_year_id}
-      AND es.class_id = ${section.class_id}
-      ${canSeeUnpublished ? sql`` : sql`AND e.timetable_published = TRUE`}
-    ORDER BY es.exam_date, es.start_time NULLS LAST, s.name
-  `;
+  const rows = await getSectionExamSchedule({
+    schoolId: req.schoolId,
+    classSectionId,
+    includeUnpublished: canSeeUnpublished,
+  });
+  if (rows === null) {
+    return res.status(404).json({ error: 'Class section not found' });
+  }
 
+  res.set('Cache-Control', 'no-store');
   return sendSuccess(res, req.schoolId, rows);
 }));
 
@@ -3039,45 +3059,22 @@ router.get('/exam-timetable/teacher', requireAuth, asyncHandler(async (req, res)
     FROM staff st
     JOIN persons p ON st.person_id = p.id
     JOIN users u ON u.person_id = p.id
-    WHERE u.id = ${req.user.id} AND st.school_id = ${req.schoolId}
+    WHERE u.id = ${req.user.internal_id || req.user.id}
+      AND u.school_id = ${req.schoolId}
+      AND u.deleted_at IS NULL
+      AND st.school_id = ${req.schoolId}
+      AND st.deleted_at IS NULL
   `;
   if (!staff) {
     return res.status(404).json({ error: 'Staff profile not found' });
   }
 
-  // GROUP BY es.id (the paper PK) already yields one row per paper, so no
-  // DISTINCT is needed — and DISTINCT would force every ORDER BY term into the
-  // select list, which the ::text-cast date/time columns break.
-  const rows = await sql`
-    SELECT
-      e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te, e.exam_type,
-      es.id, es.exam_date::text AS exam_date,
-      es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
-      es.syllabus,
-      c.name AS class_name,
-      s.name AS subject_name, s.name_te AS subject_name_te,
-      BOOL_OR(csub.teacher_id = ${staff.id}
-              AND csub.subject_id = es.subject_id) AS is_my_subject
-    FROM class_subjects csub
-    JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
-    JOIN exams e ON e.school_id = ${req.schoolId}
-      AND e.deleted_at IS NULL
-      AND e.status <> 'cancelled'
-      AND e.timetable_published = TRUE
-      AND e.academic_year_id = cs.academic_year_id
-    JOIN exam_subjects es ON es.exam_id = e.id
-      AND es.class_id = cs.class_id
-      AND es.deleted_at IS NULL
-    JOIN classes c ON es.class_id = c.id
-    JOIN subjects s ON es.subject_id = s.id
-    WHERE csub.teacher_id = ${staff.id}
-      AND csub.deleted_at IS NULL
-      AND cs.school_id = ${req.schoolId}
-    GROUP BY e.id, e.name, e.name_te, e.exam_type, es.id, es.exam_date,
-             es.start_time, es.end_time, es.max_marks, c.name, s.name, s.name_te
-    ORDER BY es.exam_date, es.start_time NULLS LAST, c.name, s.name
-  `;
+  const rows = await getTeacherExamSchedule({
+    schoolId: req.schoolId,
+    staffId: staff.id,
+  });
 
+  res.set('Cache-Control', 'no-store');
   return sendSuccess(res, req.schoolId, rows);
 }));
 

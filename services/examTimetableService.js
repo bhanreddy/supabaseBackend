@@ -238,6 +238,162 @@ export function normalizeSyllabus(raw) {
 }
 
 /**
+ * Return the exam schedule that belongs to a class section. Exam papers are
+ * class-wide, while a student's enrollment points at a class section, so the
+ * section's class + academic year is the authoritative bridge between them.
+ *
+ * A null return means the section does not belong to this school. An empty
+ * array means the section is valid but has no visible timetable.
+ */
+export async function getSectionExamSchedule({
+  schoolId,
+  classSectionId,
+  includeUnpublished = false,
+  db = sql,
+}) {
+  const [section] = await db`
+    SELECT cs.class_id, cs.academic_year_id
+    FROM class_sections cs
+    WHERE cs.id = ${classSectionId}
+      AND cs.school_id = ${schoolId}
+      AND cs.deleted_at IS NULL
+  `;
+  if (!section) return null;
+
+  const rows = includeUnpublished
+    ? await db`
+        SELECT
+          e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
+          e.exam_type, e.status, e.timetable_published,
+          es.id, es.exam_date::text AS exam_date,
+          es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
+          es.syllabus,
+          subject.name AS subject_name, subject.name_te AS subject_name_te
+        FROM exams e
+        JOIN exam_subjects es
+          ON es.exam_id = e.id
+         AND es.school_id = ${schoolId}
+         AND es.deleted_at IS NULL
+        JOIN subjects subject
+          ON subject.id = es.subject_id
+         AND subject.school_id = ${schoolId}
+         AND subject.deleted_at IS NULL
+        WHERE e.school_id = ${schoolId}
+          AND e.deleted_at IS NULL
+          AND e.status <> 'cancelled'
+          AND e.academic_year_id = ${section.academic_year_id}
+          AND es.class_id = ${section.class_id}
+        ORDER BY es.exam_date, es.start_time NULLS LAST, subject.name
+      `
+    : await db`
+        SELECT
+          e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
+          e.exam_type, e.status, e.timetable_published,
+          es.id, es.exam_date::text AS exam_date,
+          es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
+          es.syllabus,
+          subject.name AS subject_name, subject.name_te AS subject_name_te
+        FROM exams e
+        JOIN exam_subjects es
+          ON es.exam_id = e.id
+         AND es.school_id = ${schoolId}
+         AND es.deleted_at IS NULL
+        JOIN subjects subject
+          ON subject.id = es.subject_id
+         AND subject.school_id = ${schoolId}
+         AND subject.deleted_at IS NULL
+        WHERE e.school_id = ${schoolId}
+          AND e.deleted_at IS NULL
+          AND e.status <> 'cancelled'
+          AND e.timetable_published = TRUE
+          AND e.academic_year_id = ${section.academic_year_id}
+          AND es.class_id = ${section.class_id}
+        ORDER BY es.exam_date, es.start_time NULLS LAST, subject.name
+      `;
+
+  return rows;
+}
+
+/**
+ * Return every published exam paper for classes taught by a staff member.
+ *
+ * Teacher assignments legitimately come from two backend sources:
+ *   1. class_subjects (the Academics mapping), and
+ *   2. timetable_slots (the regular timetable editor).
+ *
+ * The timetable editor is authoritative in schools that do not populate
+ * class_subjects.teacher_id. Ignoring it made every published exam appear
+ * empty for those teachers.
+ */
+export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
+  return db`
+    WITH teaching_assignments AS (
+      SELECT cs.class_id, cs.academic_year_id, csub.subject_id
+      FROM class_subjects csub
+      JOIN class_sections cs
+        ON cs.id = csub.class_section_id
+       AND cs.school_id = ${schoolId}
+       AND cs.deleted_at IS NULL
+      WHERE csub.school_id = ${schoolId}
+        AND csub.teacher_id = ${staffId}
+        AND csub.deleted_at IS NULL
+
+      UNION
+
+      SELECT cs.class_id, ts.academic_year_id, ts.subject_id
+      FROM timetable_slots ts
+      JOIN class_sections cs
+        ON cs.id = ts.class_section_id
+       AND cs.school_id = ${schoolId}
+       AND cs.academic_year_id = ts.academic_year_id
+       AND cs.deleted_at IS NULL
+      WHERE ts.school_id = ${schoolId}
+        AND ts.teacher_id = ${staffId}
+        AND ts.deleted_at IS NULL
+    ),
+    teacher_classes AS (
+      SELECT DISTINCT class_id, academic_year_id
+      FROM teaching_assignments
+    )
+    SELECT
+      e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te, e.exam_type,
+      es.id, es.exam_date::text AS exam_date,
+      es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
+      es.syllabus,
+      class.name AS class_name,
+      subject.name AS subject_name, subject.name_te AS subject_name_te,
+      EXISTS (
+        SELECT 1
+        FROM teaching_assignments own_assignment
+        WHERE own_assignment.class_id = es.class_id
+          AND own_assignment.academic_year_id = e.academic_year_id
+          AND own_assignment.subject_id = es.subject_id
+      ) AS is_my_subject
+    FROM exams e
+    JOIN teacher_classes taught_class
+      ON taught_class.academic_year_id = e.academic_year_id
+    JOIN exam_subjects es
+      ON es.exam_id = e.id
+     AND es.class_id = taught_class.class_id
+     AND es.school_id = ${schoolId}
+     AND es.deleted_at IS NULL
+    JOIN classes class
+      ON class.id = es.class_id
+     AND class.school_id = ${schoolId}
+     AND class.deleted_at IS NULL
+    JOIN subjects subject
+      ON subject.id = es.subject_id
+     AND subject.school_id = ${schoolId}
+     AND subject.deleted_at IS NULL
+    WHERE e.school_id = ${schoolId}
+      AND e.deleted_at IS NULL
+      AND e.status <> 'cancelled'
+      AND e.timetable_published = TRUE
+    ORDER BY es.exam_date, es.start_time NULLS LAST, class.name, subject.name
+  `;
+}
+
+/**
  * Working exam days inside [startDate, endDate]:
  * skips Sundays always, Saturdays optionally, plus any excluded dates; then
  * keeps every (gapDays+1)-th remaining day so papers are spaced out.

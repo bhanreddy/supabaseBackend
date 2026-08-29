@@ -6,7 +6,12 @@
 // Run: node tests/examTimetable.integration.js
 import assert from 'node:assert/strict';
 import sql from '../db.js';
-import { generateExamTimetable, ExamTimetableError } from '../services/examTimetableService.js';
+import {
+  generateExamTimetable,
+  getSectionExamSchedule,
+  getTeacherExamSchedule,
+  ExamTimetableError,
+} from '../services/examTimetableService.js';
 import { generateExamAllocations } from '../services/examAllocationService.js';
 
 const ROLLBACK = Symbol('exam-tt-rollback');
@@ -143,6 +148,103 @@ async function run() {
       eq(examRow.s, '2026-07-20', 'exam start snapped to schedule');
       eq(examRow.e, '2026-07-23', 'exam end snapped (holiday pushed English to Thu)');
       eq(examRow.timetable_published, false, 'not published after generation');
+
+      // ── Published audience reads ─────────────────────────────────────
+      // Schools may assign teachers through Academics (class_subjects) or
+      // directly through the timetable editor (timetable_slots). Both sources
+      // must expose the complete published schedule for every class taught.
+      const [{ id: readGenderId }] = await tx`SELECT id FROM genders ORDER BY id LIMIT 1`;
+      const [teacherPerson] = await tx`
+        INSERT INTO persons (school_id, first_name, gender_id, display_name)
+        VALUES (${schoolId}, 'Schedule', ${readGenderId}, 'Schedule Teacher') RETURNING id
+      `;
+      const [scheduleTeacher] = await tx`
+        INSERT INTO staff (school_id, person_id, staff_code, joining_date)
+        VALUES (${schoolId}, ${teacherPerson.id}, ${`READ${suffix}`}, '2026-06-01') RETURNING id
+      `;
+      await tx`
+        UPDATE timetable_slots
+        SET teacher_id = ${scheduleTeacher.id}
+        WHERE class_section_id = ${cs3.id}
+          AND subject_id = ${subjectIds.Science}
+          AND deleted_at IS NULL
+      `;
+      await tx`
+        UPDATE class_subjects
+        SET teacher_id = ${scheduleTeacher.id}
+        WHERE class_section_id = ${cs1.id}
+          AND subject_id = ${subjectIds.Math}
+          AND deleted_at IS NULL
+      `;
+
+      const hiddenSectionRows = await getSectionExamSchedule({
+        schoolId,
+        classSectionId: cs1.id,
+        db: tx,
+      });
+      eq(hiddenSectionRows.length, 0, 'students cannot read an unpublished exam timetable');
+      const previewSectionRows = await getSectionExamSchedule({
+        schoolId,
+        classSectionId: cs1.id,
+        includeUnpublished: true,
+        db: tx,
+      });
+      eq(previewSectionRows.length, 3, 'admin preview can read an unpublished exam timetable');
+      const crossTenantSectionRows = await getSectionExamSchedule({
+        schoolId: otherSchool.id,
+        classSectionId: cs1.id,
+        db: tx,
+      });
+      eq(crossTenantSectionRows, null, 'section schedule lookup rejects a cross-school section');
+      const hiddenTeacherRows = await getTeacherExamSchedule({
+        schoolId,
+        staffId: scheduleTeacher.id,
+        db: tx,
+      });
+      eq(hiddenTeacherRows.length, 0, 'teachers cannot read an unpublished exam timetable');
+      const crossTenantTeacherRows = await getTeacherExamSchedule({
+        schoolId: otherSchool.id,
+        staffId: scheduleTeacher.id,
+        db: tx,
+      });
+      eq(crossTenantTeacherRows.length, 0, 'teacher schedule lookup rejects cross-school assignments');
+
+      await tx`
+        UPDATE exams SET timetable_published = TRUE, timetable_published_at = now()
+        WHERE id IN (${exam.id}, ${timetableOnlyExam.id})
+      `;
+      const classSubjectSectionRows = await getSectionExamSchedule({
+        schoolId,
+        classSectionId: cs1.id,
+        db: tx,
+      });
+      eq(classSubjectSectionRows.length, 3, 'student section read returns every published class paper');
+      const timetableOnlySectionRows = await getSectionExamSchedule({
+        schoolId,
+        classSectionId: cs3.id,
+        db: tx,
+      });
+      eq(timetableOnlySectionRows.length, 1, 'student section read supports timetable-only classes');
+
+      const publishedTeacherRows = await getTeacherExamSchedule({
+        schoolId,
+        staffId: scheduleTeacher.id,
+        db: tx,
+      });
+      eq(
+        publishedTeacherRows.length,
+        4,
+        'teacher read combines Academics and timetable-slot class assignments without duplicates'
+      );
+      eq(
+        publishedTeacherRows.filter((row) => row.is_my_subject).length,
+        2,
+        'teacher read marks subjects from both assignment sources as owned'
+      );
+      await tx`
+        UPDATE exams SET timetable_published = FALSE, timetable_published_at = NULL
+        WHERE id IN (${exam.id}, ${timetableOnlyExam.id})
+      `;
 
       // ── Marks preservation on regenerate ──────────────────────────────
       const [{ id: genderId }] = await tx`SELECT id FROM genders ORDER BY id LIMIT 1`;
@@ -327,7 +429,7 @@ async function run() {
           db: tx,
           params: { room_ids: [tinyRoom.id], strategy: 'sequential', invigilator_staff_ids: [] },
         }),
-        (err) => err instanceof ExamTimetableError && /Not enough room capacity/.test(err.message)
+        (err) => err instanceof ExamTimetableError && /Not enough (eligible )?room capacity/.test(err.message)
       );
       assertions++;
 

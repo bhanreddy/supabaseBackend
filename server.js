@@ -311,7 +311,17 @@ app.use('/api/v1/academics', academicsRouter);
 // home.academic_advisor) are gated at the endpoint level inside those routers.
 app.use('/api/v1/attendance', requireFeature('home.todays_snapshot'), attendanceRouter);
 app.use('/api/v1/fees', requireFeature('nav.fees'), feesRouter);
-app.use('/api/v1/results', requireFeature('nav.results'), resultsRouter);
+const resultsFeatureGuard = requireFeature('nav.results');
+const examTimetableFeatureGuard = requireFeature('nav.time_table');
+app.use(
+    '/api/v1/results',
+    (req, res, next) => (
+        req.path.startsWith('/exam-timetable/')
+            ? examTimetableFeatureGuard(req, res, next)
+            : resultsFeatureGuard(req, res, next)
+    ),
+    resultsRouter
+);
 app.use('/api/v1/complaints', requireFeature('quick.complaints'), complaintsRouter);
 app.use('/api/v1/notices', requireFeature('quick.announcements'), noticesRouter);
 app.use('/api/v1/leaves', leavesRouter);

@@ -45,6 +45,7 @@ import {
   resolveAcademicYearCode,
   transportDueToStudentFee,
 } from '../services/transportFeeService.js';
+import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
 
 const router = express.Router();
 
@@ -2554,8 +2555,8 @@ router.post('/:id/parents', requirePermission('students.edit'), async (req, res)
 /**
  * GET /students/:id/results
  * Get exam results (marks), attendance %, grading scale for progress report.
- * Subjects are scoped to the student's class (exam_subjects.class_id) so papers
- * from other classes never appear as duplicate zero-mark rows.
+ * Subjects are scoped to the student's class and only saved mark rows are
+ * returned. Configured papers without marks must not affect report totals.
  */
 router.get('/:id/results', requireAuth, async (req, res) => {
   try {
@@ -2706,7 +2707,7 @@ router.get('/:id/results', requireAuth, async (req, res) => {
               'is_absent', COALESCE(m.is_absent, false),
               'remarks', m.remarks
             ) ORDER BY sub.name
-          ) FILTER (WHERE es.id IS NOT NULL),
+          ) FILTER (WHERE es.id IS NOT NULL AND m.id IS NOT NULL),
           '[]'::json
         ) AS subjects
       FROM exams e
@@ -2737,7 +2738,7 @@ router.get('/:id/results', requireAuth, async (req, res) => {
       exam_type: row.exam_type,
       start_date: row.start_date,
       end_date: row.end_date,
-      subjects: (row.subjects || []).map((sm) => {
+      subjects: filterEnteredProgressReportSubjects(row.subjects).map((sm) => {
         const hasMarks = Boolean(sm.hasMarks);
         const isAbsent = Boolean(sm.is_absent);
         let obtained = null;
