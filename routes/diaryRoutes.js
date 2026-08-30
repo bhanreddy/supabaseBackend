@@ -6,6 +6,10 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import fs from 'fs';
 import { resolveDiaryTextFields } from '../services/geminiTranslator.js';
 import { isDiarySyncRequest } from '../utils/diarySync.js';
+import {
+  presentDiaryEntriesForReader,
+  presentDiaryEntryForReader,
+} from '../utils/diaryPresentation.js';
 
 const router = express.Router();
 
@@ -286,7 +290,11 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     }
   }
 
-  return sendSuccess(res, req.schoolId, entries);
+  // Staff history currently prefers the Telugu fields whenever they are
+  // present. Return the canonical English authoring fields to staff readers;
+  // parent/student reads still receive both languages (including sync above).
+  const presentedEntries = presentDiaryEntriesForReader(entries, req.user?.roles);
+  return sendSuccess(res, req.schoolId, presentedEntries);
 }));
 
 /**
@@ -366,7 +374,11 @@ router.get('/:id', requirePermission('diary.view'), asyncHandler(async (req, res
     return res.status(404).json({ error: 'Diary entry not found' });
   }
 
-  return sendSuccess(res, req.schoolId, entry);
+  return sendSuccess(
+    res,
+    req.schoolId,
+    presentDiaryEntryForReader(entry, req.user?.roles),
+  );
 }));
 
 /**
