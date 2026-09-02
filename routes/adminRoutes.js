@@ -1110,7 +1110,7 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
 
     const feeMode = await getSchoolFeeMode(schoolId);
     const structureModeFilter = activeStructureFilter(feeMode);
-    const [classes, sections, villages] = await Promise.all([
+    const [classes, sections, feeTypes, villages] = await Promise.all([
         sql`
             SELECT DISTINCT c.id, c.name
             FROM student_fees sf
@@ -1152,6 +1152,20 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
             ORDER BY sec.name
         `,
         sql`
+            SELECT DISTINCT ft.id, ft.name
+            FROM student_fees sf
+            JOIN fee_structures fs ON fs.id = sf.fee_structure_id
+            JOIN fee_types ft ON ft.id = fs.fee_type_id AND ft.deleted_at IS NULL
+            WHERE sf.school_id = ${schoolId}
+              AND fs.academic_year_id = ${academicYear.id}
+              AND sf.deleted_at IS NULL
+              AND fs.deleted_at IS NULL
+              AND sf.status IN ('pending', 'partial', 'overdue')
+              AND (sf.amount_due - sf.discount - sf.amount_paid) > 0
+              ${structureModeFilter}
+            ORDER BY ft.name
+        `,
+        sql`
             SELECT DISTINCT ts.id, ts.name, tr.name AS route_name
             FROM student_fees sf
             JOIN fee_structures fs ON fs.id = sf.fee_structure_id
@@ -1176,6 +1190,7 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
         academic_year: academicYear,
         classes,
         sections,
+        fee_types: feeTypes,
         villages: villages.map((village) => ({
             ...village,
             label: village.route_name ? `${village.name} · ${village.route_name}` : village.name,
@@ -1197,7 +1212,7 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
  */
 router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
-    const { academic_year_id, class_id, section_id, village_id, overdue_only } = req.query;
+    const { academic_year_id, class_id, section_id, fee_type_id, village_id, overdue_only } = req.query;
     const academicYear = await resolveDueListAcademicYear(schoolId, academic_year_id);
     if (!academicYear) {
         return res.status(404).json({ error: 'No academic year configured for this school.' });
@@ -1224,6 +1239,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
               AND fa.adjustment_type = 'waive'
               AND fa.student_fee_id IS NOT NULL
               AND fs.academic_year_id = ${academicYear.id}
+              ${fee_type_id ? sql`AND fs.fee_type_id = ${fee_type_id}` : sql``}
             GROUP BY fa.student_id
         ),
         fee_agg AS (
@@ -1268,6 +1284,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
               AND fs.academic_year_id = ${academicYear.id}
               AND sf.deleted_at IS NULL
               AND fs.deleted_at IS NULL
+              ${fee_type_id ? sql`AND fs.fee_type_id = ${fee_type_id}` : sql``}
               ${structureModeFilter}
             GROUP BY sf.student_id
             HAVING SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) > 0
@@ -1330,6 +1347,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
             SELECT student_id
             FROM transport_agg
             WHERE transport_pending_fee > 0
+              AND ${fee_type_id ? sql`FALSE` : sql`TRUE`}
         ),
         enroll AS (
             SELECT DISTINCT ON (se.student_id)
@@ -1461,6 +1479,9 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
     const [sectionFilter] = section_id ? await sql`
         SELECT name FROM sections WHERE id = ${section_id} AND school_id = ${schoolId} LIMIT 1
     ` : [];
+    const [feeTypeFilter] = fee_type_id ? await sql`
+        SELECT name FROM fee_types WHERE id = ${fee_type_id} AND school_id = ${schoolId} AND deleted_at IS NULL LIMIT 1
+    ` : [];
     const [villageFilter] = village_id ? await sql`
         SELECT name FROM transport_stops WHERE id = ${village_id} AND school_id = ${schoolId} LIMIT 1
     ` : [];
@@ -1472,6 +1493,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
         filters: {
             class_name: classFilter?.name,
             section_name: sectionFilter?.name,
+            fee_type_name: feeTypeFilter?.name,
             village_name: villageFilter?.name,
             overdue_only: overdue_only === 'true',
         },

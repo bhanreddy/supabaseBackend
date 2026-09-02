@@ -2516,16 +2516,31 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
       s.name AS subject_name, s.name_te AS subject_name_te,
       EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id) AS has_marks,
       -- Whether a subject teacher is assigned for this class+subject in the
-      -- exam's year — drives the "teachers can self-serve the syllabus" hint.
-      EXISTS (
-        SELECT 1 FROM class_subjects csub
-        JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
-        WHERE cs.class_id = es.class_id
-          AND csub.subject_id = es.subject_id
-          AND cs.academic_year_id = ${exam.academic_year_id}
-          AND cs.school_id = ${req.schoolId}
-          AND csub.teacher_id IS NOT NULL
-          AND csub.deleted_at IS NULL
+      -- exam's year. Schools may keep that assignment in Academics or only in
+      -- the timetable, so the hint must check both sources.
+      (
+        EXISTS (
+          SELECT 1 FROM class_subjects csub
+          JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
+          WHERE cs.class_id = es.class_id
+            AND csub.subject_id = es.subject_id
+            AND cs.academic_year_id = ${exam.academic_year_id}
+            AND cs.school_id = ${req.schoolId}
+            AND csub.teacher_id IS NOT NULL
+            AND csub.deleted_at IS NULL
+        )
+        OR EXISTS (
+          SELECT 1 FROM timetable_slots ts
+          JOIN class_sections cs ON ts.class_section_id = cs.id AND cs.deleted_at IS NULL
+          WHERE cs.class_id = es.class_id
+            AND ts.subject_id = es.subject_id
+            AND ts.academic_year_id = ${exam.academic_year_id}
+            AND cs.academic_year_id = ${exam.academic_year_id}
+            AND cs.school_id = ${req.schoolId}
+            AND ts.school_id = ${req.schoolId}
+            AND ts.teacher_id IS NOT NULL
+            AND ts.deleted_at IS NULL
+        )
       ) AS has_teacher
     FROM exam_subjects es
     JOIN classes c ON es.class_id = c.id

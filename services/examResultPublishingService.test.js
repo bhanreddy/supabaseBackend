@@ -33,3 +33,54 @@ test('an exam with papers but no active students is not publishable', () => {
 
   assert.equal(readiness.ready, false);
 });
+
+test('readiness lists only teachers with missing marks for each class and subject', () => {
+  const readiness = summarizeResultReadiness(
+    [
+      {
+        exam_subject_id: 'hindi-5',
+        class_id: 'class-5',
+        subject_id: 'hindi',
+        class_name: '5',
+        subject_name: 'Hindi',
+        expected_entries: 12,
+        entered_entries: 7,
+      },
+    ],
+    [
+      {
+        exam_subject_id: 'hindi-5',
+        teacher_id: 'teacher-a',
+        teacher_name: 'Anita Rao',
+        section_names: ['A'],
+        expected_entries: 6,
+        entered_entries: 1,
+      },
+      {
+        exam_subject_id: 'hindi-5',
+        teacher_id: 'teacher-b',
+        teacher_name: 'Meera Shah',
+        section_names: ['B'],
+        expected_entries: 6,
+        entered_entries: 6,
+      },
+    ],
+    [
+      { exam_subject_id: 'hindi-5', section_id: 'section-c', section_name: 'C' },
+    ],
+  );
+
+  assert.deepEqual(readiness.papers[0].pending_teachers, [
+    {
+      teacher_id: 'teacher-a',
+      teacher_name: 'Anita Rao',
+      section_names: ['A'],
+      expected_entries: 6,
+      entered_entries: 1,
+      missing_entries: 5,
+    },
+  ]);
+  assert.deepEqual(readiness.papers[0].unassigned_sections, [
+    { section_id: 'section-c', section_name: 'C' },
+  ]);
+});

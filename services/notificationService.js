@@ -6,6 +6,7 @@ import sql from '../db.js';
 import { NotificationEventConfig } from './notificationEventConfig.js';
 import { NotificationTemplateService } from './notificationTemplateService.js';
 import { filterEnabledNotificationRecipients } from './schoolNotificationSettingsService.js';
+import { logNotificationSummary } from './notificationAuditService.js';
 import logger from '../utils/logger.js';
 
 // Constants
@@ -50,7 +51,12 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
     renderResult = NotificationTemplateService.render(type, params);
   } catch (err) {
     console.error('Template render error:', err);
-    await logNotificationSummary({ type, errorMessage: err.message }); // Log template failure
+    await logNotificationSummary({
+      type,
+      errorMessage: err.message,
+      recipientUserIds: userIds,
+      schoolId: context.schoolId ?? context.school_id ?? null,
+    }); // Log template failure
     return { successCount: 0, failureCount: 0 };
   }
 
@@ -139,6 +145,8 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
 
   // 5️⃣ Log Final Summary
   await logNotificationSummary({
+    recipientUserIds: userIds,
+    schoolId: context.schoolId ?? context.school_id ?? null,
     type,
     tokensTargeted: totalTokenCount,
     tokensSent: totalSuccess,
@@ -246,7 +254,10 @@ export async function sendTransportNotification(studentIds, eventKey, templateVa
     const notifyUserIds = allUserIds.filter((uid) => usersWithTokens.has(uid));
     if (notifyUserIds.length === 0) return;
 
-    await sendNotificationToUsers(notifyUserIds, eventKey, templateVars, { role: 'parent' });
+    await sendNotificationToUsers(notifyUserIds, eventKey, templateVars, {
+      role: 'parent',
+      schoolId,
+    });
   } catch (err) {
     logger.error({ err, event: 'transport_notification_dispatch_failed', schoolId, eventKey }, 'Transport notification dispatch failed');
   }
@@ -686,7 +697,12 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     renderResult = NotificationTemplateService.render(type, params);
   } catch (err) {
     console.error('Template render error:', err);
-    await logNotificationSummary({ type, errorMessage: err.message });
+    await logNotificationSummary({
+      type,
+      errorMessage: err.message,
+      recipientUserIds: userIds,
+      schoolId: context.schoolId ?? context.school_id ?? null,
+    });
     return {
       successCount: 0,
       failureCount: userIds.length + notificationAccess.disabledUserIds.length,
@@ -750,6 +766,8 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
 
   if (userDevices.length === 0) {
     await logNotificationSummary({
+      recipientUserIds: userIds,
+      schoolId: context.schoolId ?? context.school_id ?? null,
       type,
       tokensTargeted: 0,
       tokensSent: 0,
@@ -842,6 +860,8 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
   const totalTokenCount = userDevices.length;
 
   await logNotificationSummary({
+    recipientUserIds: userIds,
+    schoolId: context.schoolId ?? context.school_id ?? null,
     type,
     tokensTargeted: totalTokenCount,
     tokensSent: totalSuccess,
@@ -868,36 +888,6 @@ async function removeInvalidTokens(tokens) {
             UPDATE user_devices
             SET is_active = FALSE, updated_at = NOW()
             WHERE fcm_token = ANY(${tokens})
-        `;
-  } catch (err) {
-
-  }
-}
-
-async function logNotificationSummary({
-  type,
-  tokensTargeted = 0,
-  tokensSent = 0,
-  tokensFailed = 0,
-  channelId = null,
-  senderId = null,
-  batchId = null,
-  role = null,
-  errorMessage = null,
-  providerResponse = null
-}) {
-  try {
-    const status = tokensFailed === 0 ? 'success' : tokensSent === 0 ? 'failed' : 'partial';
-    await sql`
-            INSERT INTO notification_logs (
-                user_id, batch_id, notification_type, role, channel_id,
-                push_provider, tokens_targeted, tokens_sent, tokens_failed,
-                error_message, provider_response, status
-            ) VALUES (
-                ${senderId}, ${batchId}, ${type}, ${role}, ${channelId},
-                'fcm', ${tokensTargeted}, ${tokensSent}, ${tokensFailed},
-                ${errorMessage}, ${providerResponse ? JSON.stringify(providerResponse) : null}, ${status}
-            )
         `;
   } catch (err) {
 

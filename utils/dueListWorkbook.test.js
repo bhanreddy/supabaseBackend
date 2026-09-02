@@ -95,3 +95,14 @@ test('due-list workbook leaves unavailable transport fee blank but keeps configu
     assert.equal(rows[8][15], '');
     assert.equal(rows[9][15], 0);
 });
+
+test('due-list workbook records a selected fee type in the applied filters', () => {
+    const { rows } = readWorkbook(buildDueListWorkbook({
+        schoolName: 'Slate School',
+        academicYear: '2026-27',
+        rows: [sampleRow],
+        filters: { fee_type_name: 'Tuition Fee' },
+    }));
+
+    assert.equal(rows[2][1], 'Fee type: Tuition Fee');
+});

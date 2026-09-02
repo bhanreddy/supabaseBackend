@@ -24,6 +24,7 @@ export function buildDueListWorkbook({ schoolName, academicYear, rows, filters }
     const filtersText = [
         filters.class_name ? `Class: ${filters.class_name}` : null,
         filters.section_name ? `Section: ${filters.section_name}` : null,
+        filters.fee_type_name ? `Fee type: ${filters.fee_type_name}` : null,
         filters.village_name ? `Village: ${filters.village_name}` : null,
         filters.overdue_only ? 'Only overdue dues' : null,
     ].filter(Boolean).join(' | ') || 'Outstanding school/transport dues and waived students';
