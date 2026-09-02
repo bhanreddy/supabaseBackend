@@ -8,6 +8,7 @@ import {
   dispatchBroadcast,
   getBroadcastStatus,
   getClassTargets,
+  getFeeReminderTypes,
   normalizeFeePaidRange,
   retryBroadcast,
 } from '../services/broadcastDispatchService.js';
@@ -67,6 +68,19 @@ router.get(
   })
 );
 
+// ── GET /fee-types ────────────────────────────────────────────────────────────
+// School-scoped fee types available to the fee-reminder composer. Transport is
+// included as a selectable pseudo-type because its ledger is stored separately.
+router.get(
+  '/fee-types',
+  requireAuth,
+  requirePermission('dashboard.view'),
+  asyncHandler(async (req, res) => {
+    const feeTypes = await getFeeReminderTypes(req.schoolId);
+    return sendSuccess(res, req.schoolId, { fee_types: feeTypes });
+  })
+);
+
 router.put(
   '/settings/:categoryId',
   requireAuth,
@@ -120,7 +134,7 @@ router.get(
     const targets = await getClassTargets(schoolId, channelType, {
       min: req.query.fee_paid_min_percent,
       max: req.query.fee_paid_max_percent,
-    });
+    }, req.query.fee_type_id);
     return sendSuccess(res, req.schoolId, targets);
   })
 );
@@ -139,6 +153,7 @@ router.post(
       idempotency_key,
       fee_paid_min_percent,
       fee_paid_max_percent,
+      fee_type_id,
     } = req.body;
     const adminId = req.user.internal_id;
     const schoolId = req.schoolId;
@@ -198,6 +213,7 @@ router.post(
         min: fee_paid_min_percent,
         max: fee_paid_max_percent,
       },
+      feeTypeId: fee_type_id,
     });
 
     return sendSuccess(res, req.schoolId, result);

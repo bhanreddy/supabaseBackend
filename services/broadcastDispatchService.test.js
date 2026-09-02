@@ -100,3 +100,29 @@ test('fee reminder progress accounts for a rejected recipient send', async () =>
     tokensTargeted: 0,
   });
 });
+
+test('fee reminder message identifies the selected fee type and its own balance', async () => {
+  let deliveredPayload;
+  await dispatchFeeReminder(
+    12,
+    [{ id: 'parent-1', balance: 2500, fee_type_name: 'Term 2 Fee' }],
+    'FEE_REMINDER',
+    'admin-1',
+    'batch-3',
+    {
+      sendNotification: async (_userIds, _channelType, payload) => {
+        deliveredPayload = payload;
+        return {
+          successCount: 1,
+          failureCount: 0,
+          noTokenCount: 0,
+          recipientRows: [],
+        };
+      },
+      persistRows: async () => {},
+      writeProgress: async () => {},
+    }
+  );
+
+  assert.match(deliveredPayload.message, /pending Term 2 Fee of ₹2,500\.00/);
+});

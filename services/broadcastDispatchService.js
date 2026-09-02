@@ -9,6 +9,7 @@ const DISPATCH_CHUNK_SIZE = 50;
 const FEE_REMINDER_CHUNK_SIZE = 5;
 const TARGET_COUNT_CONCURRENCY = 4;
 const DB_WRITE_RETRIES = 3;
+export const TRANSPORT_FEE_TYPE_ID = 'transport';
 
 const BROADCAST_TRIGGER_TYPES = new Set([
   'FEE_REMINDER',
@@ -50,6 +51,74 @@ export function normalizeFeePaidRange(range = {}) {
     throw error;
   }
   return { min, max };
+}
+
+async function resolveFeeTypeSelection(schoolId, feeTypeId) {
+  if (feeTypeId == null || feeTypeId === '') return null;
+
+  const normalizedId = String(feeTypeId).trim();
+  if (normalizedId === TRANSPORT_FEE_TYPE_ID) {
+    return {
+      id: TRANSPORT_FEE_TYPE_ID,
+      name: 'Transport Fee',
+      code: 'TRANSPORT',
+      kind: 'transport',
+    };
+  }
+
+  const [feeType] = await sql`
+    SELECT id, name, code
+    FROM fee_types
+    WHERE id = ${normalizedId}
+      AND school_id = ${schoolId}
+      AND deleted_at IS NULL
+  `;
+  if (!feeType) {
+    const error = new Error('The selected fee type is not available for this school');
+    error.status = 400;
+    throw error;
+  }
+
+  return { ...feeType, kind: 'standard' };
+}
+
+/** Fee types that can be selected in the manual reminder composer. */
+export async function getFeeReminderTypes(schoolId) {
+  const regularTypes = await sql`
+    SELECT DISTINCT ft.id, ft.name, ft.code, ft.sort_order
+    FROM fee_types ft
+    JOIN fee_structures fs ON fs.fee_type_id = ft.id
+      AND fs.school_id = ${schoolId}
+      AND fs.deleted_at IS NULL
+    WHERE ft.school_id = ${schoolId}
+      AND ft.deleted_at IS NULL
+    ORDER BY ft.sort_order ASC, ft.name ASC
+  `;
+
+  const [transportAvailability] = await sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM transport_fee tf
+      WHERE tf.school_id = ${schoolId}
+        AND tf.is_active = TRUE
+    ) AS available
+  `;
+
+  const types = regularTypes.map((feeType) => ({
+    id: feeType.id,
+    name: feeType.name,
+    code: feeType.code,
+    kind: 'standard',
+  }));
+  if (transportAvailability?.available) {
+    types.push({
+      id: TRANSPORT_FEE_TYPE_ID,
+      name: 'Transport Fee',
+      code: 'TRANSPORT',
+      kind: 'transport',
+    });
+  }
+  return types;
 }
 
 function buildClassFilterClause(classIds, sectionIds) {
@@ -124,8 +193,11 @@ async function withDatabaseRetry(operation, label) {
 /**
  * Class list with type-aware recipient counts (distinct active student + parent users).
  */
-export async function getClassTargets(schoolId, channelType, feePaidRange = {}) {
+export async function getClassTargets(schoolId, channelType, feePaidRange = {}, feeTypeId = null) {
   assertBroadcastType(channelType);
+  const feeType = channelType === 'FEE_REMINDER'
+    ? await resolveFeeTypeSelection(schoolId, feeTypeId)
+    : null;
 
   const classes = await sql`
     SELECT c.id, c.name, c.code
@@ -141,6 +213,7 @@ export async function getClassTargets(schoolId, channelType, feePaidRange = {}) 
       sectionIds: [],
       channelType,
       feePaidRange,
+      feeType,
     });
     return {
       class_id: cls.id,
@@ -155,6 +228,7 @@ export async function getClassTargets(schoolId, channelType, feePaidRange = {}) 
     sectionIds: [],
     channelType,
     feePaidRange,
+    feeType,
   });
 
   return {
@@ -168,7 +242,7 @@ export async function getClassTargets(schoolId, channelType, feePaidRange = {}) 
  */
 export async function resolveRecipients(
   schoolId,
-  { classIds = [], sectionIds = [], channelType, feePaidRange = {} }
+  { classIds = [], sectionIds = [], channelType, feePaidRange = {}, feeTypeId = null, feeType = undefined }
 ) {
   assertBroadcastType(channelType);
   const classFilter = buildClassFilterClause(classIds, sectionIds);
@@ -232,19 +306,81 @@ export async function resolveRecipients(
 
   if (channelType === 'FEE_REMINDER') {
     const paidRange = normalizeFeePaidRange(feePaidRange);
+    const selectedFeeType = feeType === undefined
+      ? await resolveFeeTypeSelection(schoolId, feeTypeId)
+      : feeType;
+    const includeRegularFees = selectedFeeType?.kind !== 'transport';
+    const includeTransportFees = !selectedFeeType || selectedFeeType.kind === 'transport';
+    const regularTypeFilter = selectedFeeType?.kind === 'standard'
+      ? sql`AND fs.fee_type_id = ${selectedFeeType.id}`
+      : sql``;
+    const feeTypeName = selectedFeeType?.name || 'fees';
+
+    const regularFeeItems = includeRegularFees ? sql`
+      SELECT
+        sf.student_id,
+        GREATEST(sf.amount_due - sf.discount, 0) AS net_due,
+        GREATEST(sf.amount_paid, 0) AS paid_amount
+      FROM student_fees sf
+      JOIN students owned_student ON sf.student_id = owned_student.id
+        AND owned_student.school_id = ${schoolId}
+      JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+        AND fs.school_id = ${schoolId}
+        AND fs.deleted_at IS NULL
+      WHERE sf.school_id = ${schoolId}
+        AND sf.deleted_at IS NULL
+        ${regularTypeFilter}
+    ` : null;
+
+    const transportFeeItems = includeTransportFees ? sql`
+      SELECT
+        st.student_id,
+        GREATEST(tf.fee_amount + COALESCE(adj.net_amount, 0), 0) AS net_due,
+        GREATEST(COALESCE(pay.paid_total, 0), 0) AS paid_amount
+      FROM student_transport st
+      JOIN academic_years ay ON st.academic_year_id = ay.id
+      JOIN transport_fee tf
+        ON tf.stop_id = st.stop_id
+        AND tf.route_id = st.route_id
+        AND tf.academic_year = ay.code
+        AND tf.school_id = ${schoolId}
+        AND tf.is_active = TRUE
+      LEFT JOIN LATERAL (
+        SELECT SUM(
+          CASE WHEN fa.adjustment_type = 'add' THEN fa.amount ELSE -fa.amount END
+        ) AS net_amount
+        FROM fee_adjustments fa
+        WHERE fa.school_id = ${schoolId}
+          AND fa.student_id = st.student_id
+          AND fa.transport_fee_id = tf.id
+      ) adj ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT SUM(tfp.amount) AS paid_total
+        FROM transport_fee_payments tfp
+        WHERE tfp.school_id = ${schoolId}
+          AND tfp.student_id = st.student_id
+          AND tfp.academic_year = ay.code
+      ) pay ON TRUE
+      WHERE st.school_id = ${schoolId}
+        AND st.is_active = TRUE
+        AND st.stop_id IS NOT NULL
+    ` : null;
+
+    const feeItems = regularFeeItems && transportFeeItems
+      ? sql`${regularFeeItems} UNION ALL ${transportFeeItems}`
+      : regularFeeItems || transportFeeItems;
+
     return sql`
-      WITH fee_totals AS (
+      WITH fee_items AS (
+        ${feeItems}
+      ), fee_totals AS (
         SELECT
-          sf.student_id,
-          SUM(GREATEST(sf.amount_due - sf.discount, 0)) AS net_due,
-          SUM(GREATEST(sf.amount_paid, 0)) AS paid_amount,
-          SUM(GREATEST(sf.amount_due - sf.discount - sf.amount_paid, 0)) AS balance
-        FROM student_fees sf
-        JOIN students s ON sf.student_id = s.id
-          AND s.school_id = ${schoolId}
-        WHERE sf.school_id = ${schoolId}
-          AND sf.deleted_at IS NULL
-        GROUP BY sf.student_id
+          student_id,
+          SUM(net_due) AS net_due,
+          SUM(paid_amount) AS paid_amount,
+          SUM(GREATEST(net_due - paid_amount, 0)) AS balance
+        FROM fee_items
+        GROUP BY student_id
       ),
       pending_students AS (
         SELECT
@@ -257,7 +393,11 @@ export async function resolveRecipients(
         FROM fee_totals
         WHERE balance > 0
       )
-      SELECT recipient.id, SUM(recipient.balance) AS balance, MIN(recipient.paid_percentage) AS paid_percentage
+      SELECT
+        recipient.id,
+        SUM(recipient.balance) AS balance,
+        MIN(recipient.paid_percentage) AS paid_percentage,
+        ${feeTypeName}::text AS fee_type_name
       FROM (
         SELECT DISTINCT u.id, s.id AS student_id, ps.balance, ps.paid_percentage
         FROM users u
@@ -404,7 +544,8 @@ export async function dispatchFeeReminder(
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         });
-        const msg = `Gentle reminder: Your child has pending fees of ₹${amt} due for this active term.`;
+        const feeLabel = recipient.fee_type_name || 'fees';
+        const msg = `Gentle reminder: Your child has pending ${feeLabel} of ₹${amt} due for this active term.`;
         const report = await sendNotification(
           [recipient.id],
           channelType,
@@ -563,6 +704,7 @@ export async function dispatchBroadcast({
   parentBatchId = null,
   idempotencyKey = null,
   feePaidRange = {},
+  feeTypeId = null,
 }) {
   assertBroadcastType(channelType);
 
@@ -577,11 +719,15 @@ export async function dispatchBroadcast({
     if (existing) return existing;
   }
 
+  const selectedFeeType = channelType === 'FEE_REMINDER'
+    ? await resolveFeeTypeSelection(schoolId, feeTypeId)
+    : null;
   const recipients = await resolveRecipients(schoolId, {
     classIds: normalizedClassIds,
     sectionIds,
     channelType,
     feePaidRange,
+    feeType: selectedFeeType,
   });
 
   const filters = {
@@ -593,6 +739,8 @@ export async function dispatchBroadcast({
     const paidRange = normalizeFeePaidRange(feePaidRange);
     filters.fee_paid_min_percent = paidRange.min;
     filters.fee_paid_max_percent = paidRange.max;
+    filters.fee_type_id = selectedFeeType?.id || null;
+    filters.fee_type_name = selectedFeeType?.name || 'All fee types';
   }
   if (parentBatchId) filters.parent_batch_id = parentBatchId;
   if (idempotencyKey) filters.idempotency_key = idempotencyKey;
@@ -777,6 +925,10 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
     min: filters.fee_paid_min_percent,
     max: filters.fee_paid_max_percent,
   };
+  const feeTypeId = filters.fee_type_id || null;
+  const selectedFeeType = channelType === 'FEE_REMINDER'
+    ? await resolveFeeTypeSelection(schoolId, feeTypeId)
+    : null;
 
   // Users we can prove already got it — never resend to these.
   const sentRows = await sql`
@@ -796,6 +948,7 @@ export async function retryBroadcast(batchId, schoolId, adminId) {
     sectionIds,
     channelType,
     feePaidRange,
+    feeType: selectedFeeType,
   });
   const recipients = currentTargets.filter((r) => !alreadySent.has(r.id));
 
