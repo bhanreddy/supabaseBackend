@@ -2727,8 +2727,7 @@ router.get('/:id/results', requireAuth, async (req, res) => {
         AND e.status != 'cancelled'
         ${canPreviewUnpublishedResults ? sql`` : sql`AND e.results_published = TRUE`}
       GROUP BY e.id, e.name, e.exam_type, e.start_date, e.end_date
-      HAVING COUNT(es.id) > 0
-        ${canPreviewUnpublishedResults ? sql`` : sql`AND COUNT(m.id) = COUNT(es.id)`}
+      HAVING ${canPreviewUnpublishedResults ? sql`COUNT(es.id) > 0` : sql`COUNT(m.id) > 0`}
       ORDER BY e.start_date ASC NULLS LAST, e.name ASC
     `;
 

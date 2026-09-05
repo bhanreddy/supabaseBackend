@@ -4,6 +4,7 @@ import { requirePermission, requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
+import { shouldSendAttendanceNotification } from '../services/attendanceNotificationService.js';
 
 const router = express.Router();
 import { sendNotificationToUsers } from '../services/notificationService.js';
@@ -538,6 +539,15 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   (async () => {
     try {
       if (!results || results.length === 0) return;
+
+      // Back-dated attendance may be entered or corrected in bulk, but families
+      // must only be alerted for the school's current calendar date.
+      const isToday = await shouldSendAttendanceNotification({
+        schoolId: req.schoolId,
+        attendanceDate: date,
+        db: sql,
+      });
+      if (!isToday) return;
 
       const studentIds = results.map((r) => r.student_id).filter(Boolean);
       const notificationDate = date;

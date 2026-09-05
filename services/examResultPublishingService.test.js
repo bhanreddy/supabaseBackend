@@ -9,6 +9,8 @@ test('result readiness stays false until every scheduled paper entry exists', ()
   ]);
 
   assert.equal(readiness.ready, false);
+  assert.equal(readiness.publishable, true);
+  assert.equal(readiness.partial, true);
   assert.equal(readiness.papers_complete, 1);
   assert.equal(readiness.expected_entries, 60);
   assert.equal(readiness.entered_entries, 58);
@@ -22,6 +24,8 @@ test('result readiness becomes true when every active student has every paper ma
   ]);
 
   assert.equal(readiness.ready, true);
+  assert.equal(readiness.publishable, true);
+  assert.equal(readiness.partial, false);
   assert.equal(readiness.papers_complete, 2);
   assert.equal(readiness.missing_entries, 0);
 });
@@ -32,6 +36,7 @@ test('an exam with papers but no active students is not publishable', () => {
   ]);
 
   assert.equal(readiness.ready, false);
+  assert.equal(readiness.publishable, false);
 });
 
 test('readiness lists only teachers with missing marks for each class and subject', () => {

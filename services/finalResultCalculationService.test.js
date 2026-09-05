@@ -5,6 +5,7 @@ import {
   calculateSummativeOne,
   calculateSummativeTwo,
   canonicalFinalSourceKey,
+  summarizeFormativeSubjects,
   weightedContribution,
 } from './finalResultCalculationService.js';
 
@@ -66,4 +67,33 @@ test('recognizes numeric and roman formative/summative names', () => {
   assert.equal(canonicalFinalSourceKey('fa_results', 'FA 2026 - 3'), 'fa3');
   assert.equal(canonicalFinalSourceKey('fa_results', 'Formative - IV'), 'fa4');
   assert.equal(canonicalFinalSourceKey('sa_results', 'Summative II'), 'sa2');
+});
+
+test('summarizes directly uploaded FA marks using their configured maximums', () => {
+  const summary = summarizeFormativeSubjects([
+    { sources: { fa1: mark(18, 20) } },
+    { sources: { fa1: mark(42, 50) } },
+  ], 'fa1', 'FA-1');
+  assert.deepEqual(summary, {
+    status: 'complete',
+    total_obtained: 60,
+    total_max: 70,
+    percentage: 85.71,
+    grade: 'B1',
+    gpa: 9,
+    completed_subjects: 2,
+    subject_count: 2,
+    missing_sources: [],
+  });
+});
+
+test('keeps an FA result incomplete when a subject mark is missing', () => {
+  const summary = summarizeFormativeSubjects([
+    { sources: { fa2: mark(18, 20) } },
+    { sources: { fa2: { status: 'missing', score: null, maximum: 20 } } },
+  ], 'fa2', 'FA-2');
+  assert.equal(summary.status, 'incomplete');
+  assert.equal(summary.total_obtained, null);
+  assert.equal(summary.total_max, 40);
+  assert.deepEqual(summary.missing_sources, ['FA-2']);
 });

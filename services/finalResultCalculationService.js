@@ -134,6 +134,42 @@ export function summarizeCalculatedSubjects(subjects, period) {
   };
 }
 
+/** Summarizes the directly uploaded marks for one formative assessment. */
+export function summarizeFormativeSubjects(subjects, sourceKey, sourceLabel) {
+  const results = subjects.map((subject) => subject.sources?.[sourceKey]);
+  const complete = results.length > 0 && results.every((result) =>
+    result
+    && result.status !== 'missing'
+    && Number.isFinite(Number(result.maximum))
+    && Number(result.maximum) > 0,
+  );
+  const totalMax = results.reduce((total, result) => {
+    const maximum = Number(result?.maximum);
+    return total + (Number.isFinite(maximum) && maximum > 0 ? maximum : 0);
+  }, 0);
+  const totalObtained = complete
+    ? round(results.reduce((total, result) =>
+      total + (result.status === 'absent' ? 0 : Number(result.score)), 0))
+    : null;
+  const percentage = complete && totalMax > 0
+    ? round((totalObtained / totalMax) * 100)
+    : null;
+  const band = percentage == null ? null : gradeForFinalPercentage(percentage);
+  return {
+    status: complete ? 'complete' : 'incomplete',
+    total_obtained: totalObtained,
+    total_max: totalMax,
+    percentage,
+    grade: band?.grade ?? null,
+    gpa: band?.gpa ?? null,
+    completed_subjects: results.filter((result) =>
+      result && result.status !== 'missing' && Number(result.maximum) > 0,
+    ).length,
+    subject_count: results.length,
+    missing_sources: complete ? [] : [sourceLabel],
+  };
+}
+
 const romanNumber = (value) => {
   const normalized = value.toUpperCase();
   if (/\bIV\b/.test(normalized)) return 4;

@@ -1,6 +1,7 @@
 import express from 'express';
 import sql from '../db.js';
 import { requirePermission, requireAnyPermission, requireAuth } from '../middleware/auth.js';
+import { requireRole } from '../middleware/requireRole.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { translateFields } from '../services/geminiTranslator.js';
@@ -30,6 +31,7 @@ import {
   parseComponentMaximums,
 } from '../utils/componentMaximums.js';
 import {
+  RESULT_RANKING_METHODS,
   normalizeResultRankingMethod,
   rankResultRows,
 } from '../services/resultRankingService.js';
@@ -37,9 +39,16 @@ import {
   calculateFinalSubjectResult,
   canonicalFinalSourceKey,
   summarizeCalculatedSubjects,
+  summarizeFormativeSubjects,
   weightedContribution,
 } from '../services/finalResultCalculationService.js';
 import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
+import {
+  buildClassMarksWorkbook,
+  buildMissingMarksWorkbook,
+  buildSchoolMarksWorkbook,
+  classifyMarksResult,
+} from '../utils/resultWorkbooks.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -133,6 +142,15 @@ async function getSchoolRankingMethod(schoolId) {
   return normalizeResultRankingMethod(setting?.value);
 }
 
+async function getRequestedRankingMethod(req) {
+  const requested = typeof req.query.ranking_method === 'string'
+    ? req.query.ranking_method.trim()
+    : '';
+  return Object.values(RESULT_RANKING_METHODS).includes(requested)
+    ? requested
+    : getSchoolRankingMethod(req.schoolId);
+}
+
 async function notifyPublishedResultUsers(schoolId, exam) {
   try {
     const { sendNotificationToUsers } = await import('../services/notificationService.js');
@@ -156,6 +174,10 @@ async function notifyPublishedResultUsers(schoolId, exam) {
          AND active_student.school_id = ${schoolId}
          AND active_student.deleted_at IS NULL
          AND active_student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        JOIN marks mark
+          ON mark.exam_subject_id = es.id
+         AND mark.student_enrollment_id = se.id
+         AND mark.school_id = ${schoolId}
         WHERE es.exam_id = ${exam.id}
           AND es.school_id = ${schoolId}
           AND es.deleted_at IS NULL
@@ -308,6 +330,14 @@ router.get('/exams', requirePermission('exams.view'), asyncHandler(async (req, r
           result_progress.papers_total > 0
           AND result_progress.expected_entries > 0
           AND result_progress.missing_entries = 0
+        ),
+        'publishable', (
+          result_progress.papers_total > 0
+          AND result_progress.entered_entries > 0
+        ),
+        'partial', (
+          result_progress.entered_entries > 0
+          AND result_progress.missing_entries > 0
         ),
         'papers_total', result_progress.papers_total,
         'papers_complete', result_progress.papers_complete,
@@ -834,13 +864,6 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
   const resultVisibility = () => canPreviewUnpublishedResults(req)
     ? sql``
     : familyResultVisibility();
-  const resultCompleteness = () => canPreviewUnpublishedResults(req)
-    ? sql``
-    : sql`
-        HAVING
-          NOT (e.exam_type::text = ANY(${sql.array(RESULT_PUBLICATION_GATED_EXAM_TYPES)}::text[]))
-          OR COUNT(m.id) = COUNT(es.id)
-      `;
 
   // Get student info
   const [student] = await sql`
@@ -933,7 +956,7 @@ router.get('/student/:studentId', requirePermission('results.view'), asyncHandle
         AND e.school_id = ${req.schoolId}
         ${resultVisibility()}
       GROUP BY e.id, e.name, e.exam_type
-      ${resultCompleteness()}
+      ${canPreviewUnpublishedResults(req) ? sql`` : sql`HAVING COUNT(m.id) > 0`}
     `;
   } else {
     results = await sql`
@@ -1271,6 +1294,532 @@ router.get('/exam-analytics', requirePermission('admin.manage'), asyncHandler(as
 }));
 
 /**
+ * GET /results/progress-card-assistant/exams/:examId/export
+ * Class-teacher Excel register. Direct papers use mark + grade columns while
+ * component papers expose every component, their total and grade.
+ */
+router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission(['results.view', 'marks.view']), asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  if (!UUID_RE.test(examId)) return res.status(400).json({ error: 'Invalid examId' });
+
+  const context = await resolveProgressCardClassTeacher(req, res);
+  if (!context) return;
+  const { classSection, staff } = context;
+  if (!classSection) {
+    return res.status(403).json({ error: 'Only the assigned class teacher can export this marks register' });
+  }
+
+  const [[exam], papers, markRows, attendanceRows, [school], [teacher]] = await Promise.all([
+    sql`
+      SELECT id, name, exam_type
+      FROM exams
+      WHERE id = ${examId}
+        AND school_id = ${req.schoolId}
+        AND academic_year_id = ${classSection.academic_year_id}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    sql`
+      SELECT
+        paper.id AS exam_subject_id, paper.assessment_schema, paper.max_marks,
+        paper.participation_max_marks, paper.written_work_max_marks,
+        paper.project_work_max_marks, paper.slip_test_max_marks,
+        subject.name AS subject_name
+      FROM exam_subjects paper
+      JOIN subjects subject ON subject.id = paper.subject_id
+        AND subject.school_id = ${req.schoolId}
+        AND subject.deleted_at IS NULL
+      WHERE paper.exam_id = ${examId}
+        AND paper.class_id = ${classSection.class_id}
+        AND paper.school_id = ${req.schoolId}
+        AND paper.deleted_at IS NULL
+      ORDER BY subject.name
+    `,
+    sql`
+      SELECT
+        student.id AS student_id, student.admission_no, enrollment.roll_number,
+        person.display_name AS student_name,
+        paper.id AS exam_subject_id, paper.max_marks,
+        mark.id AS mark_id, mark.marks_obtained, mark.is_absent,
+        mark.participation_marks, mark.written_work_marks,
+        mark.project_work_marks, mark.slip_test_marks
+      FROM student_enrollments enrollment
+      JOIN students student ON student.id = enrollment.student_id
+        AND student.school_id = ${req.schoolId}
+        AND student.deleted_at IS NULL
+        AND student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+      JOIN persons person ON person.id = student.person_id
+      CROSS JOIN exam_subjects paper
+      LEFT JOIN marks mark ON mark.exam_subject_id = paper.id
+        AND mark.student_enrollment_id = enrollment.id
+        AND mark.school_id = ${req.schoolId}
+      WHERE enrollment.class_section_id = ${classSection.id}
+        AND enrollment.school_id = ${req.schoolId}
+        AND enrollment.status = 'active'
+        AND enrollment.deleted_at IS NULL
+        AND paper.exam_id = ${examId}
+        AND paper.class_id = ${classSection.class_id}
+        AND paper.school_id = ${req.schoolId}
+        AND paper.deleted_at IS NULL
+      ORDER BY enrollment.roll_number NULLS LAST, student.admission_no, person.display_name, paper.id
+    `,
+    sql`
+      SELECT
+        enrollment.student_id,
+        ROUND(
+          100 * COALESCE(SUM(CASE
+            WHEN attendance.status IN ('present', 'late') THEN 1
+            WHEN attendance.status = 'half_day' THEN 0.5
+            ELSE 0
+          END), 0)::numeric / NULLIF(COUNT(attendance.id), 0),
+          2
+        ) AS attendance_percentage
+      FROM student_enrollments enrollment
+      LEFT JOIN daily_attendance attendance ON attendance.student_enrollment_id = enrollment.id
+        AND attendance.school_id = ${req.schoolId}
+        AND attendance.deleted_at IS NULL
+      WHERE enrollment.class_section_id = ${classSection.id}
+        AND enrollment.school_id = ${req.schoolId}
+        AND enrollment.status = 'active'
+        AND enrollment.deleted_at IS NULL
+      GROUP BY enrollment.student_id
+    `,
+    sql`SELECT name FROM schools WHERE id = ${req.schoolId} LIMIT 1`,
+    sql`
+      SELECT COALESCE(NULLIF(person.display_name, ''), staff.staff_code, 'Teacher') AS teacher_name
+      FROM staff
+      JOIN persons person ON person.id = staff.person_id
+      WHERE staff.id = ${staff.id} AND staff.school_id = ${req.schoolId}
+      LIMIT 1
+    `,
+  ]);
+  if (!exam) return res.status(404).json({ error: 'Exam not found for this academic year' });
+  if (papers.length === 0) return res.status(409).json({ error: 'No subjects are configured for this class and exam' });
+
+  const attendanceByStudent = new Map(
+    attendanceRows.map((row) => [String(row.student_id), row.attendance_percentage]),
+  );
+  const studentMap = new Map();
+  for (const row of markRows) {
+    const studentKey = String(row.student_id);
+    if (!studentMap.has(studentKey)) {
+      studentMap.set(studentKey, {
+        student_id: row.student_id,
+        admission_no: row.admission_no,
+        roll_number: row.roll_number,
+        student_name: row.student_name,
+        subjects: [],
+      });
+    }
+    studentMap.get(studentKey).subjects.push({
+      exam_subject_id: row.exam_subject_id,
+      max_marks: Number(row.max_marks || 0),
+      mark_id: row.mark_id,
+      marks_obtained: row.marks_obtained == null ? null : Number(row.marks_obtained),
+      is_absent: Boolean(row.is_absent),
+      participation_marks: row.participation_marks == null ? null : Number(row.participation_marks),
+      written_work_marks: row.written_work_marks == null ? null : Number(row.written_work_marks),
+      project_work_marks: row.project_work_marks == null ? null : Number(row.project_work_marks),
+      slip_test_marks: row.slip_test_marks == null ? null : Number(row.slip_test_marks),
+    });
+  }
+
+  const students = [...studentMap.values()].map((student) => {
+    const entered = student.subjects.filter((subject) => subject.mark_id);
+    const totalObtained = entered.reduce(
+      (total, subject) => total + (subject.is_absent ? 0 : Number(subject.marks_obtained || 0)),
+      0,
+    );
+    const totalMax = entered.reduce((total, subject) => total + Number(subject.max_marks || 0), 0);
+    return {
+      ...student,
+      total_obtained: Number(totalObtained.toFixed(2)),
+      percentage: totalMax > 0 ? Number(((totalObtained / totalMax) * 100).toFixed(2)) : null,
+      completed_subjects: entered.length,
+      attendance_percentage: attendanceByStudent.get(String(student.student_id)) ?? null,
+    };
+  });
+  const rankingMethod = await getRequestedRankingMethod(req);
+  const ranked = rankResultRows(
+    students.filter((student) => student.percentage != null),
+    rankingMethod,
+  );
+  const rankByStudent = new Map(ranked.map((student) => [String(student.student_id), student.rank]));
+  const exportStudents = students.map((student) => ({
+    ...student,
+    rank: rankByStudent.get(String(student.student_id)) ?? null,
+  }));
+  const normalizedPapers = papers.map((paper) => ({
+    ...paper,
+    max_marks: Number(paper.max_marks || 0),
+    participation_max_marks: Number(paper.participation_max_marks || 10),
+    written_work_max_marks: Number(paper.written_work_max_marks || 10),
+    project_work_max_marks: Number(paper.project_work_max_marks || 10),
+    slip_test_max_marks: Number(paper.slip_test_max_marks || 20),
+  }));
+  const workbook = buildClassMarksWorkbook({
+    schoolName: school?.name,
+    teacherName: teacher?.teacher_name,
+    exam,
+    classSection,
+    papers: normalizedPapers,
+    students: exportStudents,
+    rankingMethod,
+  });
+  const safeExamName = String(exam.name || 'exam').replace(/[^A-Za-z0-9_-]+/g, '-');
+  const safeClassName = `${classSection.class_name}-${classSection.section_name}`.replace(/[^A-Za-z0-9_-]+/g, '-');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeExamName}-${safeClassName}-marks.xlsx"`);
+  return res.send(workbook);
+}));
+
+/**
+ * GET /results/accounts/marks-export/context
+ * Exams available to the accounts department for a school-wide marks export.
+ */
+router.get('/accounts/marks-export/context', requireAuth, requireRole('accounts', 'admin', 'principal'), asyncHandler(async (req, res) => {
+  const [exams, classSections, rankingMethod] = await Promise.all([
+    sql`
+      SELECT
+        exam.id, exam.name, exam.exam_type, exam.academic_year_id,
+        exam.start_date::text AS start_date, exam.end_date::text AS end_date,
+        exam.status, exam.results_published,
+        year.code AS academic_year,
+        COUNT(DISTINCT paper.id)::int AS subject_papers,
+        COUNT(DISTINCT paper.class_id)::int AS class_count,
+        COUNT(DISTINCT class_section.id)::int AS section_count,
+        ARRAY_AGG(DISTINCT paper.class_id) AS class_ids
+      FROM exams exam
+      JOIN academic_years year ON year.id = exam.academic_year_id
+        AND year.school_id = ${req.schoolId}
+        AND year.deleted_at IS NULL
+      JOIN exam_subjects paper ON paper.exam_id = exam.id
+        AND paper.school_id = ${req.schoolId}
+        AND paper.deleted_at IS NULL
+      LEFT JOIN class_sections class_section ON class_section.class_id = paper.class_id
+        AND class_section.academic_year_id = exam.academic_year_id
+        AND class_section.school_id = ${req.schoolId}
+        AND class_section.deleted_at IS NULL
+      WHERE exam.school_id = ${req.schoolId}
+        AND exam.deleted_at IS NULL
+      GROUP BY exam.id, year.code
+      ORDER BY exam.start_date DESC NULLS LAST, exam.created_at DESC
+    `,
+    sql`
+      SELECT
+        class_section.id, class_section.class_id, class_section.section_id,
+        class_section.academic_year_id,
+        class.name AS class_name, section.name AS section_name
+      FROM class_sections class_section
+      JOIN classes class ON class.id = class_section.class_id
+        AND class.school_id = ${req.schoolId}
+        AND class.deleted_at IS NULL
+      JOIN sections section ON section.id = class_section.section_id
+        AND section.school_id = ${req.schoolId}
+        AND section.deleted_at IS NULL
+      WHERE class_section.school_id = ${req.schoolId}
+        AND class_section.deleted_at IS NULL
+      ORDER BY class.name, section.name
+    `,
+    getSchoolRankingMethod(req.schoolId),
+  ]);
+  return sendSuccess(res, req.schoolId, {
+    exams,
+    class_sections: classSections,
+    ranking_method: rankingMethod,
+  });
+}));
+
+/**
+ * GET /results/accounts/exams/:examId/marks/export
+ * School-wide Excel register: overview plus one sheet for every class-section.
+ */
+router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('accounts', 'admin', 'principal'), asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  if (!UUID_RE.test(examId)) return res.status(400).json({ error: 'Invalid examId' });
+  const classId = typeof req.query.class_id === 'string' ? req.query.class_id.trim() : '';
+  const sectionId = typeof req.query.section_id === 'string' ? req.query.section_id.trim() : '';
+  const resultStatus = typeof req.query.result_status === 'string'
+    ? req.query.result_status.trim().toLowerCase()
+    : 'all';
+  if (classId && !UUID_RE.test(classId)) return res.status(400).json({ error: 'Invalid class_id' });
+  if (sectionId && !UUID_RE.test(sectionId)) return res.status(400).json({ error: 'Invalid section_id' });
+  if (!['all', 'pass', 'fail', 'absent', 'incomplete'].includes(resultStatus)) {
+    return res.status(400).json({ error: 'Invalid result_status' });
+  }
+
+  const [[exam], classSections, papers, markRows, attendanceRows, [school]] = await Promise.all([
+    sql`
+      SELECT exam.id, exam.name, exam.exam_type, exam.academic_year_id, year.code AS academic_year
+      FROM exams exam
+      JOIN academic_years year ON year.id = exam.academic_year_id
+        AND year.school_id = ${req.schoolId}
+        AND year.deleted_at IS NULL
+      WHERE exam.id = ${examId}
+        AND exam.school_id = ${req.schoolId}
+        AND exam.deleted_at IS NULL
+      LIMIT 1
+    `,
+    sql`
+      SELECT
+        class_section.id, class_section.class_id, class_section.academic_year_id,
+        class.name AS class_name, section.name AS section_name,
+        year.code AS academic_year,
+        COALESCE(NULLIF(teacher_person.display_name, ''), class_teacher.staff_code, '') AS teacher_name
+      FROM exams exam
+      JOIN academic_years year ON year.id = exam.academic_year_id
+        AND year.school_id = ${req.schoolId}
+        AND year.deleted_at IS NULL
+      JOIN class_sections class_section ON class_section.academic_year_id = exam.academic_year_id
+        AND class_section.school_id = ${req.schoolId}
+        AND class_section.deleted_at IS NULL
+      JOIN classes class ON class.id = class_section.class_id
+        AND class.school_id = ${req.schoolId}
+        AND class.deleted_at IS NULL
+      JOIN sections section ON section.id = class_section.section_id
+        AND section.school_id = ${req.schoolId}
+        AND section.deleted_at IS NULL
+      LEFT JOIN staff class_teacher ON class_teacher.id = class_section.class_teacher_id
+        AND class_teacher.school_id = ${req.schoolId}
+        AND class_teacher.deleted_at IS NULL
+      LEFT JOIN persons teacher_person ON teacher_person.id = class_teacher.person_id
+      WHERE exam.id = ${examId}
+        AND exam.school_id = ${req.schoolId}
+        AND exam.deleted_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM exam_subjects configured_paper
+          WHERE configured_paper.exam_id = exam.id
+            AND configured_paper.class_id = class_section.class_id
+            AND configured_paper.school_id = ${req.schoolId}
+            AND configured_paper.deleted_at IS NULL
+        )
+        ${classId ? sql`AND class_section.class_id = ${classId}` : sql``}
+        ${sectionId ? sql`AND class_section.section_id = ${sectionId}` : sql``}
+      ORDER BY class.name, section.name
+    `,
+    sql`
+      SELECT
+        paper.id AS exam_subject_id, paper.class_id, paper.assessment_schema,
+        paper.max_marks, paper.passing_marks,
+        paper.participation_max_marks, paper.written_work_max_marks,
+        paper.project_work_max_marks, paper.slip_test_max_marks,
+        subject.name AS subject_name
+      FROM exam_subjects paper
+      JOIN subjects subject ON subject.id = paper.subject_id
+        AND subject.school_id = ${req.schoolId}
+        AND subject.deleted_at IS NULL
+      WHERE paper.exam_id = ${examId}
+        AND paper.school_id = ${req.schoolId}
+        AND paper.deleted_at IS NULL
+        ${classId ? sql`AND paper.class_id = ${classId}` : sql``}
+      ORDER BY subject.name
+    `,
+    sql`
+      SELECT
+        class_section.id AS class_section_id,
+        student.id AS student_id, student.admission_no, enrollment.roll_number,
+        person.display_name AS student_name,
+        paper.id AS exam_subject_id, paper.max_marks, paper.passing_marks,
+        mark.id AS mark_id, mark.marks_obtained, mark.is_absent,
+        mark.participation_marks, mark.written_work_marks,
+        mark.project_work_marks, mark.slip_test_marks
+      FROM exams exam
+      JOIN class_sections class_section ON class_section.academic_year_id = exam.academic_year_id
+        AND class_section.school_id = ${req.schoolId}
+        AND class_section.deleted_at IS NULL
+      JOIN student_enrollments enrollment ON enrollment.class_section_id = class_section.id
+        AND enrollment.academic_year_id = exam.academic_year_id
+        AND enrollment.school_id = ${req.schoolId}
+        AND enrollment.status = 'active'
+        AND enrollment.deleted_at IS NULL
+      JOIN students student ON student.id = enrollment.student_id
+        AND student.school_id = ${req.schoolId}
+        AND student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        AND student.deleted_at IS NULL
+      JOIN persons person ON person.id = student.person_id
+      LEFT JOIN exam_subjects paper ON paper.exam_id = exam.id
+        AND paper.class_id = class_section.class_id
+        AND paper.school_id = ${req.schoolId}
+        AND paper.deleted_at IS NULL
+      LEFT JOIN marks mark ON mark.exam_subject_id = paper.id
+        AND mark.student_enrollment_id = enrollment.id
+        AND mark.school_id = ${req.schoolId}
+      WHERE exam.id = ${examId}
+        AND exam.school_id = ${req.schoolId}
+        AND exam.deleted_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM exam_subjects configured_paper
+          WHERE configured_paper.exam_id = exam.id
+            AND configured_paper.class_id = class_section.class_id
+            AND configured_paper.school_id = ${req.schoolId}
+            AND configured_paper.deleted_at IS NULL
+        )
+        ${classId ? sql`AND class_section.class_id = ${classId}` : sql``}
+        ${sectionId ? sql`AND class_section.section_id = ${sectionId}` : sql``}
+      ORDER BY class_section.id, enrollment.roll_number NULLS LAST, student.admission_no, person.display_name, paper.id
+    `,
+    sql`
+      SELECT
+        enrollment.class_section_id, enrollment.student_id,
+        ROUND(
+          100 * COALESCE(SUM(CASE
+            WHEN attendance.status IN ('present', 'late') THEN 1
+            WHEN attendance.status = 'half_day' THEN 0.5
+            ELSE 0
+          END), 0)::numeric / NULLIF(COUNT(attendance.id), 0),
+          2
+        ) AS attendance_percentage
+      FROM exams exam
+      JOIN student_enrollments enrollment ON enrollment.academic_year_id = exam.academic_year_id
+        AND enrollment.school_id = ${req.schoolId}
+        AND enrollment.status = 'active'
+        AND enrollment.deleted_at IS NULL
+      LEFT JOIN daily_attendance attendance ON attendance.student_enrollment_id = enrollment.id
+        AND attendance.school_id = ${req.schoolId}
+        AND attendance.deleted_at IS NULL
+      WHERE exam.id = ${examId}
+        AND exam.school_id = ${req.schoolId}
+        AND exam.deleted_at IS NULL
+        ${classId ? sql`AND EXISTS (
+          SELECT 1 FROM class_sections selected_class_section
+          WHERE selected_class_section.id = enrollment.class_section_id
+            AND selected_class_section.school_id = ${req.schoolId}
+            AND selected_class_section.class_id = ${classId}
+            AND selected_class_section.deleted_at IS NULL
+        )` : sql``}
+        ${sectionId ? sql`AND EXISTS (
+          SELECT 1 FROM class_sections selected_section
+          WHERE selected_section.id = enrollment.class_section_id
+            AND selected_section.school_id = ${req.schoolId}
+            AND selected_section.section_id = ${sectionId}
+            AND selected_section.deleted_at IS NULL
+        )` : sql``}
+      GROUP BY enrollment.class_section_id, enrollment.student_id
+    `,
+    sql`SELECT name FROM schools WHERE id = ${req.schoolId} LIMIT 1`,
+  ]);
+
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  if (classSections.length === 0) return res.status(409).json({ error: 'No class sections match the selected filters' });
+
+  const normalizedPapers = papers.map((paper) => ({
+    ...paper,
+    max_marks: Number(paper.max_marks || 0),
+    participation_max_marks: Number(paper.participation_max_marks || 10),
+    written_work_max_marks: Number(paper.written_work_max_marks || 10),
+    project_work_max_marks: Number(paper.project_work_max_marks || 10),
+    slip_test_max_marks: Number(paper.slip_test_max_marks || 20),
+  }));
+  const papersByClass = new Map();
+  for (const paper of normalizedPapers) {
+    const key = String(paper.class_id);
+    if (!papersByClass.has(key)) papersByClass.set(key, []);
+    papersByClass.get(key).push(paper);
+  }
+  const attendanceByStudent = new Map(attendanceRows.map((row) => [
+    `${row.class_section_id}:${row.student_id}`,
+    row.attendance_percentage,
+  ]));
+  const studentsBySection = new Map(classSections.map((section) => [String(section.id), new Map()]));
+  for (const row of markRows) {
+    const sectionStudents = studentsBySection.get(String(row.class_section_id));
+    if (!sectionStudents) continue;
+    const studentKey = String(row.student_id);
+    if (!sectionStudents.has(studentKey)) {
+      sectionStudents.set(studentKey, {
+        student_id: row.student_id,
+        admission_no: row.admission_no,
+        roll_number: row.roll_number,
+        student_name: row.student_name,
+        subjects: [],
+      });
+    }
+    if (row.exam_subject_id) {
+      sectionStudents.get(studentKey).subjects.push({
+        exam_subject_id: row.exam_subject_id,
+        max_marks: Number(row.max_marks || 0),
+        passing_marks: Number(row.passing_marks || 0),
+        mark_id: row.mark_id,
+        marks_obtained: row.marks_obtained == null ? null : Number(row.marks_obtained),
+        is_absent: Boolean(row.is_absent),
+        participation_marks: row.participation_marks == null ? null : Number(row.participation_marks),
+        written_work_marks: row.written_work_marks == null ? null : Number(row.written_work_marks),
+        project_work_marks: row.project_work_marks == null ? null : Number(row.project_work_marks),
+        slip_test_marks: row.slip_test_marks == null ? null : Number(row.slip_test_marks),
+      });
+    }
+  }
+
+  const rankingMethod = await getRequestedRankingMethod(req);
+  const exportSections = classSections.map((classSection) => {
+    const sectionPapers = papersByClass.get(String(classSection.class_id)) || [];
+    const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
+      const entered = student.subjects.filter((subject) => subject.mark_id);
+      const totalObtained = entered.reduce(
+        (total, subject) => total + (subject.is_absent ? 0 : Number(subject.marks_obtained || 0)),
+        0,
+      );
+      const totalMax = entered.reduce((total, subject) => total + Number(subject.max_marks || 0), 0);
+      const classification = classifyMarksResult(sectionPapers, student.subjects);
+      return {
+        ...student,
+        total_obtained: Number(totalObtained.toFixed(2)),
+        percentage: totalMax > 0 ? Number(((totalObtained / totalMax) * 100).toFixed(2)) : null,
+        completed_subjects: entered.length,
+        ...classification,
+        attendance_percentage: attendanceByStudent.get(`${classSection.id}:${student.student_id}`) ?? null,
+      };
+    });
+    const ranked = rankResultRows(students.filter((student) => student.percentage != null), rankingMethod);
+    const rankByStudent = new Map(ranked.map((student) => [String(student.student_id), student.rank]));
+    const rankedStudents = students.map((student) => ({
+      ...student,
+      rank: rankByStudent.get(String(student.student_id)) ?? null,
+    }));
+    const filteredStudents = rankedStudents.filter((student) => {
+      if (resultStatus === 'all') return true;
+      if (resultStatus === 'pass') return student.result_status === 'Pass';
+      if (resultStatus === 'fail') return student.result_status.startsWith('Fail');
+      if (resultStatus === 'absent') return student.has_absence;
+      return student.result_status === 'Incomplete';
+    });
+    return {
+      classSection,
+      teacherName: classSection.teacher_name,
+      papers: sectionPapers,
+      students: filteredStudents,
+    };
+  });
+
+  const selectedClass = classSections[0]?.class_name;
+  const selectedSection = classSections.length === 1 ? classSections[0]?.section_name : null;
+  const resultLabel = {
+    all: 'All results', pass: 'Passed students', fail: 'Failed students',
+    absent: 'Students absent in one or more subjects', incomplete: 'Incomplete mark entries',
+  }[resultStatus];
+  const filterLabel = [
+    classId ? `Class: ${selectedClass}` : 'All classes',
+    sectionId ? `Section: ${selectedSection || classSections[0]?.section_name || ''}` : 'All sections',
+    `Result: ${resultLabel}`,
+  ].join(' · ');
+
+  const workbook = buildSchoolMarksWorkbook({
+    schoolName: school?.name,
+    exam,
+    sections: exportSections,
+    rankingMethod,
+    filterLabel,
+  });
+  const safeExamName = String(exam.name || 'exam').replace(/[^A-Za-z0-9_-]+/g, '-');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  const scopeName = classId
+    ? `${String(selectedClass || 'class').replace(/[^A-Za-z0-9_-]+/g, '-')}${sectionId && selectedSection ? `-${String(selectedSection).replace(/[^A-Za-z0-9_-]+/g, '-')}` : ''}`
+    : 'all-classes';
+  res.setHeader('Content-Disposition', `attachment; filename="${safeExamName}-${scopeName}-${resultStatus}-marks.xlsx"`);
+  return res.send(workbook);
+}));
+
+/**
  * GET /results/progress-card-assistant/context
  * Class-teacher-only roster and exam context for physical progress-card work.
  */
@@ -1536,7 +2085,7 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
     ORDER BY DATE_TRUNC('month', daily.attendance_date)
   `;
   const attendanceByStudent = new Map(attendanceRows.map((row) => [String(row.student_id), row]));
-  const rankingMethod = await getSchoolRankingMethod(req.schoolId);
+  const rankingMethod = await getRequestedRankingMethod(req);
   const rankedCohort = rankResultRows(cohort.map((row) => ({
     ...row,
     attendance_percentage: attendanceByStudent.get(String(row.student_id))?.attendance_percentage ?? null,
@@ -1589,7 +2138,7 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
 
 /**
  * GET /results/progress-card-assistant/student/:studentId/final-calculations
- * Derived Summative-I, Summative-II and Annual results from FA-1…FA-4 + SA-1…SA-2.
+ * Uploaded FA results plus derived Summative-I, Summative-II and Annual results.
  */
 router.get('/progress-card-assistant/student/:studentId/final-calculations', requireAnyPermission(['results.view', 'marks.view']), asyncHandler(async (req, res) => {
   const { studentId } = req.params;
@@ -1705,6 +2254,10 @@ router.get('/progress-card-assistant/student/:studentId/final-calculations', req
       ...entry.student,
       subjects,
       summaries: {
+        fa1: summarizeFormativeSubjects(subjects, 'fa1', 'FA-1'),
+        fa2: summarizeFormativeSubjects(subjects, 'fa2', 'FA-2'),
+        fa3: summarizeFormativeSubjects(subjects, 'fa3', 'FA-3'),
+        fa4: summarizeFormativeSubjects(subjects, 'fa4', 'FA-4'),
         summative_1: summarizeCalculatedSubjects(subjects, 'summative_1'),
         summative_2: summarizeCalculatedSubjects(subjects, 'summative_2'),
         annual: summarizeCalculatedSubjects(subjects, 'annual'),
@@ -1736,8 +2289,8 @@ router.get('/progress-card-assistant/student/:studentId/final-calculations', req
   const attendanceByStudent = new Map(
     attendanceRows.map((row) => [String(row.student_id), row.attendance_percentage]),
   );
-  const rankingMethod = await getSchoolRankingMethod(req.schoolId);
-  const periods = ['summative_1', 'summative_2', 'annual'];
+  const rankingMethod = await getRequestedRankingMethod(req);
+  const periods = ['fa1', 'fa2', 'fa3', 'fa4', 'summative_1', 'summative_2', 'annual'];
   const ranksByPeriod = Object.fromEntries(periods.map((period) => {
     const rankable = calculatedCohort.flatMap((entry) => {
       const summary = entry.summaries[period];
@@ -1769,9 +2322,13 @@ router.get('/progress-card-assistant/student/:studentId/final-calculations', req
     student: selectedCalculated,
     ranking_method: rankingMethod,
     formulas: {
-      summative_1: 'average(FA-1, FA-2) /20 + SA-1 exam /80',
-      summative_2: 'average(FA-3, FA-4) /20 + SA-2 exam /80',
-      annual: 'average(FA-1…FA-4) /20 + average(SA-1, SA-2) /80',
+      fa1: 'Direct uploaded FA-1 marks',
+      fa2: 'Direct uploaded FA-2 marks',
+      fa3: 'Direct uploaded FA-3 marks',
+      fa4: 'Direct uploaded FA-4 marks',
+      summative_1: '20% × average(FA-1, FA-2) + 80% × SA-1 exam',
+      summative_2: '20% × average(FA-3, FA-4) + 80% × SA-2 exam',
+      annual: '20% × average(FA-1…FA-4) + 80% × average(SA-1, SA-2)',
     },
   });
 }));
@@ -2927,9 +3484,42 @@ router.post('/exams/:id/timetable/publish', requirePermission('exams.manage'), a
 }));
 
 /**
+ * GET /results/exams/:id/missing-marks/export
+ * Admin Excel list of staff/class/section/subject gaps for follow-up.
+ */
+router.get('/exams/:id/missing-marks/export', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid exam id' });
+
+  const [[exam], [school], readiness] = await Promise.all([
+    sql`
+      SELECT id, name FROM exams
+      WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    sql`SELECT name FROM schools WHERE id = ${req.schoolId} LIMIT 1`,
+    getExamResultReadiness({ schoolId: req.schoolId, examId: id }),
+  ]);
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+  if (readiness.missing_entries === 0) {
+    return res.status(409).json({ error: 'All configured marks have already been uploaded' });
+  }
+
+  const workbook = buildMissingMarksWorkbook({
+    schoolName: school?.name,
+    examName: exam.name,
+    readiness,
+  });
+  const safeExamName = String(exam.name || 'exam').replace(/[^A-Za-z0-9_-]+/g, '-');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeExamName}-unuploaded-marks.xlsx"`);
+  return res.send(workbook);
+}));
+
+/**
  * POST /results/exams/:id/results/publish
- * Body: { published: boolean }. Publishing is exam-wide and is allowed only
- * after every active student has an entry for every scheduled paper.
+ * Body: { published: boolean }. Partial publication is allowed after at least
+ * one mark exists; family views include only each student's saved subjects.
  */
 router.post('/exams/:id/results/publish', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   if (!canPreviewUnpublishedResults(req)) {

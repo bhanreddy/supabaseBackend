@@ -64,6 +64,8 @@ export function summarizeResultReadiness(rows = [], teacherRows = [], unassigned
 
   return {
     ready: papers.length > 0 && expectedEntries > 0 && missingEntries === 0,
+    publishable: papers.length > 0 && enteredEntries > 0,
+    partial: enteredEntries > 0 && missingEntries > 0,
     papers_total: papers.length,
     papers_complete: papers.filter((paper) => paper.complete).length,
     expected_entries: expectedEntries,
@@ -285,12 +287,10 @@ export async function setExamResultsPublished({
     if (!exam) throw new ExamResultPublishingError('Exam not found', 404);
 
     const readiness = await getExamResultReadiness({ schoolId, examId, db: tx });
-    if (published && !readiness.ready) {
+    if (published && !readiness.publishable) {
       const message = readiness.papers_total === 0
         ? 'Schedule exam papers before publishing results'
-        : readiness.expected_entries === 0
-          ? 'No active student mark entries are expected for this exam'
-          : `${readiness.missing_entries} mark entr${readiness.missing_entries === 1 ? 'y is' : 'ies are'} still missing`;
+        : 'Enter at least one student mark before publishing results';
       throw new ExamResultPublishingError(message, 409, readiness);
     }
 
