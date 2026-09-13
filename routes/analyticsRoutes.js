@@ -66,7 +66,7 @@ router.get('/risk', requireAuth, asyncHandler(async (req, res) => {
             (
                 SELECT COALESCE(json_agg(t.pct), '[]'::json)
                 FROM (
-                    SELECT (m.marks_obtained::FLOAT / es.max_marks * 100)::INT as pct
+                    SELECT (m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::INT as pct
                     FROM marks m
                     JOIN exam_subjects es ON m.exam_subject_id = es.id
                     WHERE m.student_enrollment_id = se.id
@@ -233,7 +233,7 @@ router.get('/heatmap', requireAuth, asyncHandler(async (req, res) => {
         SELECT
             c.name as class_name,
             sub.name as subject_name,
-            AVG(m.marks_obtained::FLOAT / es.max_marks * 100)::INT as avg_pct
+            AVG(m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::INT as avg_pct
         FROM marks m
         JOIN exam_subjects es ON m.exam_subject_id = es.id
         JOIN subjects sub ON es.subject_id = sub.id

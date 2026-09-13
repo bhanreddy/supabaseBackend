@@ -23,6 +23,7 @@ import {
   setExamResultsPublished,
 } from '../services/examResultPublishingService.js';
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
+import CalendarService from '../services/calendarService.js';
 import { RESULT_PUBLICATION_GATED_EXAM_TYPES } from '../utils/examResultVisibility.js';
 import {
   componentMaximumsFromRow,
@@ -63,6 +64,48 @@ const familyResultVisibility = () => sql`
     OR NOT (e.exam_type::text = ANY(${sql.array(RESULT_PUBLICATION_GATED_EXAM_TYPES)}::text[]))
   )
 `;
+
+async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
+  try {
+    const [row] = await sql`
+      SELECT
+        es.id, es.exam_date, es.start_time::text AS start_time, es.end_time::text AS end_time,
+        es.class_id, e.name AS exam_name, sub.name AS subject_name, c.name AS class_name
+      FROM exam_subjects es
+      JOIN exams e ON e.id = es.exam_id
+      LEFT JOIN subjects sub ON sub.id = es.subject_id
+      LEFT JOIN classes c ON c.id = es.class_id
+      WHERE es.id = ${examSubjectId} AND es.school_id = ${schoolId}
+    `;
+    if (!row?.exam_date) {
+      await CalendarService.syncSourceEvent(schoolId, 'EXAM', examSubjectId, null);
+      return;
+    }
+    const subjectLabel = row.subject_name || 'Paper';
+    const classLabel = row.class_name ? ` Class ${row.class_name}` : '';
+    await CalendarService.syncSourceEvent({
+      schoolId,
+      sourceModule: 'EXAM',
+      sourceEntityId: row.id,
+      eventData: {
+        title: `${row.exam_name || 'Exam'}: ${subjectLabel}${classLabel}`,
+        description: row.start_time ? `${subjectLabel} exam` : `${subjectLabel} exam (all day)`,
+        event_type: 'EXAM',
+        start_date: row.exam_date,
+        end_date: row.exam_date,
+        start_time: row.start_time || null,
+        end_time: row.end_time || null,
+        is_all_day: !row.start_time,
+        priority: 'HIGH',
+        attendance_enabled: false,
+        timetable_enabled: false,
+      },
+      targets: row.class_id ? [{ target_type: 'CLASS', target_id: row.class_id }] : [{ target_type: 'ENTIRE_SCHOOL', target_id: 'ALL' }],
+    });
+  } catch (err) {
+    console.error(`[resultsRoutes] Failed to sync exam subject ${examSubjectId} to calendar:`, err.message);
+  }
+}
 
 async function resolveProgressCardClassTeacher(req, res) {
   const requestedStaffId = typeof req.query.staff_id === 'string' ? req.query.staff_id.trim() : '';
@@ -586,6 +629,7 @@ router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandl
   let seatingCleared = 0;
   if (exam_date) {
     seatingCleared = await clearExamSeating(sql, req.schoolId, id);
+    syncExamSubjectToCalendar(req.schoolId, examSubject.id);
   }
 
   return sendSuccess(res, req.schoolId, {
@@ -614,7 +658,7 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
   // RES4 FIX: Validate exam_subject ownership against both exam_subjects and exams school_id.
   const [examSubject] = await sql`
-    SELECT es.id, es.max_marks, es.exam_id, e.school_id, e.results_published
+    SELECT es.id, es.max_marks, es.exam_id, es.class_id, e.school_id, e.results_published
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id
     WHERE es.id = ${exam_subject_id}
@@ -637,6 +681,19 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
     if (!student_enrollment_id) continue;
 
+    const [enrollment] = await sql`
+      SELECT se.id FROM student_enrollments se
+      JOIN students s ON s.id=se.student_id AND s.school_id=${req.schoolId} AND s.deleted_at IS NULL
+      JOIN class_sections cs ON cs.id=se.class_section_id AND cs.school_id=${req.schoolId}
+      WHERE se.id=${student_enrollment_id} AND se.school_id=${req.schoolId}
+        AND cs.class_id=${examSubject.class_id} AND se.status='active'
+      LIMIT 1
+    `;
+    if (!enrollment) {
+      results.push({ student_enrollment_id, error: 'Enrollment is not active in this school and exam class' });
+      continue;
+    }
+
     // Validate marks
     if (!is_absent && (marks_obtained < 0 || marks_obtained > examSubject.max_marks)) {
       results.push({ student_enrollment_id, error: `Marks must be between 0 and ${examSubject.max_marks}` });
@@ -645,9 +702,10 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
     // Check if mark already exists to prevent duplicate notifications
     const [existingMark] = await sql`
-        SELECT id FROM marks 
+        SELECT id, marks_obtained, is_absent FROM marks 
         WHERE exam_subject_id = ${exam_subject_id} 
           AND student_enrollment_id = ${student_enrollment_id}
+          AND school_id = ${req.schoolId}
         LIMIT 1
     `;
 
@@ -671,6 +729,33 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
           entered_by = EXCLUDED.entered_by
         RETURNING id
       `;
+
+      // Log mark revision diff if mark changed
+      const normalizedNewMark = is_absent ? null : Number(marks_obtained);
+      const normalizedOldMark = existingMark?.marks_obtained == null ? null : Number(existingMark.marks_obtained);
+      if (existingMark && (normalizedOldMark !== normalizedNewMark || Boolean(existingMark.is_absent) !== Boolean(is_absent))) {
+        try {
+          await sql`
+            INSERT INTO audit_logs (school_id, user_id, action, entity, entity_id, details)
+            VALUES (
+              ${req.schoolId},
+              ${req.user.internal_id},
+              'marks.revision',
+              'marks',
+              ${result.id}::text,
+              ${sql.json({
+                exam_subject_id,
+                student_enrollment_id,
+                old_mark: existingMark.marks_obtained,
+                new_mark: marks_obtained,
+                old_is_absent: existingMark.is_absent,
+                new_is_absent: is_absent || false,
+                reason: remarks || 'Teacher grade update',
+              })}
+            )
+          `;
+        } catch (revErr) {}
+      }
 
       // ONLY notify if this was a new insert (not an update)
       const isNewInsert = !existingMark;
@@ -740,6 +825,40 @@ router.get('/marks/student/:studentId', requirePermission('marks.view'), asyncHa
   }
 
   return sendSuccess(res, req.schoolId, marksQuery);
+}));
+
+/**
+ * GET /results/mark-revisions/:examSubjectId
+ * Phase 11B: Audit diff of mark revisions (Old Mark -> New Mark, Actor, Time, Reason)
+ */
+router.get('/mark-revisions/:examSubjectId', requirePermission('marks.view'), asyncHandler(async (req, res) => {
+  const { examSubjectId } = req.params;
+
+  const revisions = await sql`
+    SELECT
+      al.id,
+      al.created_at AS timestamp,
+      al.details->>'old_mark' AS old_mark,
+      al.details->>'new_mark' AS new_mark,
+      al.details->>'old_is_absent' AS old_is_absent,
+      al.details->>'new_is_absent' AS new_is_absent,
+      al.details->>'reason' AS reason,
+      p.display_name AS actor_name,
+      sp.display_name AS student_name,
+      s.admission_no
+    FROM audit_logs al
+    LEFT JOIN users u ON al.user_id = u.id
+    LEFT JOIN persons p ON u.person_id = p.id
+    LEFT JOIN student_enrollments se ON (al.details->>'student_enrollment_id')::uuid = se.id
+    LEFT JOIN students s ON se.student_id = s.id
+    LEFT JOIN persons sp ON s.person_id = sp.id
+    WHERE al.school_id = ${req.schoolId}
+      AND al.action = 'marks.revision'
+      AND al.details->>'exam_subject_id' = ${examSubjectId}
+    ORDER BY al.created_at DESC
+  `;
+
+  return sendSuccess(res, req.schoolId, revisions);
 }));
 
 /**
@@ -3305,6 +3424,10 @@ router.patch('/exam-subjects/:id', requirePermission('exams.manage'), asyncHandl
   let seatingCleared = 0;
   if (sittingMoved) {
     seatingCleared = await clearExamSeating(sql, req.schoolId, paper.exam_id);
+  }
+
+  if (updated.exam_date) {
+    syncExamSubjectToCalendar(req.schoolId, updated.id);
   }
 
   return sendSuccess(res, req.schoolId, {

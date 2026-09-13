@@ -1,3 +1,4 @@
+import { readStaffDevicePublicKey } from '../utils/staffDeviceHeaders.js';
 import express from 'express';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { supabase, supabaseAdmin } from '../db.js';
@@ -6,17 +7,127 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import config from '../config/env.js';
 import { normalizeEmail } from '../utils/schoolEmail.js';
 import { requireAuth } from '../middleware/auth.js';
+import { qrLoginLimiter } from '../middleware/rateLimiter.js';
 import {
   refreshUserAccessContexts,
   buildContextsPayload,
   registerDeviceSession,
   switchActiveContext,
 } from '../services/accessContextService.js';
+import { checkDeviceOwnershipConflict } from '../services/staffDeviceService.js';
+import {
+  resolveLoginQrCredential,
+  revokeLoginQrForUser,
+} from '../services/studentLoginQrService.js';
+import { LoginQrError } from '../utils/studentLoginQr.js';
 
 const router = express.Router();
 
+/**
+ * POST /auth/qr/resolve
+ * Exchange a revocable SchoolIMS QR bearer envelope for a short-lived Supabase
+ * magic-link token. No password or long-lived session token is present in the QR.
+ */
+router.post('/qr/resolve', qrLoginLimiter, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const qrPayload = req.body?.qrPayload;
+  if (typeof qrPayload !== 'string') {
+    await recordQrLoginAttempt(req, { success: false, code: 'INVALID_LOGIN_QR' });
+    return res.status(400).json({
+      error: 'This is not a valid SchoolIMS login QR.',
+      code: 'INVALID_LOGIN_QR',
+    });
+  }
+
+  try {
+    const credential = await resolveLoginQrCredential(qrPayload, req.schoolId);
+    const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(credential.userId);
+    const email = userData?.user?.email;
+    if (userError || !email || userData.user.id !== credential.userId ||
+      (userData.user.banned_until && new Date(userData.user.banned_until) > new Date())) {
+      throw new LoginQrError('LOGIN_QR_NO_LONGER_VALID');
+    }
+
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+    });
+    const tokenHash = linkData?.properties?.hashed_token;
+    if (linkError || !tokenHash || linkData.user?.id !== credential.userId) {
+      console.error('[auth/qr/resolve] Supabase link exchange failed');
+      await recordQrLoginAttempt(req, {
+        success: false,
+        code: 'QR_LOGIN_UNAVAILABLE',
+        userId: credential.userId,
+        credentialId: credential.credentialId,
+      });
+      return res.status(503).json({
+        error: 'QR login is temporarily unavailable. Please try again.',
+        code: 'QR_LOGIN_UNAVAILABLE',
+      });
+    }
+
+    await sql`INSERT INTO audit_logs
+      (school_id, user_id, action, entity, entity_id, details, ip_address, user_agent, request_id)
+      VALUES (${credential.schoolId}, ${credential.userId}, 'LOGIN_QR_RESOLVED',
+        'student_login_qr', ${credential.credentialId}, ${sql.json({ login_method: 'qr', success: true })},
+        ${req.ip}, ${req.headers['user-agent'] || null}, ${req.requestId || req.id || null})`;
+
+    return sendSuccess(res, req.schoolId, { tokenHash, type: 'magiclink' });
+  } catch (error) {
+    if (!(error instanceof LoginQrError)) {
+      await recordQrLoginAttempt(req, { success: false, code: 'QR_LOGIN_UNAVAILABLE' });
+      return res.status(503).json({ error: 'QR login is temporarily unavailable.', code: 'QR_LOGIN_UNAVAILABLE' });
+    }
+    const code = error.code;
+    await recordQrLoginAttempt(req, { success: false, code });
+    if (code === 'LOGIN_QR_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'QR login is temporarily unavailable.', code });
+    }
+    if (code === 'NOT_SCHOOLIMS_LOGIN_QR' || code === 'UNSUPPORTED_LOGIN_QR_VERSION' || code === 'INVALID_LOGIN_QR') {
+      return res.status(400).json({ error: 'This is not a valid SchoolIMS login QR.', code });
+    }
+    return res.status(401).json({
+      error: 'This login QR is no longer valid. Please request a new QR from your school.',
+      code: 'LOGIN_QR_NO_LONGER_VALID',
+    });
+  }
+}));
+
+async function recordQrLoginAttempt(req, { success, code, userId = null, credentialId = null }) {
+  try {
+    const schoolId = Number(req.schoolId);
+    if (!Number.isInteger(schoolId) || schoolId <= 0) return;
+    await sql`INSERT INTO audit_logs
+      (school_id, user_id, action, entity, entity_id, details, ip_address, user_agent, request_id)
+      VALUES (${schoolId}, ${userId}, 'LOGIN_QR_LOGIN_ATTEMPT',
+        'student_login_qr', ${credentialId}, ${sql.json({
+          login_method: 'qr',
+          success: Boolean(success),
+          code: String(code || 'UNKNOWN').slice(0, 64),
+        })}, ${req.ip}, ${req.headers['user-agent'] || null}, ${req.requestId || req.id || null})`;
+  } catch {
+    // Audit must never block login or leak QR material.
+  }
+}
+
 /** OPT-20: short TTL cache for staff class_section_id (rarely changes mid-session). */
 const _authSectionCache = new Map();
+
+async function rejectConflictingStaffInstallation(req, res, personId, hasStaffProfile) {
+  if (!hasStaffProfile || !personId) return false;
+  const installationId = req.headers['x-device-id'] || null;
+  const publicKey = readStaffDevicePublicKey(req.headers);
+  if (!installationId && !publicKey) return false;
+  const conflict = await checkDeviceOwnershipConflict(publicKey, personId, installationId);
+  if (!conflict?.conflict) return false;
+  res.status(409).json({
+    error: 'This mobile installation is registered to another staff member. Multi-staff login is not permitted.',
+    code: 'DEVICE_OWNED_BY_ANOTHER_STAFF',
+  });
+  return true;
+}
+
 
 async function getActiveAcademicYearIdForSchool(schoolId) {
   const [y] = await sql`
@@ -85,8 +196,12 @@ router.post('/login', asyncHandler(async (req, res) => {
       s.admission_no,
       st.id as staff_id,
       st.staff_code,
-      (SELECT EXISTS(SELECT 1 FROM students st WHERE st.person_id = p.id AND st.deleted_at IS NULL)) as has_student_profile,
-      (SELECT EXISTS(SELECT 1 FROM staff st WHERE st.person_id = p.id AND st.deleted_at IS NULL)) as has_staff_profile,
+      (SELECT EXISTS(SELECT 1 FROM students student_profile
+        WHERE student_profile.person_id = p.id AND student_profile.school_id = u.school_id
+          AND student_profile.deleted_at IS NULL)) as has_student_profile,
+      (SELECT EXISTS(SELECT 1 FROM staff staff_profile
+        WHERE staff_profile.person_id = p.id AND staff_profile.school_id = u.school_id
+          AND staff_profile.deleted_at IS NULL)) as has_staff_profile,
       array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL) as roles,
       array_agg(DISTINCT perm.code) FILTER (WHERE perm.code IS NOT NULL) as permissions,
       us.notification_sound,
@@ -95,8 +210,8 @@ router.post('/login', asyncHandler(async (req, res) => {
     JOIN persons p ON u.person_id = p.id
     LEFT JOIN genders g ON p.gender_id = g.id
     LEFT JOIN user_settings us ON u.id = us.user_id
-    LEFT JOIN students s ON p.id = s.person_id
-    LEFT JOIN staff st ON p.id = st.person_id
+    LEFT JOIN students s ON p.id = s.person_id AND s.school_id = u.school_id AND s.deleted_at IS NULL
+    LEFT JOIN staff st ON p.id = st.person_id AND st.school_id = u.school_id AND st.deleted_at IS NULL
     LEFT JOIN user_roles ur ON u.id = ur.user_id
     LEFT JOIN roles r ON ur.role_id = r.id
     LEFT JOIN role_permissions rp ON r.id = rp.role_id
@@ -119,6 +234,9 @@ router.post('/login', asyncHandler(async (req, res) => {
   if (String(dbUser.school_id) !== String(req.schoolId)) {
     return res.status(403).json({ error: 'User does not belong to this school', code: 'SCHOOL_MISMATCH' });
   }
+
+  // Device ownership check: prevent non-owner staff from using this mobile install
+  if (await rejectConflictingStaffInstallation(req, res, dbUser.person_id, dbUser.has_staff_profile)) return;
 
   // Check for Class/Section Assignment
   let classSectionId = null;
@@ -260,6 +378,9 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
   if (String(dbUser.school_id) !== String(req.schoolId)) {
     return res.status(403).json({ error: 'User does not belong to this school', code: 'SCHOOL_MISMATCH' });
   }
+
+  // Device ownership check: prevent non-owner staff from using this mobile install
+  if (await rejectConflictingStaffInstallation(req, res, dbUser.person_id, dbUser.has_staff_profile)) return;
 
   // Update last login
   await sql`UPDATE users SET last_login_at = NOW() WHERE id = ${req.user.id}
@@ -537,6 +658,10 @@ router.post('/change-password', asyncHandler(async (req, res) => {
     return res.status(500).json({ error: 'Failed to update password', details: updateError.message });
   }
 
+  // QR bearer credentials are independent of password hashes, so revoke them
+  // explicitly whenever the underlying password changes.
+  await revokeLoginQrForUser(req.user.id, req.schoolId, req.user.id);
+
   // Log the event
   try {
     await sql`
@@ -632,6 +757,8 @@ router.post('/admin/change-password', asyncHandler(async (req, res) => {
   if (updateError) {
     return res.status(500).json({ success: false, message: 'Failed to update password', details: updateError.message });
   }
+
+  await revokeLoginQrForUser(req.user.id, req.schoolId, req.user.id);
 
   // Clear the temporary password flag
   await sql`
@@ -730,6 +857,7 @@ router.post('/contexts/switch', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'context_id is required' });
   }
 
+  // Prevent context switch if this mobile device is registered to another staff member
   try {
     const result = await switchActiveContext(req.user.id, deviceId, contextId, {
       ip: req.ip,

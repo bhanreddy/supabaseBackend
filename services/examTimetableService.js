@@ -15,6 +15,7 @@
 //    must review and re-publish).
 
 import sql from '../db.js';
+import { resolveSchoolDay } from './workingDayResolver.js';
 
 export class ExamTimetableError extends Error {
   constructor(message, status = 400, details = null) {
@@ -522,7 +523,21 @@ export function assignSubjects({
 
 /** Expand holiday events overlapping the window into a list of ISO dates. */
 async function fetchHolidayDates(db, schoolId, startDate, endDate) {
-  const rows = await db`
+  const dates = new Set();
+  const cur = toUtcDate(toIsoDate(new Date(startDate)));
+  const last = toUtcDate(toIsoDate(new Date(endDate)));
+  for (let d = cur; d <= last; d = new Date(d.getTime() + 86400000)) {
+    const iso = toIsoDate(d);
+    try {
+      const status = await resolveSchoolDay(schoolId, iso, db);
+      if (status.isHoliday && !status.isSpecialWorkingDay) {
+        dates.add(iso);
+      }
+    } catch {
+      // Keep generator usable if calendar tables are not yet migrated.
+    }
+  }
+  const legacy = await db`
     SELECT start_date, COALESCE(end_date, start_date) AS end_date
     FROM events
     WHERE school_id = ${schoolId}
@@ -531,15 +546,14 @@ async function fetchHolidayDates(db, schoolId, startDate, endDate) {
       AND start_date <= ${endDate}
       AND COALESCE(end_date, start_date) >= ${startDate}
   `;
-  const dates = [];
-  for (const row of rows) {
+  for (const row of legacy) {
     const from = toUtcDate(toIsoDate(new Date(row.start_date)));
     const to = toUtcDate(toIsoDate(new Date(row.end_date)));
     for (let d = from; d <= to; d = new Date(d.getTime() + 86400000)) {
-      dates.push(toIsoDate(d));
+      dates.add(toIsoDate(d));
     }
   }
-  return dates;
+  return [...dates];
 }
 
 /**

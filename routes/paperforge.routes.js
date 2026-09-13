@@ -29,6 +29,13 @@ import {
   forwardGenerate,
   forwardExport,
 } from '../services/paperforgeProxy.service.js';
+import {
+  generateQuestionPaper,
+  listGeneratedPapers,
+  getGeneratedPaperById,
+  updateGeneratedPaperQuestions,
+} from '../services/paperforgeService.js';
+import sql from '../db.js';
 
 const router = express.Router();
 
@@ -48,6 +55,11 @@ function requirePaperForgeAccess(req, res, next) {
     return res.status(403).json({ error: 'Forbidden: Paper generation access is required', code: 'PF_FORBIDDEN' });
   }
   return next();
+}
+
+function canManageAllPapers(user = {}) {
+  const roles = (user.roles || []).map((role) => String(role).trim().toLowerCase());
+  return roles.some((role) => ['admin', 'superadmin', 'principal', 'hod', 'head of department'].includes(role));
 }
 
 /**
@@ -122,12 +134,83 @@ router.get(
   })
 );
 
+router.get(
+  '/papers',
+  requireAuth,
+  requirePaperForgeAccess,
+  pfEnabled,
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const papers = await listGeneratedPapers(req.schoolId, {
+      userId: req.user.internal_id,
+      limit,
+      offset,
+    });
+    return sendSuccess(res, req.schoolId, papers);
+  })
+);
+
+router.get(
+  '/papers/:id',
+  requireAuth,
+  requirePaperForgeAccess,
+  pfEnabled,
+  asyncHandler(async (req, res) => {
+    const paper = await getGeneratedPaperById(req.schoolId, req.params.id, {
+      userId: canManageAllPapers(req.user) ? null : req.user.internal_id,
+    });
+    if (!paper) {
+      return res.status(404).json({ error: 'Question paper not found' });
+    }
+    return sendSuccess(res, req.schoolId, paper);
+  })
+);
+
+router.put(
+  '/papers/:id',
+  requireAuth,
+  requirePaperForgeAccess,
+  pfEnabled,
+  asyncHandler(async (req, res) => {
+    const { questions, title, exam_name } = req.body || {};
+    const updated = await updateGeneratedPaperQuestions(req.schoolId, req.params.id, {
+      questions,
+      title,
+      examName: exam_name,
+      userId: canManageAllPapers(req.user) ? null : req.user.internal_id,
+    });
+    if (!updated) {
+      return res.status(404).json({ error: 'Question paper not found' });
+    }
+    return sendSuccess(res, req.schoolId, updated);
+  })
+);
+
 router.post(
   '/generate',
   requireAuth,
   requirePaperForgeAccess,
   pfEnabled,
   asyncHandler(async (req, res) => {
+    const { subject, class_level, exam_name, title, blueprint, options } = req.body || {};
+    
+    // If request contains full paperforge parameters, persist and return structured record
+    if (subject && class_level && blueprint) {
+      const data = await generateQuestionPaper({
+        schoolId: req.user.schoolId,
+        userId: req.user.internal_id,
+        subject,
+        classLevel: class_level,
+        examName: exam_name,
+        title,
+        blueprint,
+        options,
+      });
+      return sendSuccess(res, req.schoolId, data);
+    }
+
+    // Direct forwarding fallback for raw blueprint requests
     const data = await forwardGenerate({
       schoolId: req.user.schoolId,
       userId: req.user.internal_id,
@@ -144,12 +227,36 @@ router.get(
   pfEnabled,
   asyncHandler(async (req, res) => {
     const format = req.query.format === 'docx' ? 'docx' : 'pdf';
+    const paper = await getGeneratedPaperById(req.schoolId, req.params.paperId, {
+      userId: canManageAllPapers(req.user) ? null : req.user.internal_id,
+    });
+    if (!paper?.paper_id) {
+      return res.status(404).json({ error: 'Question paper not found or not exportable' });
+    }
     const response = await forwardExport({
       schoolId: req.user.schoolId,
       userId: req.user.internal_id,
-      paperId: req.params.paperId,
+      paperId: paper.paper_id,
       format,
     });
+
+    // Audit log export event
+    try {
+      await sql`
+        INSERT INTO audit_logs (school_id, user_id, action, entity, entity_id, details)
+        VALUES (
+          ${req.schoolId},
+          ${req.user.internal_id},
+          'paperforge.exported',
+          'generated_papers',
+          ${String(paper.id)},
+          ${sql.json({ format })}
+        )
+      `;
+    } catch (auditErr) {
+      // Non-blocking
+    }
+
     res.status(response.status);
     if (response.headers['content-type']) res.setHeader('Content-Type', response.headers['content-type']);
     if (response.headers['content-disposition']) res.setHeader('Content-Disposition', response.headers['content-disposition']);

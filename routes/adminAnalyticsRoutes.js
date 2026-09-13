@@ -4,6 +4,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { activeStructureFilter, getSchoolFeeMode } from '../services/feeModeService.js';
+import analyticsRouter from './analyticsRoutes.js';
 
 const router = express.Router();
 
@@ -116,7 +117,7 @@ function toPct(raw) {
 }
 
 /**
- * fetchFinancials — 100% DB-driven
+ * fetchFinancials — 100% DB-driven including by_class and top_pending breakdowns
  */
 async function fetchFinancials(range, schoolId) {
     const start = getDateRange(range);
@@ -133,6 +134,8 @@ async function fetchFinancials(range, schoolId) {
         [refunds],
         [enrollments],
         trend,
+        byClass,
+        topPending,
     ] = await Promise.all([
         sql`
         SELECT
@@ -231,20 +234,67 @@ async function fetchFinancials(range, schoolId) {
         GROUP BY TO_CHAR(ft.paid_at, 'Mon'), DATE_TRUNC('month', ft.paid_at)
         ORDER BY DATE_TRUNC('month', ft.paid_at)
     `,
+        sql`
+        SELECT 
+            c.name as class_name,
+            sec.name as section_name,
+            COALESCE(SUM(sf.amount_due), 0)::numeric as total_invoiced,
+            COALESCE(SUM(sf.amount_paid), 0)::numeric as collected,
+            COALESCE(SUM(sf.amount_due - sf.discount - sf.amount_paid), 0)::numeric as outstanding,
+            CASE 
+                WHEN SUM(sf.amount_due - sf.discount) > 0 
+                THEN ROUND((SUM(sf.amount_paid)::numeric / SUM(sf.amount_due - sf.discount)::numeric) * 100, 1)::float
+                ELSE 0 
+            END as efficiency
+        FROM student_fees sf
+        JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+        JOIN students s ON sf.student_id = s.id
+        JOIN student_enrollments se ON s.id = se.student_id AND se.status = 'active'
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
+          AND s.deleted_at IS NULL
+          AND sf.school_id = ${schoolId}
+          ${structureModeFilter}
+        GROUP BY c.id, c.name, sec.id, sec.name
+        ORDER BY c.name, sec.name
+    `,
+        sql`
+        SELECT 
+            p.display_name as student_name,
+            c.name || ' ' || sec.name as class_section,
+            SUM(sf.amount_due - sf.discount - sf.amount_paid)::numeric as amount_due,
+            GREATEST(0, (CURRENT_DATE - MIN(COALESCE(sf.due_date, sf.created_at::date))))::int as overdue_days
+        FROM student_fees sf
+        JOIN fee_structures fs ON sf.fee_structure_id = fs.id
+        JOIN students s ON sf.student_id = s.id
+        JOIN persons p ON s.person_id = p.id
+        JOIN student_enrollments se ON s.id = se.student_id AND se.status = 'active'
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE sf.status != 'paid'
+          AND sf.deleted_at IS NULL
+          AND fs.deleted_at IS NULL
+          AND s.deleted_at IS NULL
+          AND sf.school_id = ${schoolId}
+          ${structureModeFilter}
+        GROUP BY s.id, p.display_name, c.name, sec.name
+        HAVING SUM(sf.amount_due - sf.discount - sf.amount_paid) > 0
+        ORDER BY amount_due DESC
+        LIMIT 25
+    `,
     ]);
 
     const totalCollected = parseFloat(collected.total) || 0;
-    const todayCollection = parseFloat(todayRow.total) || 0;      // collected today (across all time)
-    const allTimeCollected = parseFloat(allTimeRow.total) || 0;   // lifetime collected (all transactions)
+    const todayCollection = parseFloat(todayRow.total) || 0;
+    const allTimeCollected = parseFloat(allTimeRow.total) || 0;
     const totalInvoiced = parseFloat(invoiced.total) || 0;
     const totalDiscount = parseFloat(discounts.total) || 0;
     const outstandingDues = parseFloat(outstanding.total) || 0;
 
-    // Invoiced / discounts / outstanding all describe the full active fee book
-    // (not just fees created in the selected range), so efficiency must be
-    // computed from the same population. Net billed = amount owed after
-    // discounts; lifetime collected = net billed minus what is still
-    // outstanding (i.e. the sum of amount_paid across all fees).
     const netBilled = totalInvoiced - totalDiscount;
     const lifetimeCollected = Math.max(netBilled - outstandingDues, 0);
     const efficiency = netBilled > 0 ? Math.round((lifetimeCollected / netBilled) * 100) : 0;
@@ -260,36 +310,28 @@ async function fetchFinancials(range, schoolId) {
         refunds_issued: parseFloat(refunds.total) || 0,
         new_enrollments: parseInt(enrollments.count) || 0,
         trend: trend.map(t => ({ label: t.label, value: parseFloat(t.value) || 0 })),
-        by_class: [],
-        top_pending: []
+        by_class: byClass.map(r => ({
+            class_name: r.class_name,
+            section_name: r.section_name,
+            total_invoiced: parseFloat(r.total_invoiced) || 0,
+            collected: parseFloat(r.collected) || 0,
+            outstanding: parseFloat(r.outstanding) || 0,
+            efficiency: parseFloat(r.efficiency) || 0
+        })),
+        top_pending: topPending.map(r => ({
+            student_name: r.student_name,
+            class_section: r.class_section,
+            amount_due: parseFloat(r.amount_due) || 0,
+            overdue_days: parseInt(r.overdue_days, 10) || 0
+        }))
     };
 }
 
 /**
- * fetchAttendance — 100% DB-driven, null-safe.
- *
- * Four independent aggregations, one round trip:
- *   - avg_attendance  : % over the selected period. number | null (null = no data).
- *   - chronic_absentees (AT RISK <75%): count of ACTIVE students whose
- *     academic-year-to-date cumulative % < 75. Always YTD, never the period.
- *   - total_working_days: COUNT(DISTINCT date) attendance was taken in the
- *     period (Fork A — no calendar table exists). integer | null.
- *   - staff_attendance: % over the period on staff_attendance. number | null
- *     (null = not tracked / no data — the table exists but may hold no rows).
- *
- * "Present" = present + late + half_day everywhere.
- * NULLIF(COUNT(*),0) makes an empty period return NULL, not 0 — do NOT coerce.
- * All queries filter da.deleted_at IS NULL (soft-deleted marks must not count).
- *
- * @param {string} period  'academic_year' (default) | 'month'
- * @param {number|string} schoolId  from JWT — never client input
+ * fetchAttendance — 100% DB-driven, null-safe including by_class and low_attendance_students.
  */
 async function fetchAttendance(period, schoolId) {
-    // Window for AVG ATTENDANCE, WORKING DAYS and the trend.
     const { from, to, label } = await resolveAttendancePeriod(schoolId, period);
-
-    // AT RISK is ALWAYS academic-year-to-date, independent of the selected
-    // period — it is the exam-eligibility bar. Resolve its own window.
     const atRiskWindow = await resolveAttendancePeriod(schoolId, 'academic_year');
 
     const [
@@ -299,6 +341,8 @@ async function fetchAttendance(period, schoolId) {
         [staffAtt],
         trend,
         [presentDays],
+        byClass,
+        lowAttendance,
     ] = await Promise.all([
         // ① AVG ATTENDANCE — % over the period, null when nothing marked.
         sql`
@@ -334,7 +378,7 @@ async function fetchAttendance(period, schoolId) {
         WHERE total_days > 0
           AND (present_days::numeric / total_days) < 0.75
     `,
-        // ③ WORKING DAYS — Fork A. NULL when no attendance taken (no data).
+        // ③ WORKING DAYS — NULL when no attendance taken (no data).
         sql`
         SELECT NULLIF(COUNT(DISTINCT da.attendance_date), 0) AS count
         FROM daily_attendance da
@@ -358,7 +402,7 @@ async function fetchAttendance(period, schoolId) {
           AND st.status_id = 1
           AND sa.attendance_date BETWEEN ${from} AND ${to}
     `,
-        // Trend — last 14 days of student attendance % (unchanged intent).
+        // ⑤ Trend — last 14 days of student attendance %
         sql`
         SELECT
             TO_CHAR(da.attendance_date, 'DD Mon') as label,
@@ -375,7 +419,7 @@ async function fetchAttendance(period, schoolId) {
         GROUP BY da.attendance_date
         ORDER BY da.attendance_date
     `,
-        // Aggregate present student-days over the period (context, not a card).
+        // ⑥ Aggregate present student-days over the period
         sql`
         SELECT COUNT(*)::int AS count
         FROM daily_attendance da
@@ -386,6 +430,87 @@ async function fetchAttendance(period, schoolId) {
           AND da.status IN ('present', 'late', 'half_day')
           AND da.attendance_date BETWEEN ${from} AND ${to}
     `,
+        // ⑦ Class attendance breakdown
+        sql`
+        WITH class_att AS (
+            SELECT 
+                cs.id as class_section_id,
+                c.name as class_name,
+                sec.name as section_name,
+                COUNT(DISTINCT s.id) as total_students,
+                COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day')) as present_count,
+                COUNT(*) as total_marks
+            FROM daily_attendance da
+            JOIN student_enrollments se ON se.id = da.student_enrollment_id
+            JOIN students s ON s.id = se.student_id
+            JOIN class_sections cs ON se.class_section_id = cs.id
+            JOIN classes c ON cs.class_id = c.id
+            JOIN sections sec ON cs.section_id = sec.id
+            WHERE s.school_id = ${schoolId}
+              AND s.status_id = 1
+              AND s.deleted_at IS NULL
+              AND da.deleted_at IS NULL
+              AND da.attendance_date BETWEEN ${from} AND ${to}
+            GROUP BY cs.id, c.name, sec.name
+        ),
+        class_risk AS (
+            SELECT 
+                se.class_section_id,
+                COUNT(DISTINCT se.student_id) as below_threshold
+            FROM (
+                SELECT 
+                    se.class_section_id,
+                    se.student_id,
+                    COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day')) as present_days,
+                    COUNT(*) as total_days
+                FROM daily_attendance da
+                JOIN student_enrollments se ON se.id = da.student_enrollment_id
+                JOIN students s ON s.id = se.student_id
+                WHERE s.school_id = ${schoolId}
+                  AND s.status_id = 1
+                  AND s.deleted_at IS NULL
+                  AND da.deleted_at IS NULL
+                  AND da.attendance_date BETWEEN ${atRiskWindow.from} AND ${atRiskWindow.to}
+                GROUP BY se.class_section_id, se.student_id
+                HAVING COUNT(*) > 0 AND (COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day'))::float / COUNT(*)) < 0.75
+            ) se
+            GROUP BY se.class_section_id
+        )
+        SELECT 
+            ca.class_name,
+            ca.section_name,
+            ROUND((ca.present_count::numeric / NULLIF(ca.total_marks, 0)::numeric) * 100, 1)::float as avg_pct,
+            ca.total_students::int,
+            COALESCE(cr.below_threshold, 0)::int as below_threshold
+        FROM class_att ca
+        LEFT JOIN class_risk cr ON ca.class_section_id = cr.class_section_id
+        ORDER BY ca.class_name, ca.section_name
+    `,
+        // ⑧ Low attendance students (under 75% YTD)
+        sql`
+        SELECT 
+            p.display_name as student_name,
+            c.name || ' ' || sec.name as class_section,
+            ROUND((COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day'))::numeric / NULLIF(COUNT(*), 0)::numeric) * 100, 1)::float as attendance_pct,
+            COUNT(*) FILTER (WHERE da.status = 'absent')::int as absent_days
+        FROM daily_attendance da
+        JOIN student_enrollments se ON se.id = da.student_enrollment_id
+        JOIN students s ON s.id = se.student_id
+        JOIN persons p ON s.person_id = p.id
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE s.school_id = ${schoolId}
+          AND s.status_id = 1
+          AND s.deleted_at IS NULL
+          AND da.deleted_at IS NULL
+          AND da.attendance_date BETWEEN ${atRiskWindow.from} AND ${atRiskWindow.to}
+        GROUP BY s.id, p.display_name, c.name, sec.name
+        HAVING COUNT(*) > 0 
+           AND (COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day'))::numeric / COUNT(*)::numeric) < 0.75
+        ORDER BY attendance_pct ASC
+        LIMIT 25
+    `,
     ]);
 
     const workingDaysCount = workingDays.count === null || workingDays.count === undefined
@@ -393,25 +518,31 @@ async function fetchAttendance(period, schoolId) {
         : parseInt(workingDays.count, 10);
 
     return {
-        // Window context so the frontend can render empty states / labels.
         period: { from, to, label },
-        // number | null — null means "no attendance data", render "—" not "0%".
         avg_attendance: toPct(avgAtt.pct),
-        // integer — 0 is a genuine, good-news value.
         chronic_absentees: parseInt(chronic.count, 10) || 0,
         total_present_days: parseInt(presentDays.count, 10) || 0,
-        // integer | null — null means no attendance taken in the window.
         total_working_days: workingDaysCount,
-        // number | null — null means staff attendance not tracked / no data.
         staff_attendance: toPct(staffAtt.pct),
         trend: trend.map(t => ({ label: t.label, value: toPct(t.value) ?? 0 })),
-        by_class: [],
-        low_attendance_students: []
+        by_class: byClass.map(r => ({
+            class_name: r.class_name,
+            section_name: r.section_name,
+            avg_pct: toPct(r.avg_pct) ?? 0,
+            total_students: parseInt(r.total_students, 10) || 0,
+            below_threshold: parseInt(r.below_threshold, 10) || 0,
+        })),
+        low_attendance_students: lowAttendance.map(r => ({
+            student_name: r.student_name,
+            class_section: r.class_section,
+            attendance_pct: toPct(r.attendance_pct) ?? 0,
+            absent_days: parseInt(r.absent_days, 10) || 0,
+        }))
     };
 }
 
 /**
- * fetchAcademics — 100% DB-driven
+ * fetchAcademics — 100% DB-driven including by_subject breakdown
  */
 async function fetchAcademics(range, schoolId) {
     const start = getDateRange(range);
@@ -423,6 +554,7 @@ async function fetchAcademics(range, schoolId) {
         weakSubjects,
         [examsCount],
         trend,
+        bySubject,
     ] = await Promise.all([
         sql`
         SELECT COALESCE(AVG(m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100), 0)::FLOAT as avg
@@ -499,6 +631,23 @@ async function fetchAcademics(range, schoolId) {
         GROUP BY e.id, e.name, e.start_date
         ORDER BY e.start_date
     `,
+        sql`
+        SELECT 
+            sub.name as subject_name,
+            ROUND(AVG(m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::numeric, 1)::float as avg_score,
+            ROUND((COUNT(*) FILTER (WHERE (m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100) >= 35)::numeric / NULLIF(COUNT(*), 0)::numeric * 100), 1)::float as pass_rate,
+            ROUND(MAX(m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::numeric, 1)::float as highest,
+            ROUND(MIN(m.marks_obtained::FLOAT / NULLIF(es.max_marks, 0) * 100)::numeric, 1)::float as lowest
+        FROM marks m
+        JOIN exam_subjects es ON m.exam_subject_id = es.id
+        JOIN subjects sub ON es.subject_id = sub.id
+        JOIN student_enrollments se ON m.student_enrollment_id = se.id
+        JOIN students s ON se.student_id = s.id
+        WHERE s.school_id = ${schoolId}
+          AND m.created_at >= ${start}
+        GROUP BY sub.id, sub.name
+        ORDER BY avg_score DESC
+    `,
     ]);
 
     return {
@@ -508,12 +657,18 @@ async function fetchAcademics(range, schoolId) {
         weakest_subject: weakSubjects.length > 0 ? weakSubjects[0].name : '—',
         exams_conducted: parseInt(examsCount.count) || 0,
         trend: trend.map(t => ({ label: t.label, value: Math.round(parseFloat(t.value) || 0) })),
-        by_subject: []
+        by_subject: bySubject.map(s => ({
+            subject_name: s.subject_name,
+            avg_score: parseFloat(s.avg_score) || 0,
+            pass_rate: parseFloat(s.pass_rate) || 0,
+            highest: parseFloat(s.highest) || 0,
+            lowest: parseFloat(s.lowest) || 0,
+        }))
     };
 }
 
 /**
- * fetchStaff — 100% DB-driven
+ * fetchStaff — 100% DB-driven including by_department breakdown
  */
 async function fetchStaff(schoolId) {
     const start = getDateRange('month');
@@ -525,6 +680,7 @@ async function fetchStaff(schoolId) {
         [staffAttPct],
         [newJoins],
         [resigned],
+        byDept,
     ] = await Promise.all([
         sql`
         SELECT COUNT(*)::int as count FROM staff WHERE deleted_at IS NULL AND school_id = ${schoolId}
@@ -566,6 +722,25 @@ async function fetchStaff(schoolId) {
           AND deleted_at >= ${start}
           AND school_id = ${schoolId}
     `,
+        sql`
+        SELECT 
+            COALESCE(sd.name, 'General') as department,
+            COUNT(st.id)::int as count,
+            COUNT(st.id) FILTER (
+                WHERE EXISTS (
+                    SELECT 1 FROM staff_attendance sa 
+                    WHERE sa.staff_id = st.id 
+                      AND sa.attendance_date = CURRENT_DATE 
+                      AND sa.status IN ('present', 'late', 'half_day')
+                      AND sa.deleted_at IS NULL
+                )
+            )::int as present
+        FROM staff st
+        LEFT JOIN staff_designations sd ON st.designation_id = sd.id
+        WHERE st.school_id = ${schoolId} AND st.deleted_at IS NULL AND st.status_id = 1
+        GROUP BY sd.id, sd.name
+        ORDER BY count DESC
+    `,
     ]);
 
     return {
@@ -574,14 +749,22 @@ async function fetchStaff(schoolId) {
         on_leave_today: parseInt(onLeave.count) || 0,
         avg_staff_attendance: Math.round(parseFloat(staffAttPct.pct) || 0),
         new_joinings: parseInt(newJoins.count) || 0,
-        resignations: parseInt(resigned.count) || 0
+        resignations: parseInt(resigned.count) || 0,
+        by_department: byDept.map(d => {
+            const count = parseInt(d.count, 10) || 0;
+            const present = parseInt(d.present, 10) || 0;
+            return {
+                department: d.department,
+                count,
+                present,
+                attendance_pct: count > 0 ? Math.round((present / count) * 100) : 0,
+            };
+        })
     };
 }
 
 /**
- * generateInsights — dynamically generate alerts based on real DB data.
- * Attendance metrics may now be null (no data) — insights must skip nulls
- * rather than treat them as 0 and raise a false "critically low" alarm.
+ * generateInsights — dynamically generate alerts based on real DB data with actionable routes.
  */
 function generateInsights(financials, attendance, academics, staff) {
     const insights = [];
@@ -594,6 +777,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'high',
             category: 'finance',
             message: `Outstanding dues at ₹${(financials.outstanding_dues / 1000).toFixed(1)}K — needs immediate attention.`,
+            action_route: '/admin/finance',
             created_at: new Date().toISOString()
         });
     }
@@ -603,6 +787,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'high',
             category: 'finance',
             message: `Collection efficiency is only ${financials.collection_efficiency}% — significantly below target.`,
+            action_route: '/admin/finance',
             created_at: new Date().toISOString()
         });
     } else if (financials.collection_efficiency < 85) {
@@ -611,11 +796,12 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'medium',
             category: 'finance',
             message: `Collection efficiency at ${financials.collection_efficiency}% — room for improvement.`,
+            action_route: '/admin/finance',
             created_at: new Date().toISOString()
         });
     }
 
-    // Attendance alerts — only when we actually have an attendance figure.
+    // Attendance alerts
     if (attendance.avg_attendance !== null) {
         if (attendance.avg_attendance < 75) {
             insights.push({
@@ -623,6 +809,7 @@ function generateInsights(financials, attendance, academics, staff) {
                 severity: 'high',
                 category: 'attendance',
                 message: `Average attendance critically low at ${attendance.avg_attendance}%.`,
+                action_route: '/admin/attendance-risk',
                 created_at: new Date().toISOString()
             });
         } else if (attendance.avg_attendance < 85) {
@@ -631,6 +818,7 @@ function generateInsights(financials, attendance, academics, staff) {
                 severity: 'medium',
                 category: 'attendance',
                 message: `Average attendance at ${attendance.avg_attendance}% — below target of 85%.`,
+                action_route: '/admin/attendance-risk',
                 created_at: new Date().toISOString()
             });
         }
@@ -641,6 +829,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'high',
             category: 'attendance',
             message: `${attendance.chronic_absentees} students with attendance below 75% — immediate intervention needed.`,
+            action_route: '/admin/attendance-risk',
             created_at: new Date().toISOString()
         });
     } else if (attendance.chronic_absentees > 0) {
@@ -649,6 +838,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'medium',
             category: 'attendance',
             message: `${attendance.chronic_absentees} student(s) at risk with attendance below 75%.`,
+            action_route: '/admin/attendance-risk',
             created_at: new Date().toISOString()
         });
     }
@@ -660,6 +850,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'high',
             category: 'academic',
             message: `Pass rate is only ${academics.pass_rate}% — academic support programs recommended.`,
+            action_route: '/admin/exam-analytics',
             created_at: new Date().toISOString()
         });
     } else if (academics.pass_rate < 85) {
@@ -668,6 +859,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'medium',
             category: 'academic',
             message: `Pass rate at ${academics.pass_rate}% — consider additional tutoring sessions.`,
+            action_route: '/admin/exam-analytics',
             created_at: new Date().toISOString()
         });
     }
@@ -679,6 +871,7 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'medium',
             category: 'staff',
             message: `${staff.on_leave_today} staff members on leave today — may affect class schedules.`,
+            action_route: '/admin/manage-staff',
             created_at: new Date().toISOString()
         });
     }
@@ -688,19 +881,20 @@ function generateInsights(financials, attendance, academics, staff) {
             severity: 'medium',
             category: 'staff',
             message: `Staff attendance at ${staff.avg_staff_attendance}% this month — below expected standard.`,
+            action_route: '/admin/manage-staff',
             created_at: new Date().toISOString()
         });
     }
 
-    return insights.slice(0, 5); // Return top 5 most relevant
+    return insights.slice(0, 10);
 }
 
 const _analyticsCache = new Map();
 
-async function getOrFetchAnalytics(range, period, schoolId) {
+async function getOrFetchAnalytics(range, period, schoolId, force = false) {
     const key = `${schoolId}:${range}:${period}`;
     const cached = _analyticsCache.get(key);
-    if (cached && Date.now() < cached.expiresAt) return cached.data;
+    if (!force && cached && Date.now() < cached.expiresAt) return cached.data;
 
     const [financials, attendance, academics, staff] = await Promise.all([
         fetchFinancials(range, schoolId),
@@ -709,23 +903,21 @@ async function getOrFetchAnalytics(range, period, schoolId) {
         fetchStaff(schoolId),
     ]);
     const data = { financials, attendance, academics, staff };
-    _analyticsCache.set(key, { data, expiresAt: Date.now() + 5 * 60_000 });
+    // Short 15s cache to avoid redundant roundtrips while keeping data fresh
+    _analyticsCache.set(key, { data, expiresAt: Date.now() + 15_000 });
     return data;
 }
 
 /**
  * GET /admin/analytics — Full dashboard snapshot, 100% DB-driven.
- * `range`  drives financials/academics (month|quarter|year).
- * `period` drives the attendance cards (academic_year|month, default academic_year).
- * AT RISK is always academic-year-to-date regardless of `period`.
  */
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
     const { range = 'month' } = req.query;
     const period = normalizeAttendancePeriod(req.query.period);
+    const force = req.query.force === 'true';
     const schoolId = req.schoolId;
 
-    const { financials, attendance, academics, staff } = await getOrFetchAnalytics(range, period, schoolId);
-
+    const { financials, attendance, academics, staff } = await getOrFetchAnalytics(range, period, schoolId, force);
     const insights = generateInsights(financials, attendance, academics, staff);
 
     return sendSuccess(res, req.schoolId, {
@@ -764,8 +956,9 @@ router.get('/staff', requireAuth, asyncHandler(async (req, res) => {
 router.get('/insights', requireAuth, asyncHandler(async (req, res) => {
     const range = req.query.range || 'month';
     const period = normalizeAttendancePeriod(req.query.period);
+    const force = req.query.force === 'true';
     const schoolId = req.schoolId;
-    const { financials, attendance, academics, staff } = await getOrFetchAnalytics(range, period, schoolId);
+    const { financials, attendance, academics, staff } = await getOrFetchAnalytics(range, period, schoolId, force);
     const insights = generateInsights(financials, attendance, academics, staff);
     return sendSuccess(res, req.schoolId, insights);
 }));
@@ -777,5 +970,132 @@ router.patch('/insights/:id/dismiss', requireAuth, asyncHandler(async (req, res)
 router.post('/export', requireAuth, asyncHandler(async (req, res) => {
     return sendSuccess(res, req.schoolId, { download_url: 'https://example.com/report.pdf' });
 }));
+
+/**
+ * GET /admin/analytics/student-progress-tracker/:query
+ * Live DB student lookup with attendance, complaints, and subject performance comparison.
+ */
+router.get('/student-progress-tracker/:query', requireAuth, asyncHandler(async (req, res) => {
+    const rawQuery = decodeURIComponent(req.params.query || '').trim();
+    const schoolId = req.schoolId;
+
+    if (!rawQuery) {
+        return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const [student] = await sql`
+        SELECT s.id, s.admission_no, p.display_name as name,
+               c.name || ' ' || sec.name as class,
+               COALESCE(se.roll_number::text, '—') as roll_no,
+               COALESCE(
+                 (SELECT contact_value FROM person_contacts WHERE person_id = p.id AND contact_type = 'phone' LIMIT 1),
+                 '—'
+               ) as contact,
+               COALESCE(
+                 (SELECT pp.display_name FROM student_parents sp JOIN parents par ON sp.parent_id = par.id JOIN persons pp ON par.person_id = pp.id WHERE sp.student_id = s.id LIMIT 1),
+                 '—'
+               ) as guardian,
+               se.id as enrollment_id
+        FROM students s
+        JOIN persons p ON s.person_id = p.id
+        JOIN student_enrollments se ON s.id = se.student_id AND se.status = 'active'
+        JOIN class_sections cs ON se.class_section_id = cs.id
+        JOIN classes c ON cs.class_id = c.id
+        JOIN sections sec ON cs.section_id = sec.id
+        WHERE s.school_id = ${schoolId}
+          AND s.deleted_at IS NULL
+          AND (s.id::text = ${rawQuery} OR s.admission_no ILIKE ${rawQuery} OR s.admission_no ILIKE ${rawQuery + '%'} OR p.display_name ILIKE ${'%' + rawQuery + '%'})
+        ORDER BY CASE WHEN s.admission_no ILIKE ${rawQuery} THEN 0 WHEN p.display_name ILIKE ${rawQuery} THEN 1 ELSE 2 END
+        LIMIT 1
+    `;
+
+    if (!student) {
+        return res.status(404).json({ error: `Student '${rawQuery}' not found` });
+    }
+
+    const [[att], [comp], marks] = await Promise.all([
+        sql`
+            SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE da.status IN ('present', 'late', 'half_day')) / NULLIF(COUNT(*), 0), 1)::float as pct
+            FROM daily_attendance da
+            WHERE da.student_enrollment_id = ${student.enrollment_id}
+              AND da.deleted_at IS NULL
+        `,
+        sql`
+            SELECT 
+                COUNT(*)::int as total,
+                COUNT(*) FILTER (WHERE status = 'resolved')::int as resolved,
+                COUNT(*) FILTER (WHERE status IN ('open', 'in_progress'))::int as pending,
+                COUNT(*) FILTER (WHERE priority = 'urgent')::int as critical
+            FROM complaints
+            WHERE raised_for_student_id = ${student.id}
+              AND deleted_at IS NULL
+        `,
+        sql`
+            WITH recent_exams AS (
+                SELECT DISTINCT e.id, e.name, e.start_date
+                FROM marks m
+                JOIN exam_subjects es ON m.exam_subject_id = es.id
+                JOIN exams e ON es.exam_id = e.id
+                WHERE m.student_enrollment_id = ${student.enrollment_id}
+                ORDER BY e.start_date DESC NULLS LAST
+                LIMIT 2
+            ),
+            exam_ranks AS (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY start_date DESC NULLS LAST) as rn
+                FROM recent_exams
+            )
+            SELECT 
+                sub.name as subject,
+                COALESCE(MAX(m.marks_obtained) FILTER (WHERE er.rn = 2), MAX(m.marks_obtained) FILTER (WHERE er.rn = 1), 0)::float as prev_marks,
+                COALESCE(MAX(m.marks_obtained) FILTER (WHERE er.rn = 1), 0)::float as curr_marks,
+                COALESCE(MAX(es.max_marks), 100)::float as max_marks
+            FROM marks m
+            JOIN exam_subjects es ON m.exam_subject_id = es.id
+            JOIN subjects sub ON es.subject_id = sub.id
+            JOIN exam_ranks er ON es.exam_id = er.id
+            WHERE m.student_enrollment_id = ${student.enrollment_id}
+            GROUP BY sub.id, sub.name
+            ORDER BY sub.name
+        `
+    ]);
+
+    const performance = marks.map(m => ({
+        subject: m.subject,
+        prevMarks: parseFloat(m.prev_marks) || 0,
+        currMarks: parseFloat(m.curr_marks) || 0,
+        maxMarks: parseFloat(m.max_marks) || 100
+    }));
+
+    let status = 'stable';
+    if (performance.length > 0) {
+        const deltas = performance.map(p => ((p.currMarks - p.prevMarks) / (p.maxMarks || 100)) * 100);
+        const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+        if (avgDelta > 2) status = 'improving';
+        else if (avgDelta < -2) status = 'declining';
+    }
+
+    const payload = {
+        id: student.admission_no || String(student.id),
+        name: student.name,
+        class: student.class,
+        rollNo: student.roll_no,
+        guardian: student.guardian,
+        contact: student.contact,
+        attendance: att?.pct != null ? parseFloat(att.pct) : 100,
+        complaints: {
+            total: parseInt(comp.total, 10) || 0,
+            resolved: parseInt(comp.resolved, 10) || 0,
+            pending: parseInt(comp.pending, 10) || 0,
+            critical: parseInt(comp.critical, 10) || 0
+        },
+        performance,
+        status
+    };
+
+    return sendSuccess(res, req.schoolId, payload);
+}));
+
+// Route fallback for /risk, /heatmap, /talking-points/:id, /net-balance
+router.use('/', analyticsRouter);
 
 export default router;

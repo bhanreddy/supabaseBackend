@@ -1,6 +1,11 @@
 import sql from '../db.js';
+import { isStaffPortalIdentityPath } from '../utils/staffPortalAccessPath.js';
 
 const STAFF_PORTAL_ROLES = new Set(['staff', 'teacher', 'principal']);
+
+function requestPath(req) {
+  return String(req.originalUrl || req.url || req.path || '').split('?')[0];
+}
 
 /**
  * Allow an authenticated admin to operate the staff portal as one selected
@@ -15,6 +20,7 @@ const STAFF_PORTAL_ROLES = new Set(['staff', 'teacher', 'principal']);
 export const resolveStaffPortalAccess = async (req, res, next) => {
   const rawTarget = req.headers['x-staff-portal-id'];
   if (!rawTarget) return next();
+  if (isStaffPortalIdentityPath(requestPath(req))) return next();
 
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized' });

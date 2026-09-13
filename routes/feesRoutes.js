@@ -26,12 +26,18 @@ import {
   isPartialFeeDirectCollectEnabled,
 } from '../services/feePaymentService.js';
 import { createApprovalRequest } from '../services/approvalService.js';
+import { listStudentFinesForLedger, allocateFinePaymentsToReceipt } from '../services/fineService.js';
 import {
   requestFeePaymentDeletion,
   executeApprovedFeePaymentDeletion,
 } from '../services/feePaymentDeletionService.js';
+import feeRecoveryRouter from './feeRecoveryRoutes.js';
+import { CalendarService } from '../services/calendarService.js';
 
 const router = express.Router();
+
+// Mount Fee Recovery Intelligence sub-router
+router.use('/recovery', feeRecoveryRouter);
 
 const STRUCTURE_SELECT = sql`
   fs.id, fs.class_id, fs.section_id, fs.fee_type_id, fs.academic_year_id,
@@ -403,11 +409,56 @@ router.post('/structure', requirePermission('fees.manage'), asyncHandler(async (
     return res.status(500).json({ error: 'Failed to save fee structure' });
   }
 
+  // Sync to academic calendar asynchronously
+  syncFeeStructureToCalendar(req.schoolId, structure.id).catch(err =>
+    console.error('[feesRoutes] Calendar sync failed:', err.message)
+  );
+
   return sendSuccess(res, req.schoolId, {
     message: existing ? 'Fee structure updated' : 'Fee structure created',
     structure,
   }, existing ? 200 : 201);
 }));
+
+/**
+ * Helper to sync fee structure due dates to the academic calendar
+ */
+async function syncFeeStructureToCalendar(schoolId, structureId) {
+  try {
+    const [fs] = await sql`
+      SELECT fs.*, ft.name as fee_name
+      FROM fee_structures fs
+      LEFT JOIN fee_types ft ON ft.id = fs.fee_type_id
+      WHERE fs.id = ${structureId} AND fs.school_id = ${schoolId} AND fs.deleted_at IS NULL
+    `;
+    if (!fs || !fs.due_date) {
+      await CalendarService.syncSourceEvent(schoolId, 'FEES', structureId, null);
+      return;
+    }
+    const formattedAmount = fs.amount ? ` (₹${Number(fs.amount).toLocaleString('en-IN')})` : '';
+    const title = `Fee Due: ${fs.fee_name || 'School Fee'}${formattedAmount}`;
+    const targetType = fs.section_id ? 'SECTION' : (fs.class_id ? 'CLASS' : 'ENTIRE_SCHOOL');
+
+    await CalendarService.syncSourceEvent(schoolId, 'FEES', structureId, {
+      title,
+      description: `Fee payment due for ${fs.fee_name || 'School Fee'}. Please clear dues to avoid late fees.`,
+      event_type: 'FEE_DUE',
+      category: 'FEES',
+      start_date: fs.due_date,
+      end_date: fs.due_date,
+      all_day: true,
+      is_holiday: false,
+      is_working_day: true,
+      priority: 'HIGH',
+      status: 'PUBLISHED',
+      target_type: targetType,
+      target_ids: fs.section_id ? [fs.section_id] : (fs.class_id ? [fs.class_id] : []),
+      academic_year_id: fs.academic_year_id,
+    });
+  } catch (err) {
+    console.error(`[feesRoutes] Failed to sync fee structure ${structureId} to calendar:`, err.message);
+  }
+}
 
 /**
  * PUT /fees/structure/:id
@@ -436,6 +487,11 @@ router.put('/structure/:id', requirePermission('fees.manage'), asyncHandler(asyn
   if (!updated) {
     return res.status(404).json({ error: 'Fee structure not found' });
   }
+
+  // Sync to academic calendar asynchronously
+  syncFeeStructureToCalendar(req.schoolId, updated.id).catch(err =>
+    console.error('[feesRoutes] Calendar sync failed:', err.message)
+  );
 
   return sendSuccess(res, req.schoolId, { message: 'Fee structure updated', structure: updated });
 }));
@@ -486,6 +542,11 @@ router.delete('/structure/:id', requirePermission('fees.manage'), asyncHandler(a
       WHERE id = ${id} AND school_id = ${req.schoolId}
     `;
   });
+
+  // Sync deletion to academic calendar
+  CalendarService.syncSourceEvent(req.schoolId, 'FEES', id, null).catch(err =>
+    console.error('[feesRoutes] Calendar deletion sync failed:', err.message)
+  );
 
   return sendSuccess(res, req.schoolId, { message: 'Fee structure deleted', id });
 }));
@@ -647,6 +708,11 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
     ? await getStudentTransportDue(studentId, activeYearCode, req.schoolId)
     : null;
 
+  // Query student's active fines
+  const { fines: fineRows, fine_due } = await listStudentFinesForLedger(req.schoolId, studentId);
+  const fineBalance = Number(fine_due.balance_due || 0);
+  const fineTotal = Number(fine_due.total_fines || 0);
+
   const tuitionBalance = Number(summary[0]?.balance || 0);
   const transportBalance = transportDue && !transportDue.fee_not_set
     ? Number(transportDue.balance_due || 0)
@@ -686,10 +752,16 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
     summary: {
       ...summary[0],
       transport_due: transportDue,
-      total_balance: tuitionBalance + transportBalance,
+      fine_due: {
+        total_fines: fineTotal,
+        balance_due: fineBalance,
+        count: fineRows.length,
+      },
+      total_balance: tuitionBalance + transportBalance + fineBalance,
     },
     fees,
     transport_due: transportDue,
+    fines: fineRows,
   });
 }));
 
@@ -857,10 +929,10 @@ router.post('/collect', requirePermission('fees.collect'), asyncHandler(async (r
  * blocked lines are reported so the collector can adjust and retry.
  */
 router.post('/collect-multi', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
-  const { items, payment_method, transaction_ref, remarks } = req.body;
+  const { items = [], fine_items = [], payment_method, transaction_ref, remarks } = req.body;
 
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'items must be a non-empty array of { student_fee_id, amount }' });
+  if ((!Array.isArray(items) || items.length === 0) && (!Array.isArray(fine_items) || fine_items.length === 0)) {
+    return res.status(400).json({ error: 'items or fine_items must be a non-empty array' });
   }
   if (items.length > 20) {
     return res.status(400).json({ error: 'Cannot collect more than 20 fee types in one receipt' });
@@ -928,19 +1000,36 @@ router.post('/collect-multi', requirePermission('fees.collect'), asyncHandler(as
       }
     }
 
-    const result = await executeCombinedTermFeePayment({
-      items: normalized,
-      payment_method,
-      transaction_ref,
-      remarks,
-      user: req.user,
-      schoolId: req.schoolId,
-    });
+    const result = items.length > 0
+      ? await executeCombinedTermFeePayment({
+        items: normalized,
+        payment_method,
+        transaction_ref,
+        remarks,
+        user: req.user,
+        schoolId: req.schoolId,
+      })
+      : { receipt: null, transaction: null };
+
+    let finePayments = [];
+    if (Array.isArray(fine_items) && fine_items.length > 0) {
+      finePayments = await allocateFinePaymentsToReceipt({
+        schoolId: req.schoolId,
+        fineItems: fine_items,
+        payment_method,
+        transaction_ref,
+        remarks,
+        user: req.user,
+        req,
+        receipt: result.receipt || null,
+      });
+    }
 
     return sendSuccess(res, req.schoolId, {
       message: 'Combined payment collected successfully',
-      receipt: result.receipt,
+      receipt: result.receipt || finePayments[0]?.receipt,
       transaction: result.transaction,
+      fine_payments: finePayments,
     }, 201);
   } catch (error) {
     if (error.status) {
@@ -1535,6 +1624,26 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
       transaction_ref: null,
       paid_at: receipt.issued_at,
     }];
+  }
+
+  if (items.length === 0) {
+    const finePayments = await sql`
+      SELECT
+        fp.amount,
+        COALESCE(fc.name, 'Fine / Penalty')::text AS fee_type,
+        fp.payment_method,
+        fp.transaction_ref,
+        fp.paid_at,
+        f.fine_no
+      FROM public.fine_payments fp
+      JOIN public.fines f ON fp.fine_id = f.id
+      JOIN public.fine_categories fc ON f.category_id = fc.id
+      WHERE fp.receipt_id = ${id}
+        AND fp.school_id = ${req.schoolId}
+    `;
+    if (finePayments.length > 0) {
+      items = finePayments;
+    }
   }
 
   const {

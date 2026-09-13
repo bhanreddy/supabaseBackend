@@ -5,6 +5,8 @@ import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import { translateFields } from '../services/geminiTranslator.js';
+import { emitSchoolEvent, AUTOMATION_EVENTS } from '../services/automationEventService.js';
+import { handleStaffLeaveCancelled } from '../services/leaveSubstitutionService.js';
 
 const router = express.Router();
 
@@ -209,15 +211,31 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
         reviewed_at = NOW()
       WHERE id = ${id}
       AND school_id = ${req.schoolId}
+      AND status = 'pending'
       RETURNING *
     `;
+    if (!updated) return res.status(409).json({ error: 'Leave was already reviewed by another user' });
 
     (async () => {
       try {
         if (status && existing.status !== status) {
           let eventType = null;
-          if (status === 'approved') eventType = 'LEAVE_APPROVED';
-          else if (status === 'rejected') eventType = 'LEAVE_REJECTED';
+          if (status === 'approved') {
+            eventType = 'LEAVE_APPROVED';
+            emitSchoolEvent(AUTOMATION_EVENTS.STAFF_LEAVE_APPROVED, {
+              schoolId: req.schoolId,
+              leaveId: id,
+              applicantId: existing.applicant_id,
+              startDate: updated.start_date,
+              endDate: updated.end_date,
+            });
+          } else if (status === 'rejected') {
+            eventType = 'LEAVE_REJECTED';
+            emitSchoolEvent(AUTOMATION_EVENTS.STAFF_LEAVE_CANCELLED, {
+              schoolId: req.schoolId,
+              leaveId: id,
+            });
+          }
 
           if (eventType) {
             await sendNotificationToUsers(
@@ -259,6 +277,13 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
       RETURNING *
     `;
 
+    if (status === 'cancelled') {
+      emitSchoolEvent(AUTOMATION_EVENTS.STAFF_LEAVE_CANCELLED, {
+        schoolId: req.schoolId,
+        leaveId: id,
+      });
+    }
+
     return sendSuccess(res, req.schoolId, { message: 'Leave updated', leave: updated });
   }
 
@@ -292,7 +317,12 @@ router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Can only delete pending leaves' });
   }
 
-  await sql`DELETE FROM leave_applications WHERE id = ${id} AND school_id = ${schoolId} AND school_id = ${req.schoolId}`;
+  await handleStaffLeaveCancelled({ schoolId: req.schoolId, leaveId: id });
+  await sql`DELETE FROM leave_applications WHERE id = ${id} AND school_id = ${schoolId}`;
+  emitSchoolEvent(AUTOMATION_EVENTS.STAFF_LEAVE_CANCELLED, {
+    schoolId: req.schoolId,
+    leaveId: id,
+  });
   return sendSuccess(res, req.schoolId, { message: 'Leave application deleted' });
 }));
 

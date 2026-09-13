@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireStudentPortal, resolveStudentId } from '../utils/studentPortal.js';
+import { listActiveStories } from '../services/schoolStoriesService.js';
+import { listActiveSlides } from '../services/schoolHeroSlidesService.js';
 
 const router = express.Router();
 
@@ -32,6 +34,7 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
         p.display_name,
         p.dob,
         p.gender_id,
+        p.photo_url,
         st.code AS status,
         (
           SELECT json_build_object(
@@ -94,8 +97,9 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
   const dayOfWeek = DOW[new Date().getDay()];
   const classSectionId = ctx.current_enrollment?.class_section_id;
   const academicYearId = ctx.current_enrollment?.academic_year_id;
+  const viewerUserId = req.user?.internal_id || req.user?.id || null;
 
-  const [notices, attendanceBlock, upcomingFee, timetableToday] = await Promise.all([
+  const [notices, attendanceBlock, upcomingFee, timetableToday, unreadBlock, heroSlides, schoolStories] = await Promise.all([
     sql`
         SELECT
           n.id, n.title, n.content, n.title_te, n.content_te, n.audience, n.audiences, n.priority,
@@ -200,6 +204,24 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
             ORDER BY ts.period_number
           `
       : sql`SELECT id FROM timetable_slots WHERE false`,
+    viewerUserId
+      ? sql`
+            SELECT COUNT(*)::int AS count
+            FROM notifications
+            WHERE user_id = ${viewerUserId}
+              AND school_id = ${schoolId}
+              AND deleted_at IS NULL
+              AND read_at IS NULL
+          `
+      : sql`SELECT 0::int AS count`,
+    listActiveSlides(schoolId, {
+      ...req.user,
+      student_id: studentId,
+      studentId: studentId,
+      class_section_id: classSectionId,
+      classSectionId: classSectionId,
+    }),
+    listActiveStories(schoolId, viewerUserId),
   ]);
 
   const profile = {
@@ -211,6 +233,7 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
     display_name: ctx.display_name,
     dob: ctx.dob,
     gender_id: ctx.gender_id,
+    photo_url: ctx.photo_url || null,
     status: ctx.status,
     current_enrollment: ctx.current_enrollment,
   };
@@ -228,6 +251,9 @@ router.get('/dashboard', requireAuth, requireStudentPortal, asyncHandler(async (
     },
     upcoming_fee: upcomingFee?.[0] || null,
     timetable_today: Array.isArray(timetableToday) ? timetableToday : [],
+    unread_notification_count: Number(unreadBlock?.[0]?.count || 0),
+    hero_slides: Array.isArray(heroSlides) ? heroSlides : [],
+    school_stories: Array.isArray(schoolStories) ? schoolStories : [],
   };
 
   return sendSuccess(res, schoolId, payload);

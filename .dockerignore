@@ -14,3 +14,10 @@ __pycache__
 test
 tests
 coverage
+backups/
+dumps/
+*.dump
+*.backup
+*.sql
+!migrations/*.sql
+!schema.sql

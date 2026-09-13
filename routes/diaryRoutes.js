@@ -10,6 +10,8 @@ import {
   presentDiaryEntriesForReader,
   presentDiaryEntryForReader,
 } from '../utils/diaryPresentation.js';
+import { linkDiaryToSyllabus, validateSyllabusLinks } from '../services/syllabusService.js';
+import { CalendarService } from '../services/calendarService.js';
 
 const router = express.Router();
 
@@ -385,7 +387,20 @@ router.get('/:id', requirePermission('diary.view'), asyncHandler(async (req, res
  * POST /diary — Create diary entry
  */
 router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res) => {
-  const { class_section_id, subject_id, entry_date, title, content, homework_due_date, attachments, input_language } = req.body;
+  const {
+    class_section_id,
+    subject_id,
+    entry_date,
+    title,
+    content,
+    homework_due_date,
+    attachments,
+    input_language,
+    syllabus_chapter_id,
+    syllabus_topic_id,
+    syllabus_status,
+    academic_plan_item_id,
+  } = req.body;
   const schoolId = req.schoolId;
 
   logDebug(`[Diary] Creating entry: class=${class_section_id}, date=${entry_date}, subject=${subject_id}, user=${req.user.internal_id}`);
@@ -397,6 +412,10 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
   const normalizedSubjectId = subject_id || null;
   const target = await validateDiaryTarget(schoolId, class_section_id, normalizedSubjectId);
   if (!target.ok) return res.status(target.status).json({ error: target.error });
+  await validateSyllabusLinks(schoolId, {
+    chapterId: syllabus_chapter_id || null,
+    topicId: syllabus_topic_id || null,
+  });
 
   const resolved = await resolveDiaryTextFields({ title, content, input_language });
   const { title: resolvedTitle, title_te, content: resolvedContent, content_te } = resolved;
@@ -405,9 +424,15 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
   let createdNew = true;
   try {
     const result = await sql`
-      INSERT INTO diary_entries (school_id, class_section_id, subject_id, entry_date, title, title_te, content, content_te, homework_due_date, attachments, created_by)
-      VALUES (${schoolId}, ${class_section_id}, ${normalizedSubjectId}, ${entry_date}, ${resolvedTitle}, ${title_te}, ${resolvedContent}, ${content_te},
-              ${homework_due_date || null}, ${attachments ? JSON.stringify(attachments) : null}, ${req.user.internal_id})
+      INSERT INTO diary_entries (
+        school_id, class_section_id, subject_id, entry_date, title, title_te, content, content_te,
+        homework_due_date, attachments, created_by, syllabus_chapter_id, syllabus_topic_id, academic_plan_item_id
+      )
+      VALUES (
+        ${schoolId}, ${class_section_id}, ${normalizedSubjectId}, ${entry_date}, ${resolvedTitle}, ${title_te}, ${resolvedContent}, ${content_te},
+        ${homework_due_date || null}, ${attachments ? JSON.stringify(attachments) : null}, ${req.user.internal_id},
+        ${syllabus_chapter_id || null}, ${syllabus_topic_id || null}, ${academic_plan_item_id || null}
+      )
       ON CONFLICT (school_id, class_section_id, subject_id, entry_date, created_by)
       DO UPDATE SET
         title = EXCLUDED.title,
@@ -416,6 +441,9 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
         content_te = EXCLUDED.content_te,
         homework_due_date = EXCLUDED.homework_due_date,
         attachments = EXCLUDED.attachments,
+        syllabus_chapter_id = COALESCE(EXCLUDED.syllabus_chapter_id, diary_entries.syllabus_chapter_id),
+        syllabus_topic_id = COALESCE(EXCLUDED.syllabus_topic_id, diary_entries.syllabus_topic_id),
+        academic_plan_item_id = COALESCE(EXCLUDED.academic_plan_item_id, diary_entries.academic_plan_item_id),
         deleted_at = NULL,
         updated_at = now()
       RETURNING *, (xmax = 0) AS _was_insert
@@ -424,6 +452,18 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     createdNew = row._was_insert === true;
     const { _was_insert, ...rest } = row;
     entry = rest;
+
+    if (syllabus_chapter_id || syllabus_topic_id) {
+      try {
+        await linkDiaryToSyllabus(schoolId, {
+          chapterId: syllabus_chapter_id,
+          topicId: syllabus_topic_id,
+          status: syllabus_status || 'IN_PROGRESS',
+        });
+      } catch (sylErr) {
+        logDebug(`[Diary] Syllabus Link Error: ${sylErr.message}`);
+      }
+    }
   } catch (dbErr) {
     logDebug(`[Diary] DB Insert Error: ${dbErr.message}`);
     throw dbErr;
@@ -436,9 +476,51 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
       AND entry_date < (CURRENT_DATE - (${diaryRetentionOffsetDays}) * INTERVAL '1 day')
   `;
 
+  // Asynchronously sync homework due date to calendar
+  syncDiaryToCalendar(schoolId, entry.id).catch(err =>
+    console.error('[diaryRoutes] Calendar sync failed:', err.message)
+  );
+
   const message = createdNew ? 'Diary entry created' : 'Diary entry updated';
   return sendSuccess(res, req.schoolId, { message, entry }, createdNew ? 201 : 200);
 }));
+
+/**
+ * Helper to sync homework assignments to the academic calendar
+ */
+async function syncDiaryToCalendar(schoolId, diaryId) {
+  try {
+    const [entry] = await sql`
+      SELECT d.*, s.name as subject_name, cs.class_id, cs.section_id
+      FROM diary_entries d
+      LEFT JOIN subjects s ON s.id = d.subject_id
+      LEFT JOIN class_sections cs ON cs.id = d.class_section_id
+      WHERE d.id = ${diaryId} AND d.school_id = ${schoolId} AND d.deleted_at IS NULL
+    `;
+    if (!entry || !entry.homework_due_date) {
+      await CalendarService.syncSourceEvent(schoolId, 'HOMEWORK', diaryId, null);
+      return;
+    }
+
+    const title = `Homework: ${entry.subject_name ? entry.subject_name + ' - ' : ''}${entry.title}`;
+    await CalendarService.syncSourceEvent(schoolId, 'HOMEWORK', diaryId, {
+      title,
+      description: entry.content || 'Homework assignment due date.',
+      event_type: 'HOMEWORK',
+      start_date: entry.homework_due_date,
+      end_date: entry.homework_due_date,
+      all_day: true,
+      is_holiday: false,
+      is_working_day: true,
+      priority: 'NORMAL',
+      status: 'PUBLISHED',
+      target_type: 'SECTION',
+      target_ids: [entry.class_section_id],
+    });
+  } catch (err) {
+    console.error(`[diaryRoutes] Failed to sync diary ${diaryId} to calendar:`, err.message);
+  }
+}
 
 /**
  * PUT /diary/:id
@@ -446,7 +528,17 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
  */
 router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { subject_id, title, content, homework_due_date, attachments, input_language } = req.body;
+  const {
+    subject_id,
+    title,
+    content,
+    homework_due_date,
+    attachments,
+    input_language,
+    syllabus_chapter_id,
+    syllabus_topic_id,
+    syllabus_status,
+  } = req.body;
   const schoolId = req.schoolId;
 
   // DR3: Scoped ownership check
@@ -473,6 +565,10 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
   if (content !== undefined && !String(content).trim()) {
     return res.status(400).json({ error: 'content cannot be empty' });
   }
+  await validateSyllabusLinks(schoolId, {
+    chapterId: syllabus_chapter_id || null,
+    topicId: syllabus_topic_id || null,
+  });
 
   logDebug(`[Diary] Updating entry: id=${id}, subject=${subject_id}`);
 
@@ -516,12 +612,31 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
         content_te = ${sql_content_te},
         homework_due_date = ${sql_homework_due_date},
         attachments = ${sql_attachments},
+        syllabus_chapter_id = COALESCE(${syllabus_chapter_id || null}, syllabus_chapter_id),
+        syllabus_topic_id = COALESCE(${syllabus_topic_id || null}, syllabus_topic_id),
         updated_at = now()
       WHERE id = ${id}
       AND school_id = ${req.schoolId}
       RETURNING *
     `;
     updated = result[0];
+
+    if (syllabus_chapter_id || syllabus_topic_id) {
+      try {
+        await linkDiaryToSyllabus(schoolId, {
+          chapterId: syllabus_chapter_id,
+          topicId: syllabus_topic_id,
+          status: syllabus_status || 'IN_PROGRESS',
+        });
+      } catch (sylErr) {
+        logDebug(`[Diary] Syllabus Link Error: ${sylErr.message}`);
+      }
+    }
+    if (updated) {
+      syncDiaryToCalendar(schoolId, updated.id).catch(err =>
+        console.error('[diaryRoutes] Calendar sync failed on update:', err.message)
+      );
+    }
   } catch (dbErr) {
     logDebug(`[Diary] DB Update Error: ${dbErr.message}`);
     throw dbErr;
@@ -550,6 +665,12 @@ router.delete('/:id', requirePermission('diary.create'), asyncHandler(async (req
   }
 
   await sql`DELETE FROM diary_entries WHERE id = ${id} AND school_id = ${req.schoolId}`;
+
+  // Sync deletion to calendar
+  CalendarService.syncSourceEvent(req.schoolId, 'HOMEWORK', id, null).catch(err =>
+    console.error('[diaryRoutes] Calendar deletion sync failed:', err.message)
+  );
+
   return sendSuccess(res, req.schoolId, { message: 'Diary entry deleted' });
 }));
 

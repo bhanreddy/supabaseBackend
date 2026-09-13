@@ -5,6 +5,7 @@ import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import { studentCacheDelete, studentCacheDeleteByPrefix } from '../utils/studentDataCache.js';
+import { resolveSchoolDay } from '../services/workingDayResolver.js';
 
 const router = express.Router();
 
@@ -225,10 +226,25 @@ router.patch('/config', requirePermission('academics.manage'), asyncHandler(asyn
  */
 router.get('/:classSectionId/slots', requirePermission('academics.view'), asyncHandler(async (req, res) => {
   const { classSectionId } = req.params;
-  const { academic_year_id, lastSyncedAt, day_of_week } = req.query;
+  const { academic_year_id, lastSyncedAt, day_of_week, date } = req.query;
   const schoolId = req.schoolId;
 
-  if (day_of_week && !TIMETABLE_WEEKDAYS.includes(day_of_week)) {
+  let effectiveDayOfWeek = day_of_week;
+  if (date) {
+    try {
+      const dayStatus = await resolveSchoolDay(schoolId, date);
+      if (dayStatus?.timetableEnabled === false && !dayStatus?.isSpecialWorkingDay) {
+        return sendSuccess(res, schoolId, []);
+      }
+      if (dayStatus?.timetableOverride) {
+        effectiveDayOfWeek = dayStatus.timetableOverride;
+      } else if (!effectiveDayOfWeek && dayStatus?.timetableDay) {
+        effectiveDayOfWeek = dayStatus.timetableDay;
+      }
+    } catch (e) {}
+  }
+
+  if (effectiveDayOfWeek && !TIMETABLE_WEEKDAYS.includes(effectiveDayOfWeek)) {
     return res.status(400).json({ error: 'day_of_week must be one of Mon–Sat' });
   }
 
@@ -244,11 +260,12 @@ router.get('/:classSectionId/slots', requirePermission('academics.view'), asyncH
       SELECT id FROM academic_years
       WHERE start_date <= current_date AND end_date >= current_date
         AND school_id = ${schoolId}
+      ORDER BY start_date DESC
       LIMIT 1
     `;
-    if (currentYear.length > 0) yearId = currentYear[0].id;
-    else return sendSuccess(res, req.schoolId, []);
+    yearId = currentYear[0]?.id;
   }
+  if (!yearId) return res.status(400).json({ error: 'Academic Year ID required' });
 
   // Admin class-slot editor must always read live DB rows (no in-memory cache).
   // Student delta sync uses lastSyncedAt; full-list cache was causing stale slots after delete.
@@ -257,14 +274,16 @@ router.get('/:classSectionId/slots', requirePermission('academics.view'), asyncH
   const slots = await sql`
     SELECT
       ts.id,
+      ts.class_section_id,
+      ts.academic_year_id,
+      ts.subject_id,
+      sub.name as subject_name,
+      sub.name_te as subject_name_te,
       ts.period_number,
       ts.day_of_week,
       ts.start_time,
       ts.end_time,
       ts.room_no,
-      sub.name as subject_name,
-      sub.name_te as subject_name_te,
-      sub.id as subject_id,
       p.display_name as teacher_name,
       ts.teacher_id
     FROM timetable_slots ts
@@ -276,7 +295,7 @@ router.get('/:classSectionId/slots', requirePermission('academics.view'), asyncH
       AND cs.school_id = ${schoolId}
       AND ts.academic_year_id = ${yearId}
       AND ts.deleted_at IS NULL
-      ${day_of_week ? sql`AND ts.day_of_week = ${day_of_week}::day_of_week_enum` : sql``}
+      ${effectiveDayOfWeek ? sql`AND ts.day_of_week = ${effectiveDayOfWeek}::day_of_week_enum` : sql``}
       ${timetableSlotsLastSyncedSql(lastSyncedAt, slotTsCols)}
     ORDER BY ts.day_of_week, ts.period_number
   `;

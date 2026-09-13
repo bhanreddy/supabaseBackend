@@ -19,25 +19,6 @@ const sql = postgres(process.env.DATABASE_URL, {
   max: 1,
 });
 
-const BENIGN_CODES = new Set([
-  '42P07', // duplicate_table
-  '42710', // duplicate_object
-  '42701', // duplicate_column
-  '42P06', // duplicate_schema
-  '42723', // duplicate_function
-  '23505', // unique_violation (seed inserts)
-]);
-
-function isBenignError(err) {
-  if (BENIGN_CODES.has(err.code)) return true;
-  const msg = String(err.message || '').toLowerCase();
-  return (
-    msg.includes('already exists')
-    || msg.includes('duplicate key')
-    || msg.includes('duplicate object')
-  );
-}
-
 function collectMigrationFiles() {
   const dirs = [
     path.join(root, 'migrations'),
@@ -79,29 +60,11 @@ async function markApplied(filename, client = sql) {
   `;
 }
 
-async function bootstrapExistingMigrations(files, client) {
-  const pending = [
-    '20260706_approval_requests.sql',
-    '20260706_partial_fee_payment_toggle.sql',
-    '20260706_rbac_sod_permissions.sql',
-    '20260706_fee_refund_amount_constraint.sql',
-    '20260804_school_website_gallery.sql',
-  ];
-  let bootstrapped = 0;
-  for (const filePath of files) {
-    const filename = path.basename(filePath);
-    if (pending.includes(filename)) continue;
-    if (await isApplied(filename, client)) continue;
-    await markApplied(filename, client);
-    bootstrapped += 1;
-  }
-  if (bootstrapped > 0) {
-    console.log(`📌 Bootstrapped ${bootstrapped} historical migration(s) as already applied on live DB\n`);
-  }
-}
-
 async function runMigration(filePath, client) {
   const filename = path.basename(filePath);
+  if (filename.includes('_v418_')) {
+    throw new Error('Apply Batch 1 with node scripts/run_batch1_migrations.js before using the historical runner');
+  }
   const body = fs.readFileSync(filePath, 'utf8').trim();
   if (!body) {
     console.log(`⏭  ${filename} (empty)`);
@@ -116,11 +79,6 @@ async function runMigration(filePath, client) {
     return { filename, status: 'applied' };
   } catch (err) {
     try { await client.unsafe('ROLLBACK'); } catch { /* no open txn */ }
-    if (isBenignError(err)) {
-      await markApplied(filename, client);
-      console.log(`⚠️  ${filename} (already applied — ${err.code || err.message})`);
-      return { filename, status: 'already_applied', error: err.message };
-    }
     console.error(`❌ ${filename}:`, err.message);
     return { filename, status: 'failed', error: err.message };
   }
@@ -146,7 +104,7 @@ async function main() {
 
   const bootstrap = process.argv.includes('--bootstrap-live');
   if (bootstrap) {
-    await bootstrapExistingMigrations(files, sql);
+    throw new Error('Unsafe historical bootstrap is disabled. Use scripts/migrate_release.js --init for an empty database or an explicitly reviewed upgrade runner for an existing database.');
   }
 
   const results = { applied: 0, already: 0, failed: 0, skipped: 0 };

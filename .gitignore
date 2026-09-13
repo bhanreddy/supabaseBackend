@@ -20,6 +20,23 @@ out.txt
 test_out.txt
 debug_log.txt
 
+# Dependencies
+node_modules/
+
+# Build and IDE
+dist/
+build/
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and debug
+*.log
+*.txt
+out.txt
+test_out.txt
+debug_log.txt
+
 # Sensitive credentials
 service-account.json
 *.pem
@@ -29,6 +46,9 @@ service-account.json
 /tmp/
 .temp/
 backups/
+dumps/
+*.dump
+*.backup
 
 # macOS AppleDouble files
 ._*

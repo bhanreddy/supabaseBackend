@@ -22,29 +22,41 @@ export const SCHOOL_NOTIFICATION_CATEGORIES = Object.freeze([
   { id: 'access', label: 'Access requests', description: 'Access approval and rejection updates', icon: 'key-outline' },
   { id: 'transport', label: 'School transport', description: 'Bus trips, stops, delays, and bus attendance', icon: 'bus-outline' },
   { id: 'messages', label: 'Messages', description: 'Direct messages between school and families', icon: 'mail-outline' },
+  { id: 'documents', label: 'Admission documents', description: 'Reminders for configured admission-document requirements', icon: 'document-text-outline' },
+  { id: 'calendar', label: 'Academic calendar', description: 'Events, holidays, exams, and schedule updates', icon: 'calendar-outline' },
+  { id: 'admissions', label: 'Admissions & Enquiries', description: 'Application updates, interview schedules, decisions, and confirmations', icon: 'person-add-outline' },
 ]);
 
 const CATEGORY_IDS = new Set(SCHOOL_NOTIFICATION_CATEGORIES.map((category) => category.id));
 
 export function notificationCategoryForEvent(eventType = '') {
   if (eventType.startsWith('ATTENDANCE_')) return 'attendance';
-  if (eventType.startsWith('FEE_') || eventType === 'ARREARS_REMINDER') return 'fees';
+  if (eventType.startsWith('FEE_') || eventType.startsWith('FINE_') || eventType === 'ARREARS_REMINDER') return 'fees';
+  if (eventType.startsWith('CALENDAR_') || eventType.startsWith('EVENT_') || eventType === 'HOLIDAY_ANNOUNCED' || eventType === 'CRITICAL_INCIDENT') return 'calendar';
   if (eventType.startsWith('DIARY_')) return 'diary';
   if (eventType.startsWith('RESULT_')) return 'results';
   if (eventType.startsWith('LMS_')) return 'learning';
-  if (eventType.startsWith('TIMETABLE_')) return 'timetable';
-  if (eventType.startsWith('NOTICE_')) return 'notices';
+  if (eventType.startsWith('TIMETABLE_') || eventType.startsWith('SUBSTITUTION_')) return 'timetable';
+  if (eventType.startsWith('NOTICE_') || eventType === 'POPUP_ANNOUNCEMENT') return 'notices';
   if (eventType.startsWith('COMPLAINT_')) return 'complaints';
   if (eventType.startsWith('LEAVE_')) return 'leave';
   if (eventType.startsWith('EXPENSE_')) return 'expenses';
   if (eventType.startsWith('PAYROLL_')) return 'payroll';
-  if (eventType.startsWith('ACCESS_')) return 'access';
+  if (
+    eventType.startsWith('ACCESS_') ||
+    eventType.startsWith('VISITOR_') ||
+    eventType.startsWith('DELIVERY_') ||
+    eventType.startsWith('STUDENT_RELEASED') ||
+    eventType === 'SECURITY_ALERT'
+  ) return 'access';
   if (
     eventType.startsWith('BUS_') ||
     eventType.startsWith('TRANSPORT_') ||
     eventType.startsWith('STUDENT_BUS_')
   ) return 'transport';
-  if (eventType.startsWith('MESSAGE_')) return 'messages';
+  if (eventType.startsWith('MESSAGE_') || eventType.startsWith('SUPPORT_')) return 'messages';
+  if (eventType.startsWith('ADMISSION_DOCUMENT_')) return 'documents';
+  if (eventType.startsWith('ADMISSION_')) return 'admissions';
   return null;
 }
 

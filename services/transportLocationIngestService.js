@@ -5,6 +5,7 @@
  */
 import sql from '../db.js';
 import logger from '../utils/logger.js';
+import { evaluateOverspeed } from './transportSafetyService.js';
 
 export const LOCATION_BATCH = Object.freeze({
   MAX_FIXES: 1000,
@@ -115,9 +116,9 @@ export async function ingestLocationBatch({ schoolId, busId, fixes: rawFixes, no
   // Only evaluate a newly recorded point, never an offline retry that was
   // already processed. The live-location row is intentionally rate-limited
   // for map traffic, but geofence debounce needs every fresh GPS observation.
-  const insertedAtMs = new Set(inserted.map((row) => Date.parse(row.recorded_at)));
+  const insertedAtMs = new Set(inserted.map((row) => new Date(row.recorded_at).getTime()));
   const newest = [...normalized.fixes].reverse().find(
-    (fix) => !fix.is_mocked && insertedAtMs.has(Date.parse(fix.recorded_at)),
+    (fix) => !fix.is_mocked && insertedAtMs.has(new Date(fix.recorded_at).getTime()),
   );
   if (!newest) {
     return {
@@ -166,6 +167,7 @@ export async function runNewestFixEffects(context, dependencies) {
       context.schoolId, context.busId, context.fix.latitude, context.fix.longitude, dependencies.db,
     )],
     ['running_late', () => dependencies.evaluateRunningLate(context.schoolId, context.busId, context.fix, dependencies.db)],
+    ['overspeed', () => (dependencies.evaluateOverspeed || evaluateOverspeed)(context.schoolId, context.busId, context.fix, dependencies.db)],
   ];
   for (const [effect, run] of effects) {
     try {

@@ -25,6 +25,8 @@ import { errorHandler } from './utils/asyncHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import sql from './db.js';
 import { startSupportNotificationOutboxWorker, stopSupportNotificationOutboxWorker } from './services/supportNotificationOutboxService.js';
+import { startVisitorOverstayWorker, stopVisitorOverstayWorker } from './services/visitorOverstayService.js';
+import { startCalendarReminderWorker, stopCalendarReminderWorker } from './services/calendarNotificationService.js';
 import {
     startTransportJobs,
     stopTransportJobs,
@@ -186,6 +188,7 @@ app.use(auditLogger);
 // Import routes
 import authRouter from './routes/authRoutes.js';
 import studentsRouter from './routes/studentsRoutes.js';
+import studentLoginQrRouter from './routes/studentLoginQrRoutes.js';
 import studentDashboardRouter from './routes/studentDashboardRoutes.js';
 import teachersRouter from './routes/teachersRoutes.js';
 import staffRouter from './routes/staffRoutes.js';
@@ -208,8 +211,17 @@ import transportFeeRouter from './routes/transportFeeRoutes.js';
 import transportImportRouter from './routes/transportImportRoutes.js';
 import hostelRouter from './routes/hostelRoutes.js';
 import eventsRouter from './routes/eventsRoutes.js';
+import calendarRouter from './routes/calendarRoutes.js';
 import lmsRouter from './routes/lmsRoutes.js';
 import adminRouter from './routes/adminRoutes.js';
+import actionCenterRouter from './routes/actionCenterRoutes.js';
+import auditExplorerRouter from './routes/auditExplorerRoutes.js';
+import studentDocumentRouter from './routes/studentDocumentRoutes.js';
+import syllabusRouter from './routes/syllabusRoutes.js';
+import udiseRouter from './routes/udiseRoutes.js';
+import supportTicketRouter from './routes/supportTicketRoutes.js';
+import transportSafetyRouter from './routes/transportSafetyRoutes.js';
+import staffAttendanceV2Router from './routes/staffAttendanceV2Routes.js';
 import notificationRouter from './routes/notificationRoutes.js';
 import aiRouter from './routes/aiRoutes.js';
 import analyticsRouter from './routes/analyticsRoutes.js';
@@ -238,6 +250,14 @@ import meRouter from './routes/meRoutes.js';
 import messagesRouter from './routes/messagesRoutes.js';
 import parentVisitRouter from './routes/parentVisitRoutes.js';
 import websiteGalleryRouter from './routes/websiteGalleryRoutes.js';
+import schoolStoriesRouter from './routes/schoolStoriesRoutes.js';
+import schoolHeroSlidesRouter from './routes/schoolHeroSlidesRoutes.js';
+import popupRouter from './routes/popupRoutes.js';
+import adminPopupRouter from './routes/adminPopupRoutes.js';
+import finesRouter from './routes/finesRoutes.js';
+import visitorManagementRouter from './routes/visitorManagementRoutes.js';
+import academicPlannerRouter from './routes/academicPlannerRoutes.js';
+import admissionRouter from './routes/admissionRoutes.js';
 import { requireFeature } from './middleware/requireFeature.js';
 
 // Health check endpoint (requires school_id per multi-tenant contract)
@@ -288,13 +308,16 @@ app.get('/', (req, res) => {
             invoices: '/api/v1/invoices',
             certificates: '/api/v1/certificates',
             health: '/api/v1/health',
-            messages: '/api/v1/messages'
+            messages: '/api/v1/messages',
+            popups: '/api/v1/popups'
         }
     });
 });
 
 // API v1 Routes
 app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/student-login-qr', studentLoginQrRouter);
+app.use('/api/v1/students/documents', studentDocumentRouter);
 app.use('/api/v1/students', studentsRouter);
 app.use('/api/v1/student', studentDashboardRouter);
 app.use('/api/v1/teachers', teachersRouter);
@@ -304,13 +327,17 @@ app.use('/api/v1/staff/roll-numbers', staffRollNumberRouter);
 app.use('/api/v1/staff', staffRouter);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/academics', academicsRouter);
+app.use('/api/v1/academics', academicPlannerRouter);
 // Student feature flags. requireFeature() is role-scoped (gates the STUDENT role
 // only) so it is safe at these shared router mounts — staff/admin/accounts pass
 // through untouched. Data-bearing features whose endpoints live in a shared
 // multi-purpose router (quick.science_projects on contentRouter, quick.profile,
 // home.academic_advisor) are gated at the endpoint level inside those routers.
+app.use('/api/v1/attendance/v2', staffAttendanceV2Router);
 app.use('/api/v1/attendance', requireFeature('home.todays_snapshot'), attendanceRouter);
 app.use('/api/v1/fees', requireFeature('nav.fees'), feesRouter);
+app.use('/api/v1/fines', finesRouter);
+app.use('/fines', finesRouter);
 const resultsFeatureGuard = requireFeature('nav.results');
 const examTimetableFeatureGuard = requireFeature('nav.time_table');
 app.use(
@@ -328,17 +355,29 @@ app.use('/api/v1/leaves', leavesRouter);
 app.use('/api/v1/diary', requireFeature('topbar.diary'), diaryRouter);
 app.use('/api/v1/timetable', requireFeature('nav.time_table'), timetableRouter);
 app.use('/api/v1/substitutions', substitutionRouter);
+app.use('/api/v1/transport', transportSafetyRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportImportRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportFeeRouter);
 app.use('/api/v1/transport', requireFeature('quick.transport'), transportRouter);
 app.use('/api/v1/hostel', requireFeature('quick.hostel'), hostelRouter);
 app.use('/api/v1/events', eventsRouter);
+app.use('/api/v1/calendar', calendarRouter);
 app.use('/api/v1', websiteGalleryRouter);
+app.use('/api/v1', schoolStoriesRouter);
+app.use('/api/v1', schoolHeroSlidesRouter);
+app.use('/api/v1/popups', popupRouter);
+app.use('/api/v1/admin/popups', adminPopupRouter);
 app.use('/api/v1/admin', adminRouter);
 app.use('/api/v1/lms', requireFeature('topbar.lms'), lmsRouter);
 app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/ai', requireFeature('menu.ai_doubt_assist'), aiRouter);
 app.use('/api/v1/analytics', analyticsRouter);
+app.use('/api/v1/admin/action-center', actionCenterRouter);
+app.use('/api/v1/admin/audit-explorer', auditExplorerRouter);
+app.use('/api/v1/audit-explorer', auditExplorerRouter);
+app.use('/api/v1/syllabus', syllabusRouter);
+app.use('/api/v1/udise', udiseRouter);
+app.use('/api/v1/support', supportTicketRouter);
 app.use('/api/v1/admin/analytics', adminAnalyticsRouter);
 app.use('/api/v1/admin/notifications', adminNotificationRoutes);
 app.use('/api/v1/admin/parent-visits', parentVisitRouter);
@@ -367,8 +406,11 @@ app.use('/api/v1/messages', requireFeature('comm.messenger'), messagesRouter);
 // Payment Gateway (Phase 2) — credential-save path. school_id is JWT-derived
 // (paths are in middleware/schoolId.js -> JWT_SCHOOL_ID_PATHS).
 app.use('/api/v1/admin/payments', paymentRouter);
+app.use('/api/v1/visitor-management', visitorManagementRouter);
+app.use('/api/v1/admissions', admissionRouter);
 
 // Legacy routes (for backward compatibility)
+app.use('/students/documents', studentDocumentRouter);
 app.use('/students', studentsRouter);
 app.use('/teachers', teachersRouter);
 app.use('/staff', staffRouter);
@@ -435,6 +477,8 @@ const c = {
 
 const server = app.listen(port);
 startSupportNotificationOutboxWorker();
+startVisitorOverstayWorker();
+startCalendarReminderWorker();
 setImmediate(() => startTransportJobs().catch((error) => {
     logger.error({ error }, 'Failed to start scheduled job workers');
 }));
@@ -545,6 +589,7 @@ async function shutdown(signal) {
     try {
         logger.info({ signal }, 'Shutdown initiated');
         stopSupportNotificationOutboxWorker();
+        stopVisitorOverstayWorker();
         await stopTransportJobs();
         server.close(() => logger.info('HTTP server closed'));
         await sql.end({ timeout: 5 });

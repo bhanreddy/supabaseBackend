@@ -90,6 +90,11 @@ const config = {
     auth: {
         passwordResetRedirectUrl: required('PASSWORD_RESET_REDIRECT_URL', 'http://localhost:3000/reset-password'),
     },
+    loginQr: {
+        // Server-only HMAC key. The feature fails closed when this is absent.
+        secret: optional('LOGIN_QR_HMAC_SECRET'),
+        ttlDays: boundedNumber('LOGIN_QR_TTL_DAYS', optional('LOGIN_QR_TTL_DAYS', '365'), 1, 3650),
+    },
     geminiApiKey: optional('GEMINI_API_KEY'),
     openaiApiKey: optional('OPENAI_API_KEY'),
     paperforge: {
@@ -129,6 +134,9 @@ const config = {
         cron: optional('TRANSPORT_MAINTENANCE_CRON', '30 2 * * *'),
         timezone: optional('TRANSPORT_MAINTENANCE_TIMEZONE', 'Asia/Kolkata'),
     },
+    feeRecoveryJobs: {
+        enabled: optional('FEE_RECOVERY_JOBS_ENABLED', 'false') === 'true',
+    },
     diaryDigestJobs: {
         enabled: optional('DIARY_DIGEST_ENABLED', 'true') !== 'false',
         cutoffHour: diaryDigestHour,
@@ -142,8 +150,10 @@ Object.freeze(config.supabase);
 Object.freeze(config.cors);
 Object.freeze(config.firebase);
 Object.freeze(config.auth);
+Object.freeze(config.loginQr);
 Object.freeze(config.rateLimit);
 Object.freeze(config.transportJobs);
+Object.freeze(config.feeRecoveryJobs);
 Object.freeze(config.diaryDigestJobs);
 Object.freeze(config.paperforge);
 Object.freeze(config.phonePe);

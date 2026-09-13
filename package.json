@@ -14,7 +14,11 @@
     "audit:sync": "node audit_tooling/update_schema_sql.js",
     "db:verify": "node db.js",
     "migrate:daily-substitutions": "node scripts/run_daily_substitutions_migration.js",
-    "verify:rate-limit": "node scripts/verify-rate-limit.js"
+    "verify:rate-limit": "node scripts/verify-rate-limit.js",
+    "test": "node --experimental-test-module-mocks --test services/*.test.js utils/*.test.js tests/*.test.js",
+    "migrate:release": "node scripts/migrate_release.js",
+    "migrate:batch2": "node scripts/run_batch2_migrations.js",
+    "migrate:batch3": "node scripts/run_batch3_migrations.js"
   },
   "type": "module",
   "engines": {
@@ -36,7 +40,6 @@
     "express-rate-limit": "^8.2.1",
     "express-validator": "^7.3.1",
     "firebase-admin": "^13.6.0",
-    "git": "^0.1.5",
     "google-translate-api-x": "^10.7.2",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
@@ -52,10 +55,13 @@
     "sharp": "^0.35.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
+  },
+  "overrides": {
+    "form-data@^2.0.0": "^2.5.6"
   }
 }

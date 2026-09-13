@@ -75,6 +75,17 @@ export const notifyLimiter = rateLimit({
     message: { error: 'Notification rate limit exceeded. Try again in a minute.' },
 });
 
+// Public certificate lookups use only the network address. Supplying forged
+// bearer tokens must not create fresh enumeration buckets.
+export const publicCertificateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, valid: false, status: 'INVALID', error: 'Too many verification attempts. Try again later.' },
+});
+
 // 60 bus-location updates per minute per user (one per second cadence)
 export const transportLocationLimiter = rateLimit({
     windowMs: 60 * 1000,
@@ -85,11 +96,49 @@ export const transportLocationLimiter = rateLimit({
     message: { error: 'Too many location updates. Slow down.' },
 });
 
+export const qrLoginLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many QR login attempts. Try again in a minute.' },
+});
+
+export const visitorScanLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 40,
+    keyGenerator: jwtOrIpKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many gate scans. Slow down.' },
+});
+
+export const pickupOtpLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 8,
+    keyGenerator: jwtOrIpKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many OTP attempts. Try again later.' },
+});
+
+export const admissionPublicLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many admission requests. Please try again later.' },
+});
+
 export function shouldSkipApiRateLimit(req) {
     return (
         req.method === 'OPTIONS' ||
         req.path === '/api/v1/health' ||
-        req.path === '/api/v1/ping'
+        req.path === '/api/v1/ping' ||
+        req.path === '/api/v1/healthz' ||
+        req.path === '/api/v1/readyz'
     );
 }
 

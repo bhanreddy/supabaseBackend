@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import sql from '../db.js';
 import { sendNotificationToUsers } from './notificationService.js';
 import { getStudentTransportDue, resolveAcademicYearCode } from './transportFeeService.js';
+import { emitSchoolEvent, AUTOMATION_EVENTS } from './automationEventService.js';
 
 const VALID_METHODS = ['cash', 'card', 'upi', 'bank_transfer', 'cheque', 'online'];
 
@@ -293,6 +294,11 @@ export async function executeTermFeePayment(params) {
     return result;
   });
   const enriched = await enrichFeeTransaction(transaction, params.schoolId);
+  emitSchoolEvent(AUTOMATION_EVENTS.FEE_PAYMENT_COMPLETED, {
+    schoolId: params.schoolId,
+    studentId: fee.student_id,
+    studentFeeId: fee.id,
+  });
   return { transaction: enriched, fee };
 }
 
@@ -395,6 +401,11 @@ export async function executeCombinedTermFeePayment({
     })),
     paid_fee_ids: postedTransactions.map((t) => t.student_fee_id),
   };
+
+  emitSchoolEvent(AUTOMATION_EVENTS.FEE_PAYMENT_COMPLETED, {
+    schoolId,
+    studentId: postedTransactions[0]?.fee?.student_id,
+  });
 
   return { receipt, transaction: combined, transactions: postedTransactions };
 }

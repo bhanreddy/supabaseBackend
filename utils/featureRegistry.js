@@ -40,6 +40,7 @@ export const FEATURE_REGISTRY = [
   { key: 'nav.time_table',        label: 'Time Table',      group: 'bottom_nav',    default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'nav.fees',              label: 'Fees',            group: 'bottom_nav',    default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'nav.results',           label: 'Results',         group: 'bottom_nav',    default_enabled: true, data_bearing: true,  toggleable: true },
+  { key: 'nav.calendar',          label: 'Academic Calendar',group: 'bottom_nav',    default_enabled: true, data_bearing: true,  toggleable: true },
   { key: 'nav.home',              label: 'Home',            group: 'bottom_nav',    default_enabled: true, data_bearing: true,  toggleable: false },
 ];
 

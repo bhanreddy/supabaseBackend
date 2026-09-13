@@ -1,0 +1,9 @@
+{
+  "id": "20260905_public_schema",
+  "source": "Read-only schema-only public export, PostgreSQL 17.6, 2026-09-05",
+  "file": "20260905_public_schema.sql",
+  "sha256": "713bb1e639e04c0676823119e05e24b22ef70936ae657500169eba7c643b00d9",
+  "seed_file": "20260905_reference_seed.sql",
+  "seed_sha256": "415d513648456fcedf8ebb9c9ea50fd29bbe229f40b68f5713e63015581dec12",
+  "description": "Fresh-install baseline; historical migrations are not replayed or marked applied. Apply explicit forward release migrations afterwards."
+}

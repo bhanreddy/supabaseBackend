@@ -8044,3 +8044,148 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_messages_update_conversation
     AFTER INSERT ON messages
     FOR EACH ROW EXECUTE FUNCTION update_conversation_on_message();
+
+
+-- Batch 1 automation schema (forward migrations remain deployment authority).
+-- ============================================================
+-- SchoolIMS v4.1.8 — Batch 1: Database Hardening & Automation Foundations
+-- Generated: 2026-09-05
+-- ============================================================
+
+-- 1. HARDEN CORE OPERATIONAL & FK INDEXES (Resolving migration drift)
+CREATE INDEX IF NOT EXISTS idx_attendance_date ON public.daily_attendance(attendance_date);
+CREATE INDEX IF NOT EXISTS idx_attendance_enrollment ON public.daily_attendance(student_enrollment_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_composite ON public.daily_attendance(student_enrollment_id, status, attendance_date);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_paid_at ON public.fee_transactions(paid_at);
+CREATE INDEX IF NOT EXISTS idx_fee_transactions_student_fee_id ON public.fee_transactions(student_fee_id);
+CREATE INDEX IF NOT EXISTS idx_fee_transactions_school_paid_at ON public.fee_transactions(school_id, paid_at);
+
+CREATE INDEX IF NOT EXISTS idx_marks_exam_subject ON public.marks(exam_subject_id);
+CREATE INDEX IF NOT EXISTS idx_marks_enrollment ON public.marks(student_enrollment_id);
+
+CREATE INDEX IF NOT EXISTS idx_person_contacts_person_id ON public.person_contacts(person_id);
+
+CREATE INDEX IF NOT EXISTS idx_receipt_items_transaction_id ON public.receipt_items(fee_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_receipt_items_receipt_id ON public.receipt_items(receipt_id);
+
+CREATE INDEX IF NOT EXISTS idx_student_enrollments_class_section ON public.student_enrollments(class_section_id);
+
+CREATE INDEX IF NOT EXISTS idx_student_fees_structure_id ON public.student_fees(fee_structure_id);
+CREATE INDEX IF NOT EXISTS idx_student_fees_status ON public.student_fees(status);
+CREATE INDEX IF NOT EXISTS idx_student_fees_student ON public.student_fees(student_id);
+CREATE INDEX IF NOT EXISTS idx_student_fees_school_status_due ON public.student_fees(school_id, status, due_date);
+
+CREATE INDEX IF NOT EXISTS idx_students_status ON public.students(status_id);
+
+-- 2. CREATE school_automation_rules TABLE
+CREATE TABLE IF NOT EXISTS public.school_automation_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES public.schools(id) ON DELETE CASCADE,
+    rule_key VARCHAR(60) NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    trigger_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    action_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_triggered_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_school_automation_rule_key UNIQUE (school_id, rule_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_automation_rules_school ON public.school_automation_rules(school_id, is_enabled);
+
+-- Defense-in-depth: RLS on school_automation_rules
+ALTER TABLE public.school_automation_rules ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'create_tenant_rls_policy') THEN
+    PERFORM create_tenant_rls_policy('school_automation_rules');
+  END IF;
+END $$;
+
+-- 3. CREATE automation_execution_logs TABLE (Unified execution & reminder history)
+CREATE TABLE IF NOT EXISTS public.automation_execution_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    school_id INTEGER NOT NULL REFERENCES public.schools(id) ON DELETE CASCADE,
+    rule_key VARCHAR(60) NOT NULL,
+    entity_type VARCHAR(40) NOT NULL,
+    entity_id VARCHAR(64) NOT NULL,
+    idempotency_key VARCHAR(160) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    attempt INT NOT NULL DEFAULT 1,
+    stage VARCHAR(40),
+    channel VARCHAR(20) NOT NULL DEFAULT 'push',
+    recipient_user_ids JSONB DEFAULT '[]'::jsonb,
+    payload JSONB DEFAULT '{}'::jsonb,
+    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    executed_at TIMESTAMPTZ,
+    error_summary TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_automation_exec_idempotency UNIQUE (school_id, idempotency_key),
+    CONSTRAINT chk_automation_exec_status CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'skipped'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auto_exec_school_status ON public.automation_execution_logs(school_id, status);
+CREATE INDEX IF NOT EXISTS idx_auto_exec_entity ON public.automation_execution_logs(school_id, entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_auto_exec_rule_date ON public.automation_execution_logs(school_id, rule_key, created_at DESC);
+
+-- Defense-in-depth: RLS on automation_execution_logs
+ALTER TABLE public.automation_execution_logs ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'create_tenant_rls_policy') THEN
+    PERFORM create_tenant_rls_policy('automation_execution_logs');
+  END IF;
+END $$;
+
+-- Forward-only correction. Original Batch 1 tables already exist in deployments.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+ALTER TABLE public.automation_execution_logs ADD COLUMN IF NOT EXISTS student_id UUID REFERENCES public.students(id) ON DELETE RESTRICT;
+-- Resolve existing records only through tenant-owned students, including fee entities.
+UPDATE public.automation_execution_logs l SET student_id = s.id
+FROM public.students s
+WHERE l.student_id IS NULL AND l.school_id = s.school_id
+  AND (l.payload->>'studentId' = s.id::text OR (l.entity_type = 'student' AND l.entity_id = s.id::text)
+    OR EXISTS (SELECT 1 FROM public.student_fees sf WHERE sf.id::text = l.entity_id
+      AND sf.student_id = s.id AND sf.school_id = l.school_id AND l.entity_type = 'student_fee'));
+-- These are internal server tables. Portal JWTs must never read or mutate them,
+-- even when a deployment installed the optional generic tenant policy helper.
+DO $$ DECLARE t text; p record; r text; BEGIN
+  FOREACH t IN ARRAY ARRAY['school_automation_rules', 'automation_execution_logs'] LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+    FOR p IN SELECT policyname FROM pg_policies WHERE schemaname = 'public' AND tablename = t LOOP
+      EXECUTE format('DROP POLICY %I ON public.%I', p.policyname, t);
+    END LOOP;
+    EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC', t);
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('REVOKE ALL ON public.%I FROM %I', t, r);
+      END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+      EXECUTE format('GRANT ALL ON public.%I TO service_role', t);
+      EXECUTE format('CREATE POLICY internal_service_only ON public.%I TO service_role USING (true) WITH CHECK (true)', t);
+    END IF;
+  END LOOP;
+END $$;
+COMMIT;
+
+-- Execute outside a transaction (scripts/run_batch1_migrations.js).
+-- Student cooldown and history: tenant + student equality, then creation time range.
+CREATE INDEX IF NOT EXISTS idx_auto_exec_student_created
+  ON public.automation_execution_logs (school_id, student_id, created_at DESC)
+  WHERE rule_key = 'fee_due_reminder';
+
+-- Overview's provider-accepted reminders in the last 30 days.
+CREATE INDEX IF NOT EXISTS idx_auto_exec_completed_date
+  ON public.automation_execution_logs (school_id, executed_at DESC)
+  WHERE rule_key = 'fee_due_reminder' AND status = 'completed';
+-- Scanner filters tenant and a short set of due dates. Existing status-first
+-- indexes cannot narrow those dates when no single status is selected.
+CREATE INDEX IF NOT EXISTS idx_student_fees_recovery_due
+  ON public.student_fees (school_id, due_date, id)
+  WHERE deleted_at IS NULL AND status <> 'waived'
+    AND GREATEST(amount_due - discount - amount_paid, 0) > 0;

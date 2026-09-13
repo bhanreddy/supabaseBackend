@@ -15,6 +15,9 @@ const JWT_SCHOOL_ID_PATHS = [
   // Keep this broad rule before the legacy transport exceptions below so every
   // current and future transport endpoint inherits the same contract.
   /^\/api\/v1\/transport(?:\/.*)?$/i,
+  /^\/api\/v1\/calendar(?:\/.*)?$/i,
+  /^\/api\/v1\/visitor-management(?:\/.*)?$/i,
+  /^\/api\/visitor-management(?:\/.*)?$/i,
   /^\/api\/v1\/hostel(?:\/.*)?$/i,
   /^\/api\/v1\/settings\/upi\/?$/i,
   /^\/api\/settings\/upi\/?$/i,
@@ -26,10 +29,26 @@ const JWT_SCHOOL_ID_PATHS = [
   // Public website gallery reads use the explicit school_id query parameter,
   // while every admin list/upload/delete is JWT tenant-bound.
   /^\/api\/v1\/admin\/website-gallery(?:\/.*)?$/i,
+  // Principal Action Center cockpit: tenant is strictly derived from verified JWT
+  /^\/api\/v1\/admin\/action-center(?:\/.*)?$/i,
+  // Audit Explorer: admin forensic audit queries are JWT tenant-bound
+  /^\/api\/v1\/(?:admin\/)?audit-explorer(?:\/.*)?$/i,
+  // Student admission documents
+  /^\/api\/v1\/students\/documents(?:\/.*)?$/i,
+  /^\/students\/documents(?:\/.*)?$/i,
+  // Support Tickets
+  /^\/api\/v1\/support(?:\/.*)?$/i,
+  // Academic Syllabus
+  /^\/api\/v1\/syllabus(?:\/.*)?$/i,
+  // UDISE Readiness
+  /^\/api\/v1\/udise(?:\/.*)?$/i,
+  // Staff Attendance V2
+  /^\/api\/v1\/attendance\/v2(?:\/.*)?$/i,
   /^\/api\/v1\/dcgd\/?$/i,
   /^\/api\/v1\/dcgd\/programs\/\d+\/content\/?$/i,
   /^\/api\/v1\/fees\/adjust\/?$/i,
   /^\/api\/v1\/fees\/adjustments(\/.*)?$/i,
+  /^\/(?:api\/v1\/)?fines(?:\/.*)?$/i,
   /^\/api\/v1\/defaulters\/?$/i,
   /^\/api\/v1\/defaulters\/remind\/?$/i,
   /^\/api\/v1\/defaulters\/[^/]+\/?$/i,
@@ -85,10 +104,28 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/staff(\/.*)?$/i,
   // Messenger: school_id MUST come from JWT, never from client query/body.
   /^\/api\/v1\/messages(\/.*)?$/i,
+  // Student login QR management: all list/generate/export operations are JWT tenant-bound.
+  /^\/api\/v1\/student-login-qr(?:\/.*)?$/i,
+  // School stories and student-home hero slides are JWT tenant-bound.
+  /^\/api\/v1\/school-stories(?:\/.*)?$/i,
+  /^\/api\/v1\/school-hero-slides(?:\/.*)?$/i,
+  /^\/api\/v1\/admin\/school-hero-slides(?:\/.*)?$/i,
+  /^\/api\/v1\/admin\/celebrations(?:\/.*)?$/i,
+  // Smart Popup Manager: tenant is always the verified JWT school.
+  /^\/api\/v1\/popups(?:\/.*)?$/i,
+  /^\/api\/v1\/admin\/popups(?:\/.*)?$/i,
+  /^\/api\/v1\/academics\/(curricula|plans|today|dashboard|drilldown|cross-section|risks|recovery-plans|holiday-impact|parent-summary|settings|reports|template|import|ai)(?:\/.*)?$/i,
+  // Event Management System: tenant isolation is strictly JWT-derived
+  /^\/api\/v1\/events(?:\/.*)?$/i,
+  // Admission System: authenticated applicant & staff tenant isolation is strictly JWT-derived
+  /^\/api\/v1\/admissions\/(?!public\/).*$/i,
 ];
 
 const OPTIONAL_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/app\/version-check\/?$/i,
+  // Public Certificate Verification (Phase 11C + Event Certs)
+  /^\/api\/v1\/certificates\/verify(?:\/.*)?$/i,
+  /^\/api\/v1\/events\/certificates\/verify(?:\/.*)?$/i,
   // PhonePe reaches these routes without a SchoolIMS access token. The signed
   // callback is validated by the gateway SDK; neither endpoint accepts a
   // request-provided school_id.
@@ -114,7 +151,7 @@ function pathAllowsMissingSchoolId(req) {
 }
 
 /**
- * Extract school_id from request based on HTTP method.
+ * Extract school_id from request based on HTTP method or headers.
  * @param {import('express').Request} req
  * @returns {string|null} Trimmed school_id or null if missing/empty
  */
@@ -131,6 +168,10 @@ export const getSchoolId = (req) => {
     raw = req.query?.school_id;
   }
 
+  if ((raw == null || String(raw).trim() === '') && req.headers) {
+    raw = req.headers['x-school-id'];
+  }
+
   if (raw == null) return null;
   const trimmed = String(raw).trim();
   return trimmed || null;
@@ -138,29 +179,74 @@ export const getSchoolId = (req) => {
 
 /**
  * Middleware: requireSchoolId
- * Extracts school_id from query (GET/DELETE) or body (POST/PUT/PATCH).
- * Rejects with 400 if missing or empty. Sets req.schoolId on success.
+ * Enforces server-authoritative tenant identity globally.
+ * For authenticated users:
+ * - If client provides matching school_id: accepted, trusted tenant used.
+ * - If client provides mismatching school_id: rejected with 403 (unless platform admin).
+ * - If client provides no school_id: trusted tenant assigned automatically.
+ * For unauthenticated routes:
+ * - Validates presence of school_id when required, or allows optional paths.
  */
 export const requireSchoolId = (req, res, next) => {
+  const trustedSchoolId = req.activeContext?.school_id
+    ? String(req.activeContext.school_id)
+    : (req.user?.schoolId ? String(req.user.schoolId) : null);
+
   if (pathAllowsMissingSchoolId(req)) {
+    if (trustedSchoolId) {
+      req.schoolId = trustedSchoolId;
+    }
     return next();
   }
 
   if (pathUsesJwtSchoolId(req)) {
-    if (!req.user?.schoolId) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    if (!trustedSchoolId) {
+      if (res && typeof res.status === 'function') {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      return;
     }
-    req.schoolId = String(req.user.schoolId);
+    req.schoolId = trustedSchoolId;
     return next();
   }
 
-  const schoolId = getSchoolId(req);
+  const clientSchoolId = getSchoolId(req);
 
-  if (!schoolId) {
+  // Authenticated user path — server-authoritative tenant identity
+  if (trustedSchoolId) {
+    if (clientSchoolId) {
+      if (String(clientSchoolId) === trustedSchoolId) {
+        req.schoolId = trustedSchoolId;
+        return next();
+      }
+
+      // Allow verified platform administrators to target specific schools for migration/support
+      const roles = req.user?.roles || [];
+      const permissions = req.user?.permissions || [];
+      const isPlatformAdmin = roles.includes('platform_admin') || permissions.includes('platform.cross_school');
+      if (isPlatformAdmin) {
+        req.schoolId = String(clientSchoolId);
+        return next();
+      }
+
+      return res.status(403).json({
+        success: false,
+        error: 'Cross-tenant access forbidden: requested school_id does not match authenticated tenant',
+        code: 'CROSS_TENANT_FORBIDDEN',
+      });
+    }
+
+    // No client school_id provided — automatically assign trusted schoolId
+    req.schoolId = trustedSchoolId;
+    return next();
+  }
+
+  // Unauthenticated user path
+  if (!clientSchoolId) {
     return res.status(400).json({ success: false, error: 'school_id is required' });
   }
 
-  req.schoolId = schoolId;
+  req.schoolId = clientSchoolId;
   next();
 };
 

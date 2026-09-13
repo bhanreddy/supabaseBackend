@@ -66,6 +66,8 @@ async function logAction(req, res, responseData, requestId) {
     'token',
     'access_token',
     'refresh_token',
+    'qrPayload',
+    'qr_payload',
     'privateKey',
     'private_key',
     'authorization',
@@ -75,9 +77,14 @@ async function logAction(req, res, responseData, requestId) {
     if (redactKeys.has(key)) details.body[key] = '********';
   }
 
+  const auditSchoolId = req.schoolId
+    ? Number(req.schoolId) || null
+    : (req.user?.schoolId ? Number(req.user.schoolId) || null : null);
+
   try {
     await sql`
             INSERT INTO public.audit_logs (
+                school_id,
                 user_id, 
                 action, 
                 entity, 
@@ -87,6 +94,7 @@ async function logAction(req, res, responseData, requestId) {
                 user_agent, 
                 request_id
             ) VALUES (
+                ${auditSchoolId},
                 ${auditUserId},
                 ${action},
                 ${entity},

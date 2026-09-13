@@ -61,6 +61,10 @@ router.post('/unregister', async (req, res, next) => {
     }
 });
 
+function notificationRecipientId(req) {
+    return req.user?.internal_id || req.user?.id;
+}
+
 /**
  * GET /inbox — A recipient's durable notification history. The account and
  * school are always derived from the authenticated request; no user id is
@@ -68,7 +72,7 @@ router.post('/unregister', async (req, res, next) => {
  */
 router.get('/inbox', async (req, res, next) => {
     try {
-        const userId = req.user?.id;
+        const userId = notificationRecipientId(req);
         const schoolId = req.schoolId;
         if (!userId || !schoolId) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -99,10 +103,33 @@ router.get('/inbox', async (req, res, next) => {
     }
 });
 
+/** Mark every unread inbox row for the signed-in user as read. */
+router.post('/inbox/read-all', async (req, res, next) => {
+    try {
+        const userId = notificationRecipientId(req);
+        const schoolId = req.schoolId;
+        if (!userId || !schoolId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const rows = await sql`
+            UPDATE notifications
+            SET read_at = COALESCE(read_at, NOW()), status = 'READ'
+            WHERE user_id = ${userId}
+              AND school_id = ${schoolId}
+              AND deleted_at IS NULL
+              AND read_at IS NULL
+            RETURNING id
+        `;
+
+        return sendSuccess(res, schoolId, { updated: rows.length });
+    } catch (error) {
+        next(error);
+    }
+});
+
 /** Mark a notification as read only when it belongs to the signed-in user. */
 router.post('/:notificationId/read', async (req, res, next) => {
     try {
-        const userId = req.user?.id;
+        const userId = notificationRecipientId(req);
         const schoolId = req.schoolId;
         const notificationId = req.params.notificationId;
         if (!userId || !schoolId) return res.status(401).json({ error: 'Unauthorized' });

@@ -49,6 +49,30 @@ export const supabaseAdmin = createClient(config.supabase.url, config.supabase.s
 // Used via: import sql from './db.js';
 export default sql;
 
+/**
+ * Execute queries within a transaction scoped to a specific school tenant.
+ * Uses PostgreSQL transaction-local set_config (via set_school_context),
+ * ensuring the connection pool never leaks tenant context across requests.
+ *
+ * @template T
+ * @param {string|number} schoolId
+ * @param {(tx: import('postgres').Sql) => Promise<T>} callback
+ * @returns {Promise<T>}
+ */
+export async function withTenantContext(schoolId, callback) {
+    if (!schoolId) {
+        throw new Error('withTenantContext requires a valid schoolId');
+    }
+    const numericId = Number(schoolId);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+        throw new Error(`Invalid schoolId for withTenantContext: ${schoolId}`);
+    }
+    return sql.begin(async (tx) => {
+        await tx`SELECT set_school_context(${numericId})`;
+        return callback(tx);
+    });
+}
+
 // Used via: import { query } from './db.js'; (legacy bridge if needed)
 export const query = async (text, params) => {
     // Basic bridge to maintain compatibility with some pg-style code if necessary

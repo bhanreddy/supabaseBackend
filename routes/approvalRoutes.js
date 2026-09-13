@@ -1,29 +1,39 @@
 import express from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireAnyPermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import {
   listApprovalRequests,
   approveApprovalRequest,
   rejectApprovalRequest,
+  allowedApprovalTypes,
 } from '../services/approvalService.js';
 
 const router = express.Router();
 
+const APPROVAL_PERMISSIONS = ['fee.underpayment.approve', 'approvals.manage', 'leaves.approve'];
+
 /**
  * GET /approvals
- * List approval requests (default: PENDING). Gated by fee.underpayment.approve
- * for now — future types can use requireAnyPermission.
+ * List approval requests (default: PENDING).
+ * Filter by status ('PENDING', 'APPROVED', 'REJECTED') or type/types.
  */
-router.get('/', requireAuth, requirePermission('fee.underpayment.approve'), asyncHandler(async (req, res) => {
-  const { status = 'PENDING', type } = req.query;
+router.get('/', requireAuth, requireAnyPermission(APPROVAL_PERMISSIONS), asyncHandler(async (req, res) => {
+  const { status = 'PENDING', type, types } = req.query;
   const isAdmin = req.user?.roles?.includes('admin');
-  if (type === 'fee_payment_deletion' && !isAdmin) {
-    return res.status(403).json({ error: 'Only an admin can review payment deletion requests' });
+  const allowedTypes = allowedApprovalTypes(req.user);
+
+  const requestedTypes = types
+    ? String(types).split(',').map((t) => t.trim()).filter(Boolean)
+    : (typeof type === 'string' ? [type] : allowedTypes);
+  const parsedTypes = requestedTypes.filter((candidate) => allowedTypes.includes(candidate));
+  if (requestedTypes.length && !parsedTypes.length) {
+    return res.status(403).json({ error: 'You do not have permission to review the requested approval type' });
   }
+
   const rows = await listApprovalRequests(req.schoolId, {
     status: typeof status === 'string' ? status : 'PENDING',
-    type: typeof type === 'string' ? type : undefined,
+    types: parsedTypes,
     includePaymentDeletion: isAdmin,
   });
   return sendSuccess(res, req.schoolId, rows);
@@ -33,7 +43,7 @@ router.get('/', requireAuth, requirePermission('fee.underpayment.approve'), asyn
  * POST /approvals/:id/approve
  * Execute the registered handler for this request type atomically.
  */
-router.post('/:id/approve', requireAuth, requirePermission('fee.underpayment.approve'), asyncHandler(async (req, res) => {
+router.post('/:id/approve', requireAuth, requireAnyPermission(APPROVAL_PERMISSIONS), asyncHandler(async (req, res) => {
   try {
     const outcome = await approveApprovalRequest(req.params.id, {
       schoolId: req.schoolId,
@@ -46,7 +56,10 @@ router.post('/:id/approve', requireAuth, requirePermission('fee.underpayment.app
     });
   } catch (error) {
     if (error.status) {
-      return res.status(error.status).json({ error: error.message });
+      return res.status(error.status).json({
+        error: error.code || error.message,
+        message: error.message,
+      });
     }
     throw error;
   }
@@ -56,7 +69,7 @@ router.post('/:id/approve', requireAuth, requirePermission('fee.underpayment.app
  * POST /approvals/:id/reject
  * Reject without posting any ledger mutation.
  */
-router.post('/:id/reject', requireAuth, requirePermission('fee.underpayment.approve'), asyncHandler(async (req, res) => {
+router.post('/:id/reject', requireAuth, requireAnyPermission(APPROVAL_PERMISSIONS), asyncHandler(async (req, res) => {
   const { reason } = req.body || {};
   try {
     const request = await rejectApprovalRequest(req.params.id, {
@@ -71,7 +84,10 @@ router.post('/:id/reject', requireAuth, requirePermission('fee.underpayment.appr
     });
   } catch (error) {
     if (error.status) {
-      return res.status(error.status).json({ error: error.message });
+      return res.status(error.status).json({
+        error: error.code || error.message,
+        message: error.message,
+      });
     }
     throw error;
   }

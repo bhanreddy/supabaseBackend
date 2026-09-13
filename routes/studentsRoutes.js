@@ -22,6 +22,7 @@ import {
   resolveStudentParamWithAccess,
 } from '../utils/studentPortal.js';
 import { normalizeOptionalString } from '../utils/normalizeOptionalString.js';
+import { listStudentFinesForLedger } from '../services/fineService.js';
 import {
   getStudentHardDeletePreview,
   hardDeleteStudent,
@@ -46,6 +47,7 @@ import {
   transportDueToStudentFee,
 } from '../services/transportFeeService.js';
 import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
+import { revokeLoginQrForUser } from '../services/studentLoginQrService.js';
 
 const router = express.Router();
 
@@ -261,6 +263,7 @@ async function syncStudentParents(sql, schoolId, studentId, parents) {
 // Get all students
 router.get('/', requirePermission('students.view'), async (req, res) => {
   try {
+    const canRevealAadhaar = Boolean(req.user?.roles?.includes('admin') || req.user?.permissions?.includes('students.aadhaar.reveal'));
     const {
       search,
       page = 1,
@@ -360,7 +363,7 @@ router.get('/', requirePermission('students.view'), async (req, res) => {
     const students = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
-        s.aadhaar_number, s.tc_number, s.previous_school,
+        ${canRevealAadhaar ? sql`s.aadhaar_number,` : sql`CASE WHEN s.aadhaar_number IS NOT NULL AND length(s.aadhaar_number) = 12 THEN 'XXXX-XXXX-' || RIGHT(s.aadhaar_number, 4) ELSE s.aadhaar_number END AS aadhaar_number,`} s.tc_number, s.previous_school,
         to_char(s.admission_date, 'YYYY-MM-DD') AS admission_date, s.status_id,
         s.category_id, s.religion_id, s.blood_group_id,
         s.exit_academic_year_id, to_char(s.exit_date, 'YYYY-MM-DD') AS exit_date,
@@ -862,11 +865,12 @@ router.get('/unenrolled', requirePermission('students.view'), async (req, res) =
 router.get('/:id', requirePermission('students.view'), async (req, res) => {
   try {
     const { id } = req.params;
+    const canRevealAadhaar = Boolean(req.user?.roles?.includes('admin') || req.user?.permissions?.includes('students.aadhaar.reveal'));
     res.set('Cache-Control', 'no-store');
     const student = await sql`
       SELECT 
         s.id, s.admission_no, s.pen_number, s.apar_number, s.village,
-        s.aadhaar_number, s.tc_number, s.previous_school,
+        ${canRevealAadhaar ? sql`s.aadhaar_number,` : sql`CASE WHEN s.aadhaar_number IS NOT NULL AND length(s.aadhaar_number) = 12 THEN 'XXXX-XXXX-' || RIGHT(s.aadhaar_number, 4) ELSE s.aadhaar_number END AS aadhaar_number,`} s.tc_number, s.previous_school,
         s.status_id, s.category_id, s.religion_id, s.blood_group_id,
         s.exit_academic_year_id, to_char(s.exit_date, 'YYYY-MM-DD') AS exit_date,
         (SELECT code FROM academic_years WHERE id = s.exit_academic_year_id) AS exit_academic_year,
@@ -1785,6 +1789,9 @@ router.put('/:id', requirePermission('students.edit'), async (req, res) => {
             authError: authError.message
           });
         }
+        if (authUpdates.password) {
+          await revokeLoginQrForUser(authUserId, req.schoolId, req.user.internal_id);
+        }
         updatedAuthFields.push(...Object.keys(authUpdates));
       }
 
@@ -2412,11 +2419,17 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
       ? await getStudentTransportDue(targetStudentId, academicYearCode, req.schoolId)
       : null;
     const transportFee = transportDueToStudentFee(transportDue, targetStudentId);
+    const { fines, fine_due } = await listStudentFinesForLedger(req.schoolId, targetStudentId);
     const combinedSummary = {
-      total_due: Number(summary[0]?.total_due || 0) + Number(transportFee?.amount_due || 0),
-      total_paid: Number(summary[0]?.total_paid || 0) + Number(transportFee?.amount_paid || 0),
+      total_due: Number(summary[0]?.total_due || 0) + Number(transportFee?.amount_due || 0) + Number(fine_due.total_fines || 0),
+      total_paid: Number(summary[0]?.total_paid || 0) + Number(transportFee?.amount_paid || 0) + Number(fine_due.paid_amount || 0),
       balance: Number(summary[0]?.balance || 0)
-        + Number(transportDue && !transportDue.fee_not_set ? transportDue.balance_due || 0 : 0),
+        + Number(transportDue && !transportDue.fee_not_set ? transportDue.balance_due || 0 : 0)
+        + Number(fine_due.balance_due || 0),
+      fine_due,
+      total_balance: Number(summary[0]?.balance || 0)
+        + Number(transportDue && !transportDue.fee_not_set ? transportDue.balance_due || 0 : 0)
+        + Number(fine_due.balance_due || 0),
     };
 
     if (usePaging) {
@@ -2457,6 +2470,7 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
         summary: combinedSummary,
         fees,
         transport_due: transportDue,
+        fines,
         meta: {
           total: totalCount,
           page: pg,
@@ -2473,6 +2487,7 @@ router.get('/:id/fees', requireAuth, async (req, res) => {
       summary: combinedSummary,
       fees,
       transport_due: transportDue,
+      fines,
     });
   } catch (error) {
 

@@ -1,8 +1,56 @@
+import { readStaffDevicePublicKey } from '../utils/staffDeviceHeaders.js';
 import { supabase, supabaseAdmin } from '../db.js';
 import sql from '../db.js';
 import { withRetry } from '../utils/retry.js';
 import { toZonedTime } from 'date-fns-tz';
 import config from '../config/env.js';
+import { enforceStaffDeviceProof } from '../services/staffDeviceService.js';
+
+export function normalizeStaffDeviceProofPath(originalUrl = '') {
+  return String(originalUrl).split('?')[0].replace(/^\/api\/v1/, '').replace(/^\/api/, '');
+}
+
+function staffDevicePath(req) {
+  return normalizeStaffDeviceProofPath(req.originalUrl);
+}
+
+function requiresStaffDeviceProof(req) {
+  const path = staffDevicePath(req);
+  return path === '/attendance/v2/challenge' || path === '/attendance/v2/verify';
+}
+
+async function enforceStaffDeviceForRequest(req, res, user) {
+  const roles = user?.roles || [];
+  const isAttendanceStaff = roles.some((role) => ['staff', 'teacher', 'principal'].includes(role));
+  if (!user?.person_id || !isAttendanceStaff || roles.includes('admin') || !requiresStaffDeviceProof(req)) return true;
+
+  const path = staffDevicePath(req);
+  const isAttendanceSelfAction = path.startsWith('/attendance/v2/challenge') || path.startsWith('/attendance/v2/verify');
+  const hasDeviceHeaders = Boolean(req.headers['x-device-session-key'] || req.headers['x-device-public-key']);
+  if (!isAttendanceSelfAction && !hasDeviceHeaders) {
+    return true;
+  }
+
+  try {
+    await enforceStaffDeviceProof({
+      schoolId: user.schoolId,
+      userId: user.internal_id || user.id,
+      personId: user.person_id,
+      publicKey: readStaffDevicePublicKey(req.headers),
+      installationId: req.headers['x-device-id'] || null,
+      proofTimestamp: req.headers['x-device-proof-timestamp'] || null,
+      proofNonce: req.headers['x-device-proof-nonce'] || null,
+      proofSignature: req.headers['x-device-proof'] || null,
+      method: req.method,
+      path: staffDevicePath(req),
+      requireRegistration: isAttendanceSelfAction,
+    });
+    return true;
+  } catch (err) {
+    res.status(403).json({ error: err.message, code: err.code || 'INVALID_DEVICE_PROOF' });
+    return false;
+  }
+}
 
 // --- CONFIG CACHE FOR SCHOOL HOURS (per-school) ---
 const schoolHoursCache = new Map(); // keyed by schoolId
@@ -121,6 +169,7 @@ export const identifyUser = async (req, res, next) => {
     const cached = getCachedUser(token);
     if (cached) {
       req.user = cached;
+      if (!(await enforceStaffDeviceForRequest(req, res, cached))) return;
       return next();
     }
 
@@ -158,6 +207,7 @@ export const identifyUser = async (req, res, next) => {
         const stale = getStaleCachedUser(token);
         if (stale && tokenNotYetExpired(token)) {
           req.user = stale;
+          if (!(await enforceStaffDeviceForRequest(req, res, stale))) return;
           return next();
         }
         // Otherwise ask the client to retry. The mobile client already silently
@@ -369,6 +419,8 @@ export const identifyUser = async (req, res, next) => {
       person_id: dbUser.person_id
     };
 
+    if (!(await enforceStaffDeviceForRequest(req, res, req.user))) return;
+
     // ── Cache the result ──
     setCachedUser(token, req.user);
 
@@ -485,3 +537,6 @@ export const requireAuth = (req, res, next) => {
 
 /** Alias: JWT verified user required (same as requireAuth). */
 export const verifyToken = requireAuth;
+
+/** Re-export requireRole for convenience and backward compatibility */
+export { requireRole } from './requireRole.js';

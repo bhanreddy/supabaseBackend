@@ -30,4 +30,32 @@ export const approvalHandlers = {
       },
     };
   },
+
+  /** Staff leave approval handler */
+  leave: async (payload) => {
+    return {
+      approved_leave: payload,
+    };
+  },
+
+  /** Fee concession / discount approval handler */
+  concession: async (payload) => {
+    return {
+      concession: payload,
+    };
+  },
+
+  /** School expense approval handler */
+  expense: async (payload) => {
+    return {
+      expense: payload,
+    };
+  },
+
+  /** Exam marks revision / unlock approval handler */
+  marks_unlock: async (payload) => {
+    return {
+      marks_unlock: payload,
+    };
+  },
 };

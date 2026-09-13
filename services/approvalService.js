@@ -3,6 +3,32 @@ import { approvalHandlers } from './approvalHandlers.js';
 import { enrichFeeTransaction } from './feePaymentService.js';
 import { sendNotificationToUsers } from './notificationService.js';
 
+const APPROVAL_TYPE_PERMISSIONS = Object.freeze({
+  fee_underpayment: 'fee.underpayment.approve',
+  leave: 'leaves.approve',
+  concession: 'approvals.manage',
+  expense: 'approvals.manage',
+  marks_unlock: 'approvals.manage',
+});
+
+export function allowedApprovalTypes(user = {}) {
+  const permissions = new Set(user.permissions || []);
+  const types = Object.entries(APPROVAL_TYPE_PERMISSIONS)
+    .filter(([, permission]) => permissions.has(permission))
+    .map(([type]) => type);
+  if (user.roles?.includes('admin')) types.push('fee_payment_deletion');
+  return [...new Set(types)];
+}
+
+function assertCanReviewApprovalType(type, user) {
+  if (!allowedApprovalTypes(user).includes(type)) {
+    const error = new Error('You do not have permission to review this approval type');
+    error.status = 403;
+    error.code = 'APPROVAL_TYPE_FORBIDDEN';
+    throw error;
+  }
+}
+
 /**
  * Create a pending approval request. Does NOT execute the payload mutation.
  */
@@ -33,13 +59,33 @@ export async function createApprovalRequest({
  */
 export async function listApprovalRequests(
   schoolId,
-  { status = 'PENDING', type, includePaymentDeletion = true } = {}
+  { status = 'PENDING', type, types, includePaymentDeletion = true } = {}
 ) {
+  const typeList = Array.isArray(types) && types.length > 0
+    ? types
+    : (type ? [type] : null);
+
   return sql`
     SELECT
       ar.*,
       req_p.display_name as requested_by_name,
-      rev_p.display_name as reviewed_by_name
+      rev_p.display_name as reviewed_by_name,
+      (SELECT req_email.contact_value
+       FROM person_contacts req_email
+       WHERE req_email.person_id = req_p.id
+         AND req_email.school_id = ar.school_id
+         AND req_email.contact_type = 'email'
+         AND req_email.is_primary = true
+         AND req_email.deleted_at IS NULL
+       LIMIT 1) as requested_by_email,
+      (SELECT rev_email.contact_value
+       FROM person_contacts rev_email
+       WHERE rev_email.person_id = rev_p.id
+         AND rev_email.school_id = ar.school_id
+         AND rev_email.contact_type = 'email'
+         AND rev_email.is_primary = true
+         AND rev_email.deleted_at IS NULL
+       LIMIT 1) as reviewed_by_email
     FROM approval_requests ar
     JOIN users req_u ON ar.requested_by = req_u.id
     JOIN persons req_p ON req_u.person_id = req_p.id
@@ -47,7 +93,7 @@ export async function listApprovalRequests(
     LEFT JOIN persons rev_p ON rev_u.person_id = rev_p.id
     WHERE ar.school_id = ${schoolId}
       ${status ? sql`AND ar.status = ${status}` : sql``}
-      ${type ? sql`AND ar.type = ${type}` : sql``}
+      ${typeList ? sql`AND ar.type IN ${sql(typeList)}` : sql``}
       ${includePaymentDeletion ? sql`` : sql`AND ar.type <> 'fee_payment_deletion'`}
     ORDER BY ar.created_at DESC
   `;
@@ -79,16 +125,21 @@ export async function approveApprovalRequest(id, { schoolId, reviewerId, user })
       throw err;
     }
 
-    if (request.type === 'fee_payment_deletion' && !user?.roles?.includes('admin')) {
-      const err = new Error('Only an admin can approve payment deletion requests');
+    assertCanReviewApprovalType(request.type, user);
+
+    // Self-approval restriction
+    if (request.requested_by && reviewerId && String(request.requested_by) === String(reviewerId)) {
+      const err = new Error('You cannot approve or reject your own request');
       err.status = 403;
+      err.code = 'SELF_APPROVAL_PROHIBITED';
       throw err;
     }
 
     const handler = approvalHandlers[request.type];
     if (!handler) {
-      const err = new Error(`No handler registered for approval type: ${request.type}`);
-      err.status = 500;
+      const err = new Error('Unsupported approval request type');
+      err.status = 409;
+      err.code = 'UNSUPPORTED_APPROVAL_TYPE';
       throw err;
     }
 
@@ -127,7 +178,7 @@ export async function approveApprovalRequest(id, { schoolId, reviewerId, user })
 export async function rejectApprovalRequest(id, { schoolId, reviewerId, reviewReason, user }) {
   const updated = await sql.begin(async (trx) => {
     const [request] = await trx`
-      SELECT id, status, type
+      SELECT id, status, type, requested_by
       FROM approval_requests
       WHERE id = ${id}
         AND school_id = ${schoolId}
@@ -144,9 +195,14 @@ export async function rejectApprovalRequest(id, { schoolId, reviewerId, reviewRe
       err.status = 409;
       throw err;
     }
-    if (request.type === 'fee_payment_deletion' && !user?.roles?.includes('admin')) {
-      const err = new Error('Only an admin can reject payment deletion requests');
+
+    assertCanReviewApprovalType(request.type, user);
+
+    // Self-approval restriction
+    if (request.requested_by && reviewerId && String(request.requested_by) === String(reviewerId)) {
+      const err = new Error('You cannot approve or reject your own request');
       err.status = 403;
+      err.code = 'SELF_APPROVAL_PROHIBITED';
       throw err;
     }
 

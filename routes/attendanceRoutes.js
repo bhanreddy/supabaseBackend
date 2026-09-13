@@ -5,9 +5,13 @@ import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 import { shouldSendAttendanceNotification } from '../services/attendanceNotificationService.js';
+import { getAttendanceRiskInsights, updateStudentIntervention } from '../services/attendanceRiskService.js';
+import { emitSchoolEvent, AUTOMATION_EVENTS } from '../services/automationEventService.js';
 
 const router = express.Router();
 import { sendNotificationToUsers } from '../services/notificationService.js';
+import { recordAdminAttendanceBatch } from '../services/staffAttendanceV2Service.js';
+import { resolveSchoolDay } from '../services/workingDayResolver.js';
 
 const ATTENDANCE_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -31,6 +35,13 @@ function weekdayForAttendanceDate(rawDate) {
  * Per-day schools store a row per weekday, so we use the real weekday.
  */
 async function timetableDayForDate(schoolId, rawDate) {
+  try {
+    const dayStatus = await resolveSchoolDay(schoolId, rawDate);
+    if (dayStatus?.timetableOverride) {
+      return dayStatus.timetableOverride;
+    }
+  } catch (e) {}
+
   const [row] = await sql`SELECT timetable_mode FROM schools WHERE id = ${schoolId}`;
   return row?.timetable_mode === 'per_day'
     ? weekdayForAttendanceDate(rawDate)
@@ -323,6 +334,8 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
       JOIN classes c ON cs.class_id = c.id
       JOIN sections sec ON cs.section_id = sec.id
       WHERE se.student_id = ${student_id}
+        AND se.school_id = ${req.schoolId}
+        AND da.school_id = ${req.schoolId}
         AND da.attendance_date BETWEEN ${from_date} AND ${to_date}
         AND da.deleted_at IS NULL
         ${lastSyncedAt ? sql`AND (da.updated_at >= ${lastSyncedAt} OR da.marked_at >= ${lastSyncedAt})` : sql``}
@@ -373,6 +386,16 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (!date || !attendance || !Array.isArray(attendance)) {
     return res.status(400).json({
       error: 'date and attendance array are required'
+    });
+  }
+
+  // Working-day resolver: prevent marking attendance on scheduled holidays unless overridden
+  const dayStatus = await resolveSchoolDay(req.schoolId, date);
+  if (dayStatus.isHoliday && !dayStatus.attendanceAllowed && !req.body.override_holiday && !isAdmin) {
+    return res.status(400).json({
+      error: `Cannot mark attendance: ${date} is a scheduled holiday (${dayStatus.holidayTitle || 'School Holiday'}).`,
+      code: 'HOLIDAY_ATTENDANCE_DISABLED',
+      holiday: dayStatus.holidayTitle,
     });
   }
 
@@ -540,6 +563,11 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     try {
       if (!results || results.length === 0) return;
 
+      const studentIds = results.map((r) => r.student_id).filter(Boolean);
+      for (const sid of studentIds) {
+        emitSchoolEvent(AUTOMATION_EVENTS.STUDENT_ATTENDANCE_RISK_CHANGED, { schoolId: req.schoolId, studentId: sid });
+      }
+
       // Back-dated attendance may be entered or corrected in bulk, but families
       // must only be alerted for the school's current calendar date.
       const isToday = await shouldSendAttendanceNotification({
@@ -549,7 +577,6 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       });
       if (!isToday) return;
 
-      const studentIds = results.map((r) => r.student_id).filter(Boolean);
       const notificationDate = date;
 
       const allTargetUsers = await sql`
@@ -673,6 +700,19 @@ router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req
 
   if (!updated) {
     return res.status(404).json({ error: 'Attendance record not found' });
+  }
+
+  if (updated.student_enrollment_id) {
+    const [enrollment] = await sql`
+      SELECT student_id FROM student_enrollments
+      WHERE id = ${updated.student_enrollment_id} AND school_id = ${req.schoolId}
+    `;
+    if (enrollment?.student_id) {
+      emitSchoolEvent(AUTOMATION_EVENTS.STUDENT_ATTENDANCE_RISK_CHANGED, {
+        schoolId: req.schoolId,
+        studentId: enrollment.student_id,
+      });
+    }
   }
 
   return sendSuccess(res, req.schoolId, { message: 'Attendance updated', attendance: updated });
@@ -976,66 +1016,45 @@ router.get('/staff', requirePermission('attendance.view'), asyncHandler(async (r
  * Mark staff attendance (bulk)
  * Body: { date, attendance: [{ staff_id, status }] }
  */
-router.post('/staff', requirePermission('attendance.mark'), asyncHandler(async (req, res) => {
-  const { date, attendance } = req.body;
+router.post('/staff', requirePermission('staff_attendance.manage'), asyncHandler(async (req, res) => {
+  const { date, attendance, reason, idempotency_key } = req.body;
 
-  if (!date || !attendance || !Array.isArray(attendance)) {
+  if (!date || !attendance || !Array.isArray(attendance) || !reason || !idempotency_key) {
     return res.status(400).json({
-      error: 'date and attendance array are required'
+      error: 'date, attendance array, reason, and idempotency_key are required'
     });
   }
 
-  const markedBy = req.user?.internal_id || null;
+  const markedBy = req.user?.internal_id || req.user?.id;
   const rows = (attendance || []).filter((r) => r?.staff_id && r?.status);
   if (rows.length === 0) {
     return res.status(400).json({ error: 'No valid staff attendance records provided' });
   }
 
-  const lastByStaff = new Map();
-  for (const r of rows) {
-    lastByStaff.set(String(r.staff_id), r.status);
-  }
-  const staffIdArr = [...lastByStaff.keys()];
-  const statusArr = staffIdArr.map((id) => lastByStaff.get(id));
-
-  const validStaff = await sql`
-    SELECT id
-    FROM staff
-    WHERE id = ANY(${sql.array(staffIdArr)}::uuid[])
-      AND school_id = ${req.schoolId}
-      AND deleted_at IS NULL
-  `;
-
-  if (validStaff.length !== staffIdArr.length) {
-    return res.status(400).json({
-      error: 'One or more staff IDs not found in this school',
-      expected: staffIdArr.length,
-      found: validStaff.length
+  let upserted;
+  try {
+    upserted = await recordAdminAttendanceBatch({
+      schoolId: req.schoolId,
+      adminUserId: markedBy,
+      attendanceDate: date,
+      rows,
+      reason,
+      idempotencyKey: idempotency_key,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
     });
+  } catch (err) {
+    if (err.code === 'SELF_MODIFICATION_FORBIDDEN') {
+      return res.status(403).json({ error: err.message, code: err.code });
+    }
+    if (err.code === 'STAFF_NOT_FOUND') {
+      return res.status(404).json({ error: err.message, code: err.code });
+    }
+    if (['INVALID_ATTENDANCE_DATE', 'INVALID_ATTENDANCE_STATUS', 'INVALID_ADMIN_REQUEST'].includes(err.code)) {
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
+    throw err;
   }
-
-  const upserted = await sql`
-    INSERT INTO staff_attendance (school_id, staff_id, attendance_date, status, marked_by)
-    SELECT
-      ${req.schoolId},
-      u.staff_id,
-      ${date}::date,
-      u.status::attendance_status_enum,
-      ${markedBy}
-    FROM unnest(
-      ${sql.array(staffIdArr)}::uuid[],
-      ${sql.array(statusArr)}::text[]
-    ) AS u(staff_id, status)
-    ON CONFLICT (staff_id, attendance_date)
-    DO UPDATE SET
-      school_id  = EXCLUDED.school_id,
-      status     = EXCLUDED.status,
-      marked_by  = EXCLUDED.marked_by,
-      updated_at = NOW(),
-      deleted_at = NULL
-    RETURNING id, staff_id, status
-  `;
-
   const results = upserted.map((row) => ({ staff_id: row.staff_id, status: row.status }));
 
   return sendSuccess(res, req.schoolId, {
@@ -1073,6 +1092,47 @@ router.get('/staff/me', requireAuth, asyncHandler(async (req, res) => {
   `;
 
   return sendSuccess(res, req.schoolId, history);
+}));
+
+/**
+ * GET /attendance/risk-insights
+ * School-scoped attendance risk intelligence: identifies students approaching or below threshold.
+ */
+router.get('/risk-insights', requirePermission('attendance.view'), asyncHandler(async (req, res) => {
+  const { class_id, section_id, risk_state, intervention_status, page, limit, lookback_days } = req.query;
+
+  const insights = await getAttendanceRiskInsights(req.schoolId, {
+    classId: class_id,
+    sectionId: section_id,
+    riskState: risk_state,
+    interventionStatus: intervention_status,
+    page: Number(page) || 1,
+    limit: limit !== undefined ? Number(limit) : 1000,
+    lookbackDays: lookback_days ? Number(lookback_days) : 60,
+  });
+
+  return sendSuccess(res, req.schoolId, insights);
+}));
+
+/**
+ * PATCH /attendance/interventions/:studentId
+ * Update lightweight intervention state for at-risk student.
+ */
+router.patch('/interventions/:studentId', requirePermission('attendance.edit'), asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+  const { status, notes } = req.body;
+
+  if (!status) {
+    return res.status(400).json({ error: 'Intervention status is required' });
+  }
+
+  const saved = await updateStudentIntervention(req.schoolId, studentId, {
+    status,
+    notes,
+    updatedBy: req.user.internal_id || req.user.id,
+  });
+
+  return sendSuccess(res, req.schoolId, saved);
 }));
 
 export default router;

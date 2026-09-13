@@ -181,6 +181,8 @@ router.get('/board', requirePermission('academics.manage'), asyncHandler(async (
         COALESCE(NULLIF(tp.display_name, ''), tp.first_name, regular_staff.staff_code) AS regular_teacher_name,
         cover.id AS substitution_id, cover.reason,
         cover.substitute_teacher_id,
+        cover.is_auto_suggested,
+        cover.leave_application_id,
         COALESCE(NULLIF(cp.display_name, ''), cp.first_name, cover_staff.staff_code) AS substitute_teacher_name,
         cover.created_at AS assigned_at
       FROM timetable_slots ts
@@ -428,6 +430,16 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
         error.status = 400;
         throw error;
       }
+
+      // If an auto-suggested substitution exists for this slot & date, remove it before assigning confirmed substitution
+      await tx`
+        DELETE FROM timetable_substitutions
+        WHERE school_id = ${req.schoolId}
+          AND substitution_date = ${date}
+          AND timetable_slot_id = ${slot.slot_id}
+          AND is_auto_suggested = true
+          AND cancelled_at IS NULL
+      `;
 
       const [blocked] = await tx`
         SELECT
