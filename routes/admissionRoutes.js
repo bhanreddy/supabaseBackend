@@ -1,6 +1,5 @@
 import express from 'express';
 import multer from 'multer';
-import crypto from 'node:crypto';
 import sql, { supabaseAdmin } from '../db.js';
 import { requireAuth, requirePermission, requireAnyPermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
@@ -16,7 +15,7 @@ import {
   reviewDocument,
   getApplicationDocumentsWithChecklist,
 } from '../services/admissionDocumentService.js';
-import { checkDuplicateApplications } from '../services/admissionDuplicateService.js';
+import { checkDuplicateApplications, mergeDuplicateApplications } from '../services/admissionDuplicateService.js';
 import {
   validateConversionReadiness,
   convertApplicantToStudent,
@@ -43,6 +42,12 @@ import {
   formatApplicationNo,
   httpError,
   stageCodeForStatus,
+  generateApplicantPassword,
+  computeApplicationProgress,
+  buildSmartNextAction,
+  presentWorkflowTimeline,
+  APPLICANT_FULL_EDIT_STATUSES,
+  APPLICANT_PARTIAL_EDIT_STATUSES,
 } from '../services/admissionHelpers.js';
 import { createSchoolScopedAuthUser, SchoolEmailConflictError } from '../utils/schoolEmail.js';
 import { admissionPublicLimiter } from '../middleware/rateLimiter.js';
@@ -146,10 +151,32 @@ router.post('/public/enquiry', admissionPublicLimiter, asyncHandler(async (req, 
     notes = '',
     create_applicant_account = true,
     password = null,
+    force_new = false,
   } = req.body;
 
   if (!parent_name?.trim() || !student_name?.trim() || !phone?.trim()) {
     return res.status(400).json({ error: 'Parent name, student name, and phone are required' });
+  }
+
+  const [portalSettings] = await sql`
+    SELECT is_admission_open FROM admission_settings WHERE school_id = ${schoolId}
+  `;
+  if (portalSettings && portalSettings.is_admission_open === false) {
+    return res.status(403).json({ error: 'Admissions are currently closed for this school.' });
+  }
+
+  const duplicates = await checkDuplicateApplications(schoolId, {
+    phone,
+    email,
+    studentFirstName: student_name.trim().split(' ')[0],
+    studentLastName: student_name.trim().split(' ').slice(1).join(' '),
+  });
+  if (duplicates.isPotentialDuplicate && !force_new) {
+    return sendSuccess(res, schoolId, {
+      isPotentialDuplicate: true,
+      duplicates,
+      message: 'A possible existing application was found. Continue the existing application or confirm to create a new one.',
+    });
   }
 
   // Resolve academic year if not provided
@@ -193,7 +220,8 @@ router.post('/public/enquiry', admissionPublicLimiter, asyncHandler(async (req, 
   if (create_applicant_account) {
     const applicantEmail = email?.trim().toLowerCase() ||
       `applicant.${phone.replace(/\D/g, '').slice(-10)}@admission.schoolims.internal`;
-    const applicantPassword = password?.trim() || `Adm@${phone.replace(/\D/g, '').slice(-4)}${currentYear}`;
+    const applicantPassword = password?.trim() || generateApplicantPassword();
+    let issuedNewPassword = true;
 
     try {
       const applicantEmailNormalized = applicantEmail;
@@ -215,7 +243,10 @@ router.post('/public/enquiry', admissionPublicLimiter, asyncHandler(async (req, 
           const [existingAuth] = await sql`
             SELECT id, email FROM auth.users WHERE lower(email) = ${applicantEmailNormalized} LIMIT 1
           `;
-          if (existingAuth?.id) applicantUserId = existingAuth.id;
+          if (existingAuth?.id) {
+            applicantUserId = existingAuth.id;
+            issuedNewPassword = false;
+          }
         } else {
           throw createErr;
         }
@@ -257,7 +288,8 @@ router.post('/public/enquiry', admissionPublicLimiter, asyncHandler(async (req, 
 
         applicantCredentials = {
           email: applicantEmail,
-          password: applicantPassword,
+          password: issuedNewPassword ? applicantPassword : undefined,
+          existingAccount: !issuedNewPassword,
           loginUrl: '/admission/login',
         };
       }
@@ -436,48 +468,10 @@ router.get('/my-application', requireAuth, asyncHandler(async (req, res) => {
     ORDER BY h.entered_at ASC
   `;
 
-  // Determine smart next action
-  let smartNextAction = {
-    type: 'NO_ACTION_REQUIRED',
-    title: 'Application Under Review',
-    description: 'Your application is currently being reviewed by school authorities. No action is required from you at this time.',
-    deadline: app.sla_due_at,
-  };
-
-  const rejectedDocs = documentChecklist.checklist.filter((c) => c.uploadedDoc?.status === 'REJECTED');
-  const missingMandatoryDocs = documentChecklist.checklist.filter((c) => c.isMandatory && !c.uploadedDoc);
-
-  if (rejectedDocs.length > 0) {
-    smartNextAction = {
-      type: 'ACTION_REQUIRED',
-      title: 'Action Required: Re-upload Rejected Document',
-      description: `Please re-upload: ${rejectedDocs.map((d) => d.displayName).join(', ')}. Reason: ${rejectedDocs[0]?.uploadedDoc?.rejection_reason || 'Image unclear'}`,
-      actionKey: 'UPLOAD_DOCUMENT',
-      targetDocType: rejectedDocs[0]?.documentType,
-    };
-  } else if (missingMandatoryDocs.length > 0) {
-    smartNextAction = {
-      type: 'ACTION_REQUIRED',
-      title: 'Action Required: Upload Missing Document',
-      description: `Please upload mandatory documents: ${missingMandatoryDocs.map((d) => d.displayName).join(', ')}`,
-      actionKey: 'UPLOAD_DOCUMENT',
-      targetDocType: missingMandatoryDocs[0]?.documentType,
-    };
-  } else if (app.status === 'FEE_PENDING') {
-    smartNextAction = {
-      type: 'ACTION_REQUIRED',
-      title: 'Action Required: Admission Fee Payment',
-      description: 'Your application is approved. Please pay the admission confirmation fee to reserve your seat.',
-      actionKey: 'PAY_FEE',
-    };
-  } else if (app.status === 'CONVERTED_TO_STUDENT') {
-    smartNextAction = {
-      type: 'COMPLETED',
-      title: 'Admission Confirmed!',
-      description: 'Congratulations! Your admission has been successfully confirmed and your student account is active.',
-      actionKey: 'OPEN_PORTAL',
-    };
-  }
+  const stages = await getWorkflowStages(schoolId);
+  const smartNextAction = buildSmartNextAction(app, { checklist: documentChecklist, interviews });
+  const progressPercent = computeApplicationProgress(app, stages, documentChecklist);
+  const workflowTimeline = presentWorkflowTimeline(stages, app, timeline);
 
   sendSuccess(res, schoolId, {
     application: presentApplication(app),
@@ -485,6 +479,9 @@ router.get('/my-application', requireAuth, asyncHandler(async (req, res) => {
     interviews,
     messages,
     timeline,
+    workflowTimeline,
+    workflowStages: stages,
+    progressPercent,
     smartNextAction,
   });
 }));
@@ -504,6 +501,11 @@ router.put('/my-application', requireAuth, asyncHandler(async (req, res) => {
 
   if (existing.status === WORKFLOW_STATUSES.CONVERTED_TO_STUDENT) {
     return res.status(400).json({ error: 'Cannot modify a converted application' });
+  }
+  const canFullyEdit = APPLICANT_FULL_EDIT_STATUSES.includes(existing.status);
+  const canPartialEdit = APPLICANT_PARTIAL_EDIT_STATUSES.includes(existing.status);
+  if (!canFullyEdit && !canPartialEdit) {
+    return res.status(400).json({ error: 'This application can no longer be edited. Contact the school if you need a correction.' });
   }
 
   const {
@@ -532,8 +534,8 @@ router.put('/my-application', requireAuth, asyncHandler(async (req, res) => {
         category_id = COALESCE(${category_id}, category_id),
         aadhaar_number = COALESCE(${aadhaar_number}, aadhaar_number),
         student_photo_url = COALESCE(${student_photo_url}, student_photo_url),
-        applying_class_id = COALESCE(${applying_class_id}, applying_class_id),
-        academic_year_id = COALESCE(${academic_year_id}, academic_year_id),
+        applying_class_id = COALESCE(${canFullyEdit ? applying_class_id : null}, applying_class_id),
+        academic_year_id = COALESCE(${canFullyEdit ? academic_year_id : null}, academic_year_id),
         father_name = COALESCE(${father_name}, father_name),
         father_phone = COALESCE(${father_phone}, father_phone),
         father_email = COALESCE(${father_email}, father_email),
@@ -591,12 +593,21 @@ router.post('/my-application/submit', requireAuth, asyncHandler(async (req, res)
     return res.status(404).json({ error: 'Application not found' });
   }
 
-  // Check minimum mandatory requirements
+  if (!['ENQUIRY_CREATED', 'APPLICATION_STARTED', 'APPLICATION_INCOMPLETE'].includes(app.status)) {
+    return res.status(400).json({ error: 'This application has already been submitted' });
+  }
+
   if (!app.student_first_name?.trim() || !app.applying_class_id) {
     return res.status(400).json({ error: 'Please complete all required fields before submitting' });
   }
+  if (!app.dob) {
+    return res.status(400).json({ error: 'Student date of birth is required before submitting' });
+  }
+  const hasParent = (app.father_name && app.father_phone) || (app.mother_name && app.mother_phone) || (app.guardian_name && app.guardian_phone);
+  if (!hasParent) {
+    return res.status(400).json({ error: 'At least one parent or guardian with name and phone is required' });
+  }
 
-  // Advance stage to APPLICATION_SUBMITTED
   const updated = await transitionApplicationStage(
     schoolId,
     app.id,
@@ -604,15 +615,29 @@ router.post('/my-application/submit', requireAuth, asyncHandler(async (req, res)
     { actorId: userId, actorRole: 'applicant', remarks: 'Application submitted by parent' }
   );
 
-  // Update submitted_at
   await sql`
     UPDATE admission_applications
     SET submitted_at = now()
     WHERE id = ${app.id}
   `;
 
+  if (app.applicant_user_id) {
+    await sendAdmissionNotification({
+      schoolId,
+      applicationId: app.id,
+      recipientUserId: app.applicant_user_id,
+      type: 'ADMISSION_APPLICATION_SUBMITTED',
+      params: {
+        application_no: app.application_no,
+        student_name: [app.student_first_name, app.student_last_name].filter(Boolean).join(' '),
+      },
+      subject: `Application submitted: ${app.application_no}`,
+      message: `Your admission application ${app.application_no} has been submitted successfully.`,
+    });
+  }
+
   sendSuccess(res, schoolId, {
-    application: updated,
+    application: presentApplication(updated),
     message: 'Your admission application has been submitted successfully!',
   });
 }));
@@ -702,6 +727,9 @@ router.post('/my-application/withdraw', requireAuth, asyncHandler(async (req, re
   const userId = req.user.internal_id || req.user.id;
   const app = await findApplicantApplication(schoolId, userId, req.user.email);
   if (!app) return res.status(404).json({ error: 'Application not found' });
+  if (['CONVERTED_TO_STUDENT', 'REJECTED'].includes(app.status)) {
+    return res.status(400).json({ error: 'This application can no longer be withdrawn' });
+  }
 
   const updated = await transitionApplicationStage(
     schoolId,
@@ -1325,6 +1353,25 @@ router.post('/applications/:id/messages', requireAuth, requireAnyPermission(['ad
   sendSuccess(res, schoolId, { message: 'Message sent to applicant' });
 }));
 
+router.post('/applications/:id/merge', requireAuth, requireAnyPermission(['admissions.approve', 'admin.manage']), asyncHandler(async (req, res) => {
+  const schoolId = req.schoolId;
+  const { sourceApplicationId, confirm } = req.body || {};
+  if (!confirm) {
+    return res.status(400).json({ error: 'Merge requires confirm: true' });
+  }
+  const result = await mergeDuplicateApplications(
+    schoolId,
+    req.params.id,
+    sourceApplicationId,
+    req.user.internal_id || req.user.id
+  );
+  sendSuccess(res, schoolId, {
+    application: presentApplication(result.primary),
+    mergedFrom: result.mergedFrom,
+    message: `Merged ${result.mergedFrom} into the current application`,
+  });
+}));
+
 router.post('/applications/:id/waitlist/promote', requireAuth, requireAnyPermission(['admissions.approve', 'admin.manage']), asyncHandler(async (req, res) => {
   const schoolId = req.schoolId;
   const applicationId = req.params.id;
@@ -1391,7 +1438,14 @@ router.get('/settings', requireAuth, requireAnyPermission(['admissions.settings'
   const [settings] = await sql`
     SELECT * FROM admission_settings WHERE school_id = ${schoolId}
   `;
-  const stages = await getWorkflowStages(schoolId);
+  const stages = await sql`
+    SELECT id, code, name, description, sequence_order, is_mandatory, is_active,
+           requires_approval, requires_documents, requires_interview, requires_test, requires_fee,
+           responsible_role, sla_hours, color
+    FROM admission_workflow_stages
+    WHERE school_id = ${schoolId}
+    ORDER BY sequence_order ASC
+  `;
   const docRequirements = await getDocumentRequirements(schoolId);
 
   const capacities = await sql`

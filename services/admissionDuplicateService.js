@@ -186,7 +186,6 @@ export async function mergeDuplicateApplications(schoolId, primaryId, sourceId, 
       throw err;
     }
 
-    const fill = (field) => (primary[field] == null || primary[field] === '' ? source[field] : primary[field]);
     await tx`
       UPDATE admission_applications
       SET student_middle_name = COALESCE(student_middle_name, ${source.student_middle_name}),

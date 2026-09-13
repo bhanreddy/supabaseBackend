@@ -16,9 +16,20 @@ export async function generateNextAdmissionNumber(tx, schoolId) {
     FOR UPDATE
   `;
 
-  const prefix = settings?.admission_number_prefix || 'ADM';
-  const format = settings?.admission_number_format || 'ADM/YY/NNNN';
-  let seq = settings?.admission_number_seq || 1;
+  let settingsRow = settings;
+  if (!settingsRow) {
+    const [inserted] = await tx`
+      INSERT INTO admission_settings (school_id, is_admission_open, admission_number_prefix, admission_number_format, admission_number_seq)
+      VALUES (${schoolId}, true, 'ADM', 'ADM/YY/NNNN', 1)
+      ON CONFLICT (school_id) DO UPDATE SET updated_at = now()
+      RETURNING admission_number_prefix, admission_number_format, admission_number_seq
+    `;
+    settingsRow = inserted;
+  }
+
+  const prefix = settingsRow?.admission_number_prefix || 'ADM';
+  const format = settingsRow?.admission_number_format || 'ADM/YY/NNNN';
+  let seq = settingsRow?.admission_number_seq || 1;
 
   const currentYear = new Date().getFullYear();
   const shortYear = String(currentYear).slice(-2);
@@ -210,21 +221,8 @@ export async function convertApplicantToStudent(schoolId, applicationId, operato
       RETURNING id, admission_no
     `;
 
-    // 5. Create Student Contact Records (if provided)
-    if (app.father_email || app.mother_email) {
-      const studentEmail = app.father_email || app.mother_email;
-      await tx`
-        INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary)
-        VALUES (${schoolId}, ${studentPerson.id}, 'email', ${studentEmail.trim().toLowerCase()}, false)
-      `;
-    }
-    if (app.father_phone || app.mother_phone) {
-      const studentPhone = app.father_phone || app.mother_phone;
-      await tx`
-        INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary)
-        VALUES (${schoolId}, ${studentPerson.id}, 'phone', ${studentPhone.trim()}, false)
-      `;
-    }
+    // Parent email/phone stay on the parent person. Copying them onto the
+    // student would violate school-wide unique email and mix identities.
 
     // 6. Class & Section Enrollment — prefer existing class_section for this class/year
     let targetSectionId = options.section_id || app.assigned_section_id || null;
@@ -328,20 +326,45 @@ export async function convertApplicantToStudent(schoolId, applicationId, operato
       });
     }
 
-    for (const p of parentsToSync) {
-      // Insert Parent Person
-      const [parentPerson] = await tx`
-        INSERT INTO persons (school_id, first_name, gender_id)
-        VALUES (${schoolId}, ${p.first_name}, ${p.gender_id})
-        RETURNING id
+    let applicantPersonId = null;
+    if (app.applicant_user_id) {
+      const [applicantUser] = await tx`
+        SELECT person_id FROM users WHERE id = ${app.applicant_user_id} AND school_id = ${schoolId}
       `;
+      applicantPersonId = applicantUser?.person_id || null;
+    }
 
-      // Insert Parent Entity
-      const [parentEntity] = await tx`
-        INSERT INTO parents (school_id, person_id, occupation)
-        VALUES (${schoolId}, ${parentPerson.id}, ${p.occupation || null})
-        RETURNING id
+    let linkedApplicantAsParent = false;
+    for (const p of parentsToSync) {
+      let parentPersonId = null;
+      if (!linkedApplicantAsParent && applicantPersonId && p.is_primary_contact) {
+        parentPersonId = applicantPersonId;
+        await tx`
+          UPDATE persons
+          SET first_name = COALESCE(NULLIF(first_name, ''), ${p.first_name}),
+              gender_id = COALESCE(gender_id, ${p.gender_id})
+          WHERE id = ${parentPersonId} AND school_id = ${schoolId}
+        `;
+        linkedApplicantAsParent = true;
+      } else {
+        const [parentPerson] = await tx`
+          INSERT INTO persons (school_id, first_name, gender_id)
+          VALUES (${schoolId}, ${p.first_name}, ${p.gender_id})
+          RETURNING id
+        `;
+        parentPersonId = parentPerson.id;
+      }
+
+      const [existingParent] = await tx`
+        SELECT id FROM parents
+        WHERE school_id = ${schoolId} AND person_id = ${parentPersonId} AND deleted_at IS NULL
+        LIMIT 1
       `;
+      const parentEntity = existingParent || (await tx`
+        INSERT INTO parents (school_id, person_id, occupation)
+        VALUES (${schoolId}, ${parentPersonId}, ${p.occupation || null})
+        RETURNING id
+      `)[0];
 
       // Rel Map: Father=1, Mother=2, Guardian=3
       const relId = p.relation === 'Father' ? 1 : (p.relation === 'Mother' ? 2 : 3);
@@ -360,14 +383,14 @@ export async function convertApplicantToStudent(schoolId, applicationId, operato
       if (p.phone) {
         await tx`
           INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary)
-          VALUES (${schoolId}, ${parentPerson.id}, 'phone', ${p.phone}, true)
+          VALUES (${schoolId}, ${parentPersonId}, 'phone', ${p.phone}, true)
           ON CONFLICT DO NOTHING
         `;
       }
       if (p.email) {
         await tx`
           INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary)
-          VALUES (${schoolId}, ${parentPerson.id}, 'email', ${p.email.toLowerCase()}, false)
+          VALUES (${schoolId}, ${parentPersonId}, 'email', ${p.email.toLowerCase()}, false)
           ON CONFLICT DO NOTHING
         `;
       }

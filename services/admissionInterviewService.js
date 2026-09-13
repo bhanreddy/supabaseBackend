@@ -1,5 +1,65 @@
 import sql from '../db.js';
 import { WORKFLOW_STATUSES, transitionApplicationStage } from './admissionWorkflowService.js';
+import { getApplicationDocumentsWithChecklist } from './admissionDocumentService.js';
+
+export async function refreshApplicationScore(schoolId, applicationId, extras = {}) {
+  const [settings] = await sql`
+    SELECT scoring_weights FROM admission_settings WHERE school_id = ${schoolId}
+  `;
+  const weights = settings?.scoring_weights || {
+    academic: 30, interview: 30, entrance_test: 25, documents: 10, other: 5,
+  };
+  const interviews = await sql`
+    SELECT interview_type, total_score FROM admission_interviews
+    WHERE school_id = ${schoolId} AND application_id = ${applicationId} AND status = 'COMPLETED'
+  `;
+  const interviewRow = interviews.find((i) => i.interview_type !== 'ENTRANCE_TEST');
+  const testRow = interviews.find((i) => i.interview_type === 'ENTRANCE_TEST');
+  const interviewScore = extras.interviewScore
+    ?? Number(interviewRow?.total_score || 0);
+  const testScore = Number(testRow?.total_score || 0);
+  let documentsScore = 0;
+  try {
+    const docs = await getApplicationDocumentsWithChecklist(schoolId, applicationId);
+    documentsScore = docs.mandatoryCount > 0
+      ? Math.round((docs.verifiedCount / docs.mandatoryCount) * 100)
+      : 0;
+  } catch {
+    documentsScore = 0;
+  }
+
+  const wInterview = Number(weights.interview || 0);
+  const wTest = Number(weights.entrance_test || 0);
+  const wDocs = Number(weights.documents || 0);
+  const wAcademic = Number(weights.academic || 0);
+  const wOther = Number(weights.other || 0);
+  const usable = wInterview + wTest + wDocs + wAcademic + wOther || 100;
+  const total = (
+    (interviewScore * wInterview) +
+    (testScore * wTest) +
+    (documentsScore * wDocs) +
+    (0 * wAcademic) +
+    (0 * wOther)
+  ) / usable;
+
+  const breakdown = {
+    interview: Math.round(interviewScore * 10) / 10,
+    entrance_test: Math.round(testScore * 10) / 10,
+    documents: documentsScore,
+    academic: 0,
+    other: 0,
+    weights,
+  };
+
+  await sql`
+    UPDATE admission_applications
+    SET total_score = ${Math.round(total * 10) / 10},
+        scoring_breakdown = ${sql.json(breakdown)},
+        updated_at = now()
+    WHERE id = ${applicationId} AND school_id = ${schoolId}
+  `;
+  return breakdown;
+}
 
 /**
  * Schedule an interaction, interview, or entrance test for an admission applicant.
@@ -107,12 +167,10 @@ export async function evaluateInterview(schoolId, interviewId, {
     }
   }
 
-  await sql`
-    UPDATE admission_applications
-    SET total_score = ${totalScore},
-        updated_at = now()
-    WHERE id = ${interview.application_id} AND school_id = ${schoolId}
-  `;
+  await refreshApplicationScore(schoolId, interview.application_id, {
+    interviewScore: totalScore,
+    interviewType: interview.interview_type,
+  });
 
   // Record audit entry
   await sql`
