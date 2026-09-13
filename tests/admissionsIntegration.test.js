@@ -125,8 +125,10 @@ test('Admission System Integration Test Suite', async (t) => {
   });
 
   await t.test('4. Document upload, checklist audit, rejection, and verification', async () => {
+    const mockPdf = (label) => Buffer.from(`%PDF-1.4\n${label} admission certificate payload`);
+
     // 1. Upload Birth Certificate
-    const mockBuffer = Buffer.from('%PDF-1.4\nMock certificate PDF content');
+    const mockBuffer = mockPdf('BIRTH_CERTIFICATE');
     const doc = await saveUploadedDocument(schoolId, createdAppId, {
       documentType: 'BIRTH_CERTIFICATE',
       title: 'Birth Certificate',
@@ -152,7 +154,7 @@ test('Admission System Integration Test Suite', async (t) => {
     const replaced = await saveUploadedDocument(schoolId, createdAppId, {
       documentType: 'BIRTH_CERTIFICATE',
       title: 'Birth Certificate Clean Copy',
-      fileBuffer: mockBuffer,
+      fileBuffer: mockPdf('BIRTH_CERTIFICATE_V2'),
       fileName: 'birth_cert_v2.pdf',
       mimeType: 'application/pdf',
     });
@@ -171,7 +173,7 @@ test('Admission System Integration Test Suite', async (t) => {
       const d = await saveUploadedDocument(schoolId, createdAppId, {
         documentType: type,
         title: type,
-        fileBuffer: mockBuffer,
+        fileBuffer: mockPdf(type),
         fileName: `${type}.pdf`,
         mimeType: 'application/pdf',
       });
