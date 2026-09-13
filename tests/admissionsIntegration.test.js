@@ -314,6 +314,55 @@ test('Admission System Integration Test Suite', async (t) => {
     );
   });
 
+  await t.test('11. Invalid skip to conversion is rejected by workflow', async () => {
+    const [draft] = await sql`
+      INSERT INTO admission_applications (
+        school_id, application_no, student_first_name, student_last_name,
+        applying_class_id, academic_year_id, father_name, father_phone, status, source
+      )
+      VALUES (
+        ${schoolId}, ${'ADM-SKIP-' + uniqueSuffix}, 'Skip', 'Test',
+        ${cls.id}, ${ay.id}, 'Parent', ${testPhone}, 'APPLICATION_STARTED', 'Website'
+      )
+      RETURNING id
+    `;
+    await assert.rejects(
+      async () => {
+        await transitionApplicationStage(schoolId, draft.id, WORKFLOW_STATUSES.CONVERTED_TO_STUDENT);
+      },
+      /Invalid stage transition/i
+    );
+    await sql`DELETE FROM admission_applications WHERE id = ${draft.id}`;
+  });
+
+  await t.test('12. Duplicate merge withdraws source without hard-delete history loss', async () => {
+    const { mergeDuplicateApplications } = await import('../services/admissionDuplicateService.js');
+    const [primary] = await sql`
+      INSERT INTO admission_applications (
+        school_id, application_no, student_first_name, student_last_name,
+        applying_class_id, academic_year_id, father_name, father_phone, status, source
+      ) VALUES (
+        ${schoolId}, ${'ADM-MRG-A-' + uniqueSuffix}, 'Merge', 'Alpha',
+        ${cls.id}, ${ay.id}, 'Parent A', ${testPhone}, 'APPLICATION_STARTED', 'Website'
+      ) RETURNING id
+    `;
+    const [source] = await sql`
+      INSERT INTO admission_applications (
+        school_id, application_no, student_first_name, student_last_name,
+        applying_class_id, academic_year_id, father_name, father_phone, mother_name, status, source
+      ) VALUES (
+        ${schoolId}, ${'ADM-MRG-B-' + uniqueSuffix}, 'Merge', 'Beta',
+        ${cls.id}, ${ay.id}, 'Parent B', ${testPhone}, 'Mother B', 'APPLICATION_STARTED', 'Website'
+      ) RETURNING id
+    `;
+    const merged = await mergeDuplicateApplications(schoolId, primary.id, source.id, adminUser?.id || null);
+    assert.ok(merged.primary);
+    const [sourceRow] = await sql`SELECT status, deleted_at FROM admission_applications WHERE id = ${source.id}`;
+    assert.equal(sourceRow.status, 'WITHDRAWN');
+    assert.ok(sourceRow.deleted_at);
+    await sql`DELETE FROM admission_applications WHERE id = ${primary.id} OR id = ${source.id}`;
+  });
+
   // Cleanup test records
   await sql`DELETE FROM admission_applications WHERE id = ${createdAppId}`;
 });

@@ -274,8 +274,8 @@ export function buildSmartNextAction(app, { checklist, interviews } = {}) {
   }
 
   const items = checklist?.checklist || [];
-  const rejectedDocs = items.filter((c) => c.uploadedDoc?.status === 'REJECTED' || c.status === 'REJECTED');
-  const missingMandatoryDocs = items.filter((c) => c.isMandatory && !c.uploadedDoc);
+  const rejectedDocs = items.filter((c) => (c.uploadedDoc || c.document)?.status === 'REJECTED' || c.status === 'REJECTED');
+  const missingMandatoryDocs = items.filter((c) => c.isMandatory && !(c.uploadedDoc || c.document));
 
   if (rejectedDocs.length > 0) {
     return {

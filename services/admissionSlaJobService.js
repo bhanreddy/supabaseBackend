@@ -111,6 +111,36 @@ export async function runAdmissionSlaScan() {
           summary.reminders += 1;
         }
       }
+
+      const upcomingInterviews = await sql`
+        SELECT i.id, i.scheduled_date, i.start_time, i.title, i.location,
+               a.id as application_id, a.application_no, a.applicant_user_id
+        FROM admission_interviews i
+        JOIN admission_applications a ON a.id = i.application_id AND a.school_id = i.school_id
+        WHERE i.school_id = ${schoolId}
+          AND i.status = 'SCHEDULED'
+          AND i.scheduled_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 1
+          AND a.applicant_user_id IS NOT NULL
+          AND a.deleted_at IS NULL
+        LIMIT 200
+      `;
+      for (const iv of upcomingInterviews) {
+        await sendOnce({
+          schoolId,
+          key: `interview-reminder:${iv.id}:${iv.scheduled_date}`,
+          action: 'INTERVIEW_REMINDER',
+          entityId: iv.application_id,
+          payload: {
+            schoolId,
+            applicationId: iv.application_id,
+            recipientUserId: iv.applicant_user_id,
+            type: 'ADMISSION_INTERVIEW_SCHEDULED',
+            params: { date: iv.scheduled_date, time: iv.start_time },
+            subject: `Reminder: ${iv.title || 'Admission interaction'} tomorrow`,
+            message: `Your admission interaction is scheduled on ${iv.scheduled_date} at ${iv.start_time} (${iv.location || 'School'}).`,
+          },
+        });
+      }
     } catch (err) {
       logger.error({ err: err.message, schoolId }, 'Admission SLA scan failed for school');
     }
