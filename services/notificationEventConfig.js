@@ -888,6 +888,60 @@ export const NotificationEventConfig = Object.freeze({
         bodyTemplate_te: 'దరఖాస్తు {{application_no}} ఆమోదించబడలేదు.',
         deepLink: '/admission/dashboard',
         requiredParams: ['application_no']
+    },
+
+    INTELLIGENCE_PATTERN_DETECTED: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: 'Student pattern ready for review',
+        bodyTemplate: '{{message}}',
+        titleTemplate_te: 'విద్యార్థి నమూనా సమీక్షకు సిద్ధం',
+        bodyTemplate_te: '{{message}}',
+        deepLink: '/staff/student-intelligence',
+        requiredParams: ['message']
+    },
+    ANECDOTE_FOLLOWUP_DUE: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: 'Follow-up due',
+        bodyTemplate: '{{message}}',
+        titleTemplate_te: 'ఫాలో-అప్ గడువు',
+        bodyTemplate_te: '{{message}}',
+        deepLink: '/staff/anecdotes',
+        requiredParams: ['message']
+    },
+    INTERVENTION_REVIEW_DUE: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: 'Intervention review',
+        bodyTemplate: '{{message}}',
+        titleTemplate_te: 'మధ్యవర్తిత్వ సమీక్ష',
+        bodyTemplate_te: '{{message}}',
+        deepLink: '/staff/student-intelligence',
+        requiredParams: ['message']
+    },
+
+    // ===== CONTENT ENGINE (DAILY THOUGHT & NEWS) =====
+    DAILY_THOUGHT: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: '🌅 Today\'s Thought',
+        bodyTemplate: '{{message}}',
+        titleTemplate_te: '🌅 నేటి ఆలోచన',
+        bodyTemplate_te: '{{message}}',
+        deepLink: '/Screen/schoolDaily',
+        requiredParams: ['message']
+    },
+    DAILY_NEWS: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: '📰 Today\'s News',
+        bodyTemplate: '{{title}} — {{message}}',
+        titleTemplate_te: '📰 నేటి వార్తలు',
+        bodyTemplate_te: '{{title}} — {{message}}',
+        deepLink: '/Screen/schoolDaily',
+        requiredParams: ['title', 'message']
     }
 
 });
+

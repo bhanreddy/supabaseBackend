@@ -643,6 +643,8 @@ router.get('/teacher-timetable', requireAuth, asyncHandler(async (req, res) => {
       ts.start_time,
       ts.end_time,
       ts.room_no,
+      ts.class_section_id,
+      ts.subject_id,
       c.name as class_name,
       sec.name as section_name,
       sub.name as subject_name,

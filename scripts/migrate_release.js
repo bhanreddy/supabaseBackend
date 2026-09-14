@@ -30,6 +30,12 @@ const eventManagementMigrationName = '20260913_v431_premium_event_management_sys
 const eventMediaMigrationName = '20260913_v432_event_media_docs_volunteers.sql';
 const admissionWorkflowMigrationName = '20260913_v433_premium_admission_workflow_system.sql';
 const admissionHardeningMigrationName = '20260913_v434_admission_workflow_hardening.sql';
+const anecdoteIntelligenceMigrationName = '20260913_v435_anecdote_intelligence_engine.sql';
+const anecdoteIntelligenceHardeningMigrationName = '20260913_v436_anecdote_intelligence_hardening.sql';
+const omrEngineMigrationName = '20260913_v436_premium_omr_engine.sql';
+const omrEngineHardeningMigrationName = '20260913_v437_omr_engine_hardening.sql';
+const contentEngineMigrationName = '20260914_v438_content_engine.sql';
+const contentEngineHardeningMigrationName = '20260914_v439_content_engine_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
   const body = fs.readFileSync(new URL(`../migrations/${filename}`, import.meta.url), 'utf8');
@@ -347,7 +353,26 @@ export async function verifyReleaseDatabase(db) {
   if (!calendarTable?.name) throw new Error('Academic calendar tables are missing');
   const [plannerTable] = await db`SELECT to_regclass('public.academic_plans') AS name`;
   if (!plannerTable?.name) throw new Error('Academic planner tables are missing');
-  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner', freshBaseline: readReleaseBaseline().manifest.id };
+  const [contentTable] = await db`SELECT to_regclass('public.content_items') AS name`;
+  if (!contentTable?.name) throw new Error('Content engine tables are missing');
+  const [contentSchedules] = await db`SELECT to_regclass('public.content_schedules') AS name`;
+  if (!contentSchedules?.name) throw new Error('Content engine schedules table is missing');
+  const [contentPerms] = await db`
+    SELECT count(*)::int AS count
+    FROM schools s
+    CROSS JOIN (VALUES
+      ('content.view'),
+      ('content.create'),
+      ('content.submit'),
+      ('content.approve'),
+      ('content.publish'),
+      ('content.manage')
+    ) expected(code)
+    LEFT JOIN permissions p ON p.school_id=s.id AND p.code=expected.code AND p.deleted_at IS NULL
+    WHERE p.id IS NULL
+  `;
+  if (contentPerms.count) throw new Error('Content engine school permissions are incomplete');
+  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine', freshBaseline: readReleaseBaseline().manifest.id };
 }
 
 function sessionConnectionUrl(source) {
@@ -392,6 +417,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, eventMediaMigrationName, 4320913);
       await applyNamedSqlMigration(db, admissionWorkflowMigrationName, 4330913);
       await applyNamedSqlMigration(db, admissionHardeningMigrationName, 4340913);
+      await applyNamedSqlMigration(db, anecdoteIntelligenceMigrationName, 4350913);
+      await applyNamedSqlMigration(db, anecdoteIntelligenceHardeningMigrationName, 4360913);
+      await applyNamedSqlMigration(db, omrEngineMigrationName, 4361913);
+      await applyNamedSqlMigration(db, omrEngineHardeningMigrationName, 4370913);
+      await applyNamedSqlMigration(db, contentEngineMigrationName, 4380914);
+      await applyNamedSqlMigration(db, contentEngineHardeningMigrationName, 4390914);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

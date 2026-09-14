@@ -12,11 +12,13 @@ import {
 } from '../utils/diaryPresentation.js';
 import { linkDiaryToSyllabus, validateSyllabusLinks } from '../services/syllabusService.js';
 import { CalendarService } from '../services/calendarService.js';
+import { upsertDiaryEntry, isUuid } from '../services/smartDiary/publishService.js';
+import { purgeTextDiaryOlderThanRetention } from '../services/smartDiary/photoHistory.js';
+import { DIARY_RETENTION_DAYS } from '../utils/diaryRetention.js';
 
 const router = express.Router();
 
 /** Rolling window of diary entry dates kept and returned (today + prior 14 days). */
-const DIARY_RETENTION_DAYS = 15;
 const diaryRetentionOffsetDays = DIARY_RETENTION_DAYS - 1;
 
 function logDebug(msg) {
@@ -110,6 +112,7 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     entries = await sql`
       SELECT
         d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+        d.entry_source, d.processing_metadata,
         d.class_section_id, d.subject_id, d.created_by, d.created_at, d.updated_at,
         s.name as subject_name,
         creator.display_name as created_by_name
@@ -130,6 +133,7 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     entries = await sql`
       SELECT
         d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+        d.entry_source, d.processing_metadata,
         d.class_section_id,
         s.name as subject_name,
         creator.display_name as created_by_name,
@@ -147,7 +151,8 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
   } else if (class_section_id && from_date && to_date) {
     entries = await sql`
       SELECT
-        d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date,
+        d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+        d.entry_source, d.processing_metadata,
         d.class_section_id,
         s.name as subject_name,
         creator.display_name as created_by_name
@@ -165,6 +170,7 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     entries = await sql`
       SELECT
         d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+        d.entry_source, d.processing_metadata,
         d.subject_id, d.created_by, d.created_at, d.updated_at,
         d.class_section_id,
         s.name as subject_name
@@ -180,7 +186,8 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     if (entry_date) {
       entries = await sql`
         SELECT
-          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date,
+          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+          d.entry_source, d.processing_metadata,
           s.name as subject_name,
           c.name as class_name, sec.name as section_name,
           d.class_section_id, d.subject_id,
@@ -218,7 +225,8 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
       // Staff diary history: full window without the default LIMIT 20 (which hid older days)
       entries = await sql`
         SELECT
-          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date,
+          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+          d.entry_source, d.processing_metadata,
           s.name as subject_name,
           c.name as class_name, sec.name as section_name,
           d.class_section_id, d.subject_id,
@@ -255,7 +263,8 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     } else {
       entries = await sql`
         SELECT
-          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date,
+          d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+          d.entry_source, d.processing_metadata,
           s.name as subject_name,
           c.name as class_name, sec.name as section_name,
           d.class_section_id, d.subject_id,
@@ -356,6 +365,7 @@ router.get('/:id', requirePermission('diary.view'), asyncHandler(async (req, res
   const [entry] = await sql`
     SELECT
       d.id, d.entry_date, d.title, d.title_te, d.content, d.content_te, d.homework_due_date, d.attachments,
+      d.entry_source, d.processing_metadata,
       d.subject_id, d.created_by, d.created_at, d.updated_at,
       d.class_section_id,
       s.name as subject_name,
@@ -400,6 +410,8 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     syllabus_topic_id,
     syllabus_status,
     academic_plan_item_id,
+    submission_id,
+    entry_source,
   } = req.body;
   const schoolId = req.schoolId;
 
@@ -407,6 +419,9 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
 
   if (!class_section_id || !content || !entry_date) {
     return res.status(400).json({ error: 'class_section_id, content, and entry_date are required' });
+  }
+  if (submission_id && !isUuid(submission_id)) {
+    return res.status(400).json({ error: 'Invalid submission id' });
   }
 
   const normalizedSubjectId = subject_id || null;
@@ -417,41 +432,29 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     topicId: syllabus_topic_id || null,
   });
 
-  const resolved = await resolveDiaryTextFields({ title, content, input_language });
-  const { title: resolvedTitle, title_te, content: resolvedContent, content_te } = resolved;
-
   let entry;
   let createdNew = true;
   try {
-    const result = await sql`
-      INSERT INTO diary_entries (
-        school_id, class_section_id, subject_id, entry_date, title, title_te, content, content_te,
-        homework_due_date, attachments, created_by, syllabus_chapter_id, syllabus_topic_id, academic_plan_item_id
-      )
-      VALUES (
-        ${schoolId}, ${class_section_id}, ${normalizedSubjectId}, ${entry_date}, ${resolvedTitle}, ${title_te}, ${resolvedContent}, ${content_te},
-        ${homework_due_date || null}, ${attachments ? JSON.stringify(attachments) : null}, ${req.user.internal_id},
-        ${syllabus_chapter_id || null}, ${syllabus_topic_id || null}, ${academic_plan_item_id || null}
-      )
-      ON CONFLICT (school_id, class_section_id, subject_id, entry_date, created_by)
-      DO UPDATE SET
-        title = EXCLUDED.title,
-        title_te = EXCLUDED.title_te,
-        content = EXCLUDED.content,
-        content_te = EXCLUDED.content_te,
-        homework_due_date = EXCLUDED.homework_due_date,
-        attachments = EXCLUDED.attachments,
-        syllabus_chapter_id = COALESCE(EXCLUDED.syllabus_chapter_id, diary_entries.syllabus_chapter_id),
-        syllabus_topic_id = COALESCE(EXCLUDED.syllabus_topic_id, diary_entries.syllabus_topic_id),
-        academic_plan_item_id = COALESCE(EXCLUDED.academic_plan_item_id, diary_entries.academic_plan_item_id),
-        deleted_at = NULL,
-        updated_at = now()
-      RETURNING *, (xmax = 0) AS _was_insert
-    `;
-    const row = result[0];
-    createdNew = row._was_insert === true;
-    const { _was_insert, ...rest } = row;
-    entry = rest;
+    const result = await upsertDiaryEntry({
+      schoolId,
+      userInternalId: req.user.internal_id,
+      classSectionId: class_section_id,
+      subjectId: normalizedSubjectId,
+      entryDate: entry_date,
+      title,
+      content,
+      homeworkDueDate: homework_due_date,
+      attachments,
+      inputLanguage: input_language,
+      entrySource: entry_source || 'MANUAL',
+      submissionId: submission_id || null,
+      notify: false,
+      syllabusChapterId: syllabus_chapter_id || null,
+      syllabusTopicId: syllabus_topic_id || null,
+      academicPlanItemId: academic_plan_item_id || null,
+    });
+    entry = result.entry;
+    createdNew = result.createdNew;
 
     if (syllabus_chapter_id || syllabus_topic_id) {
       try {
@@ -469,12 +472,7 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     throw dbErr;
   }
 
-  await sql`
-    DELETE FROM diary_entries
-    WHERE school_id = ${schoolId}
-      AND class_section_id = ${class_section_id}
-      AND entry_date < (CURRENT_DATE - (${diaryRetentionOffsetDays}) * INTERVAL '1 day')
-  `;
+  await purgeTextDiaryOlderThanRetention(schoolId);
 
   // Asynchronously sync homework due date to calendar
   syncDiaryToCalendar(schoolId, entry.id).catch(err =>

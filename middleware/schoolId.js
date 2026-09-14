@@ -119,6 +119,19 @@ const JWT_SCHOOL_ID_PATHS = [
   /^\/api\/v1\/events(?:\/.*)?$/i,
   // Admission System: authenticated applicant & staff tenant isolation is strictly JWT-derived
   /^\/api\/v1\/admissions\/(?!public\/).*$/i,
+  // Anecdote & School Intelligence System: tenant isolation is strictly JWT-derived
+  /^\/api\/v1\/anecdotes(?:\/.*)?$/i,
+  /^\/api\/anecdotes(?:\/.*)?$/i,
+  /^\/api\/v1\/intelligence(?:\/.*)?$/i,
+  /^\/api\/intelligence(?:\/.*)?$/i,
+  /^\/api\/v1\/interventions(?:\/.*)?$/i,
+  /^\/api\/interventions(?:\/.*)?$/i,
+  // Premium OMR Engine: tenant identity is always JWT-derived. Client query/body
+  // school_id is never trusted for template, answer key, scan, or evaluation operations.
+  /^\/api\/v1\/omr(?:\/.*)?$/i,
+  // Universal Content Engine: tenant identity is always JWT-derived.
+  // Daily Thoughts, Daily News, targeting, workflow, and analytics are strictly tenant-isolated.
+  /^\/api\/v1\/content(?:\/.*)?$/i,
 ];
 
 const OPTIONAL_SCHOOL_ID_PATHS = [

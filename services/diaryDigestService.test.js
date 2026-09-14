@@ -52,6 +52,7 @@ test('daily diary recipient query targets active parents in the prior cutoff win
   assert.ok(captured.query.includes("u.account_status = 'active'"));
   assert.ok(captured.query.includes("dw.window_end - INTERVAL '1 day'"));
   assert.ok(captured.query.includes('<= dw.window_end'));
+  assert.ok(captured.query.includes('d.notification_sent_at IS NULL'));
   assert.equal(captured.query.includes('JOIN users u\n      ON u.person_id = student.person_id'), false);
   assert.deepEqual(captured.values, [
     'Asia/Kolkata',

@@ -1,9 +1,11 @@
 import logger from '../utils/logger.js';
+import sql from '../db.js';
 import { AUTOMATION_EVENTS } from './automationEventService.js';
 import { isAutomationRuleEnabled, RULE_KEYS } from './automationRuleService.js';
 import { dispatchFeeReminder } from './automationActionService.js';
 import { evaluateAndDispatchAttendanceAlert } from './attendanceRiskService.js';
 import { handleStaffLeaveApproved, handleStaffLeaveCancelled } from './leaveSubstitutionService.js';
+import { evaluateStudentIntelligence } from './intelligence/insightEngine.js';
 
 /**
  * Main event processor for platform automation rules.
@@ -81,6 +83,49 @@ export async function processAutomationEvent(eventName, payload) {
     case AUTOMATION_EVENTS.SUPPORT_TICKET_REPLIED:
     case AUTOMATION_EVENTS.SUPPORT_TICKET_RESOLVED: {
       logger.info({ schoolId, ticketId: payload.ticketId, eventName }, 'Support ticket automation event processed');
+      break;
+    }
+
+    case AUTOMATION_EVENTS.ANECDOTE_CREATED:
+    case AUTOMATION_EVENTS.ANECDOTE_UPDATED:
+    case AUTOMATION_EVENTS.INTELLIGENCE_EVALUATE:
+    case AUTOMATION_EVENTS.INTERVENTION_CREATED:
+    case AUTOMATION_EVENTS.INTERVENTION_COMPLETED: {
+      const { studentId } = payload;
+      if (studentId) {
+        try {
+          await evaluateStudentIntelligence({ schoolId, studentId });
+          logger.info({ schoolId, studentId, eventName }, 'Student intelligence evaluated successfully');
+        } catch (err) {
+          logger.error({ err: err.message, schoolId, studentId, eventName }, 'Failed to evaluate student intelligence');
+        }
+      }
+      break;
+    }
+
+    case AUTOMATION_EVENTS.ASSESSMENT_PUBLISHED: {
+      const { examId } = payload;
+      if (!examId) break;
+      try {
+        const students = await sql`
+          SELECT DISTINCT se.student_id
+          FROM public.marks m
+          JOIN public.exam_subjects es ON es.id = m.exam_subject_id
+          JOIN public.student_enrollments se ON se.id = m.student_enrollment_id
+          WHERE es.exam_id = ${examId}
+            AND se.school_id = ${schoolId}
+          LIMIT 250
+        `;
+        for (const row of students) {
+          try {
+            await evaluateStudentIntelligence({ schoolId, studentId: row.student_id });
+          } catch (err) {
+            logger.error({ err: err.message, schoolId, studentId: row.student_id }, 'Failed exam-publish intelligence evaluation');
+          }
+        }
+      } catch (err) {
+        logger.error({ err: err.message, schoolId, examId }, 'Failed to evaluate students after assessment publish');
+      }
       break;
     }
 

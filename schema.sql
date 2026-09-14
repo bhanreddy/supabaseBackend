@@ -945,7 +945,7 @@ BEGIN
     SELECT EXISTS (
         SELECT 1 FROM user_roles ur
         JOIN roles r ON ur.role_id = r.id
-        WHERE ur.user_id = NEW.created_by AND r.code = 'admin'
+        WHERE ur.user_id = NEW.created_by AND r.code IN ('admin', 'principal')
     ) INTO v_is_admin;
 
     -- 1. Subject Assignment Check (via class_subjects OR timetable_slots)
@@ -968,6 +968,14 @@ BEGIN
             WHERE ts.class_section_id = NEW.class_section_id
               AND ts.subject_id = NEW.subject_id
               AND ts.deleted_at IS NULL
+              AND s.person_id = v_person_id
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM class_sections homeroom
+            JOIN staff s ON homeroom.class_teacher_id = s.id
+            WHERE homeroom.id = NEW.class_section_id
+              AND homeroom.school_id = NEW.school_id
+              AND homeroom.deleted_at IS NULL
               AND s.person_id = v_person_id
         ) THEN
             RAISE EXCEPTION 'Unauthorized: You are not assigned to teach this subject in this class';
@@ -3047,7 +3055,7 @@ BEGIN
       WHERE rp.role_id = r.id AND rp.permission_id = p.id AND rp.school_id = p_school_id
     );
 
-  -- Accounts: Fee collection + student records (+ toggle-gated staff manage-users).
+  -- Accounts: Fee collection + student records + exam operations (+ toggle-gated staff manage-users).
   -- Segregation of duties (RBAC epic): NO expenses management, NO payroll, and NO
   -- salary/payslip/refund/approval perms.
   -- staff.view/create/edit/delete are RETAINED here because two existing features
@@ -3065,7 +3073,8 @@ BEGIN
       'receipts.generate', 'reports.financial', 'notices.view', 'staff.view',
       'staff.create', 'staff.edit', 'staff.delete', 'dashboard.view', 'academics.view',
       'students.view', 'students.create', 'students.edit', 'students.delete',
-      'certificates.issue', 'hostel.view', 'hostel.allocate'
+      'certificates.issue', 'hostel.view', 'hostel.allocate',
+      'exams.view', 'exams.manage'
     )
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp
@@ -4683,17 +4692,40 @@ CREATE TABLE IF NOT EXISTS diary_entries (
     content TEXT NOT NULL,
     content_te TEXT,
     homework_due_date DATE,
-    attachments JSONB, 
+    attachments JSONB,
+    entry_source VARCHAR(20),
+    original_text TEXT,
+    processed_text TEXT,
+    ocr_status VARCHAR(20),
+    ai_status VARCHAR(20),
+    detected_language VARCHAR(20),
+    source_diary_id UUID REFERENCES diary_entries(id) ON DELETE SET NULL,
+    template_id UUID,
+    submission_id UUID,
+    processing_metadata JSONB,
+    notification_sent_at TIMESTAMPTZ,
+    class_diary_upload_id UUID,
+    syllabus_chapter_id UUID,
+    syllabus_topic_id UUID,
+    academic_plan_item_id UUID,
     created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
     CONSTRAINT chk_homework_due_date CHECK (homework_due_date IS NULL OR homework_due_date >= entry_date),
+    CONSTRAINT chk_diary_entry_source CHECK (
+        entry_source IS NULL OR entry_source IN (
+            'MANUAL', 'PHOTO', 'VOICE', 'TEMPLATE', 'REUSED', 'COPIED', 'CLASS_DIARY_AI'
+        )
+    ),
     -- Prevent duplicate homework for same class/subject/date
     UNIQUE (school_id, class_section_id, subject_id, entry_date, created_by)
 );
 
 CREATE INDEX IF NOT EXISTS idx_diary_entries_school_id ON diary_entries(school_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_diary_entries_submission
+  ON diary_entries(school_id, submission_id)
+  WHERE submission_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS trg_diary_entries_updated ON diary_entries;
 CREATE TRIGGER trg_diary_entries_updated
@@ -4703,6 +4735,104 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE INDEX IF NOT EXISTS idx_diary_class ON diary_entries(class_section_id);
 CREATE INDEX IF NOT EXISTS idx_diary_date ON diary_entries(entry_date);
+CREATE INDEX IF NOT EXISTS idx_diary_entries_source_date
+  ON diary_entries(school_id, created_by, entry_date DESC);
+
+CREATE TABLE IF NOT EXISTS diary_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  scope VARCHAR(16) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  category VARCHAR(40) NOT NULL DEFAULT 'general',
+  content TEXT NOT NULL,
+  variables JSONB NOT NULL DEFAULT '[]'::jsonb,
+  is_favourite BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_diary_template_scope CHECK (scope IN ('SYSTEM', 'SCHOOL', 'TEACHER')),
+  CONSTRAINT chk_diary_template_tenant CHECK (
+    (scope = 'SYSTEM' AND school_id IS NULL)
+    OR (scope IN ('SCHOOL', 'TEACHER') AND school_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_diary_templates_school_scope
+  ON diary_templates(school_id, scope, sort_order);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_diary_templates_system_name
+  ON diary_templates(name)
+  WHERE scope = 'SYSTEM';
+
+DROP TRIGGER IF EXISTS trg_diary_templates_updated ON diary_templates;
+CREATE TRIGGER trg_diary_templates_updated
+BEFORE UPDATE ON diary_templates
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS ai_usage_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  teacher_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  feature VARCHAR(40) NOT NULL,
+  provider VARCHAR(40),
+  model VARCHAR(80),
+  input_type VARCHAR(40),
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  processing_ms INTEGER,
+  estimated_cost_usd NUMERIC(12, 6),
+  success BOOLEAN NOT NULL DEFAULT TRUE,
+  error_code VARCHAR(80),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_school_feature_day
+  ON ai_usage_logs(school_id, feature, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_teacher_day
+  ON ai_usage_logs(teacher_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS diary_analytics_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  teacher_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  event_name VARCHAR(60) NOT NULL,
+  properties JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_diary_analytics_school_event
+  ON diary_analytics_events(school_id, event_name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS class_diary_uploads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  class_section_id UUID NOT NULL REFERENCES class_sections(id) ON DELETE RESTRICT,
+  created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  entry_date DATE NOT NULL,
+  image_url TEXT NOT NULL,
+  source_image_url TEXT,
+  processing_status VARCHAR(20) NOT NULL DEFAULT 'queued',
+  submission_id UUID,
+  overall_confidence NUMERIC(4, 3),
+  extracted_json JSONB,
+  notification_sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_class_diary_uploads_submission
+  ON class_diary_uploads(school_id, submission_id)
+  WHERE submission_id IS NOT NULL;
+
+DO $$ BEGIN
+  ALTER TABLE diary_entries
+    ADD CONSTRAINT diary_entries_class_diary_upload_id_fkey
+    FOREIGN KEY (class_diary_upload_id) REFERENCES class_diary_uploads(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 
 DROP TRIGGER IF EXISTS trg_validate_diary ON diary_entries;

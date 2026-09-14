@@ -17,6 +17,12 @@ export const AUTOMATION_EVENTS = {
   SUPPORT_TICKET_CREATED: 'support.ticket.created',
   SUPPORT_TICKET_REPLIED: 'support.ticket.replied',
   SUPPORT_TICKET_RESOLVED: 'support.ticket.resolved',
+  ANECDOTE_CREATED: 'anecdote.created',
+  ANECDOTE_UPDATED: 'anecdote.updated',
+  INTELLIGENCE_EVALUATE: 'intelligence.evaluate',
+  ASSESSMENT_PUBLISHED: 'assessment.published',
+  INTERVENTION_CREATED: 'intervention.created',
+  INTERVENTION_COMPLETED: 'intervention.completed',
 };
 
 /**

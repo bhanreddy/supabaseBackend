@@ -9,9 +9,11 @@ import { runNightlyAttendanceRiskScan, ATTENDANCE_RISK_JOB_NAME } from './attend
 import { reconcileSafeguardingAttendance } from './transportSafeguardingService.js';
 import { runNightlyFineLateFeeScan, LATE_FEE_SCAN_JOB } from './fineLateFeeEngine.js';
 import { runAdmissionSlaScan, ADMISSION_SLA_JOB_NAME } from './admissionSlaJobService.js';
+import { purgeExpiredDiaryPhotos } from './smartDiary/photoHistory.js';
 
 export const TRANSPORT_MAINTENANCE_JOB = 'transport-nightly-maintenance';
 export const DAILY_DIARY_DIGEST_JOB = 'daily-diary-digest';
+export const DIARY_PHOTO_PURGE_JOB = 'diary-photo-history-purge';
 let boss;
 let scheduledJobsReady = false;
 
@@ -223,6 +225,20 @@ export async function startTransportJobs() {
     },
   );
   logger.info('pg-boss admission SLA scan scheduled');
+
+  if (config.transportJobs.enabled || config.diaryDigestJobs.enabled) {
+    await boss.work(DIARY_PHOTO_PURGE_JOB, async () => {
+      const result = await purgeExpiredDiaryPhotos({ limit: 400 });
+      logger.info(result, 'Expired diary photo history purged');
+    });
+    await boss.schedule(
+      DIARY_PHOTO_PURGE_JOB,
+      '15 2 * * *',
+      {},
+      { tz: 'Asia/Kolkata', singletonKey: 'nightly', retryLimit: 1 },
+    );
+    logger.info({ cron: '15 2 * * *' }, 'pg-boss diary photo history purge scheduled');
+  }
 
   scheduledJobsReady = true;
 }

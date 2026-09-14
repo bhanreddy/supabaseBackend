@@ -27,6 +27,7 @@ import sql from './db.js';
 import { startSupportNotificationOutboxWorker, stopSupportNotificationOutboxWorker } from './services/supportNotificationOutboxService.js';
 import { startVisitorOverstayWorker, stopVisitorOverstayWorker } from './services/visitorOverstayService.js';
 import { startCalendarReminderWorker, stopCalendarReminderWorker } from './services/calendarNotificationService.js';
+import { startContentPublishWorker, stopContentPublishWorker } from './services/content/contentSchedulerService.js';
 import {
     startTransportJobs,
     stopTransportJobs,
@@ -202,6 +203,7 @@ import complaintsRouter from './routes/complaintsRoutes.js';
 import noticesRouter from './routes/noticesRoutes.js';
 import leavesRouter from './routes/leavesRoutes.js';
 import diaryRouter from './routes/diaryRoutes.js';
+import smartDiaryRouter from './routes/smartDiaryRoutes.js';
 import timetableRouter from './routes/timetableRoutes.js';
 import substitutionRouter from './routes/substitutionRoutes.js';
 import studentPortfolioRouter from './routes/studentPortfolioRoutes.js';
@@ -247,6 +249,7 @@ import paperforgeRouter from './routes/paperforge.routes.js';
 import paymentRouter from './routes/paymentRoutes.js';
 import subscriptionRouter from './routes/subscriptionRoutes.js';
 import meRouter from './routes/meRoutes.js';
+import omrRouter from './routes/omrRoutes.js';
 import messagesRouter from './routes/messagesRoutes.js';
 import parentVisitRouter from './routes/parentVisitRoutes.js';
 import websiteGalleryRouter from './routes/websiteGalleryRoutes.js';
@@ -258,6 +261,11 @@ import finesRouter from './routes/finesRoutes.js';
 import visitorManagementRouter from './routes/visitorManagementRoutes.js';
 import academicPlannerRouter from './routes/academicPlannerRoutes.js';
 import admissionRouter from './routes/admissionRoutes.js';
+import anecdoteRouter from './routes/anecdoteRoutes.js';
+import intelligenceRouter from './routes/intelligenceRoutes.js';
+import interventionRouter from './routes/interventionRoutes.js';
+import featureAccessRouter from './routes/featureAccessRoutes.js';
+import { enforceFeatureAccess } from './middleware/enforceFeatureAccess.js';
 import { requireFeature } from './middleware/requireFeature.js';
 
 // Health check endpoint (requires school_id per multi-tenant contract)
@@ -352,6 +360,7 @@ app.use(
 app.use('/api/v1/complaints', requireFeature('quick.complaints'), complaintsRouter);
 app.use('/api/v1/notices', requireFeature('quick.announcements'), noticesRouter);
 app.use('/api/v1/leaves', leavesRouter);
+app.use('/api/v1/diary/smart', requireFeature('topbar.diary'), smartDiaryRouter);
 app.use('/api/v1/diary', requireFeature('topbar.diary'), diaryRouter);
 app.use('/api/v1/timetable', requireFeature('nav.time_table'), timetableRouter);
 app.use('/api/v1/substitutions', substitutionRouter);
@@ -408,6 +417,14 @@ app.use('/api/v1/messages', requireFeature('comm.messenger'), messagesRouter);
 app.use('/api/v1/admin/payments', paymentRouter);
 app.use('/api/v1/visitor-management', visitorManagementRouter);
 app.use('/api/v1/admissions', admissionRouter);
+app.use('/api/v1/anecdotes', anecdoteRouter);
+app.use('/api/anecdotes', anecdoteRouter);
+app.use('/api/v1/intelligence', intelligenceRouter);
+app.use('/api/intelligence', intelligenceRouter);
+app.use('/api/v1/interventions', interventionRouter);
+app.use('/api/interventions', interventionRouter);
+app.use('/api/v1/omr', enforceFeatureAccess('omr_scanner'), omrRouter);
+app.use('/api/v1/feature-access', featureAccessRouter);
 
 // Legacy routes (for backward compatibility)
 app.use('/students/documents', studentDocumentRouter);
@@ -479,6 +496,7 @@ const server = app.listen(port);
 startSupportNotificationOutboxWorker();
 startVisitorOverstayWorker();
 startCalendarReminderWorker();
+startContentPublishWorker();
 setImmediate(() => startTransportJobs().catch((error) => {
     logger.error({ error }, 'Failed to start scheduled job workers');
 }));
@@ -590,6 +608,8 @@ async function shutdown(signal) {
         logger.info({ signal }, 'Shutdown initiated');
         stopSupportNotificationOutboxWorker();
         stopVisitorOverstayWorker();
+        stopCalendarReminderWorker();
+        stopContentPublishWorker();
         await stopTransportJobs();
         server.close(() => logger.info('HTTP server closed'));
         await sql.end({ timeout: 5 });

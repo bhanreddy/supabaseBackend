@@ -56,6 +56,7 @@ export async function getDailyDiaryDigestRecipients(timezone, cutoffHour, db = s
             > dw.window_end - INTERVAL '1 day'
       AND GREATEST(COALESCE(d.updated_at, d.created_at), d.created_at)
             <= dw.window_end
+      AND d.notification_sent_at IS NULL
       AND d.deleted_at IS NULL
       AND se.start_date <= (dw.window_end AT TIME ZONE ${timezone})::date
       AND (se.end_date IS NULL OR se.end_date >= (dw.window_end AT TIME ZONE ${timezone})::date)
