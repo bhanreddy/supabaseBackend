@@ -298,7 +298,7 @@ export async function resolveFeatureAccess({ schoolId, userId, role, featureKey 
     }
 
     // 9. School Subscription & Plan Containment
-    let schoolPlanId = 'standard';
+    let schoolPlanId = 'enterprise';
     let subscriptionStatus = 'active';
 
     if (schoolId) {
@@ -309,7 +309,7 @@ export async function resolveFeatureAccess({ schoolId, userId, role, featureKey 
         LIMIT 1
       `;
       if (sub) {
-        schoolPlanId = sub.plan_id || 'standard';
+        schoolPlanId = sub.plan_id || 'enterprise';
         subscriptionStatus = sub.subscription_status || 'active';
       }
     }
@@ -326,7 +326,7 @@ export async function resolveFeatureAccess({ schoolId, userId, role, featureKey 
       });
     }
 
-    const currentPlan = plansById.get(schoolPlanId) || plansById.get('standard');
+    const currentPlan = plansById.get(schoolPlanId) || plansById.get('enterprise') || plansById.get('standard');
     const minRequiredPlan = feature.min_plan_tier
       ? plansById.get(feature.min_plan_tier)
       : plansById.get('starter');

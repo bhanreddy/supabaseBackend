@@ -62,7 +62,7 @@ test('Feature Access: role-sensitive messaging adapts actions to caller role', a
     schoolId: 1,
     userId: '984f8a31-a135-465f-ab88-211e1157b341',
     role: 'admin',
-    featureKey: 'omr_scanner',
+    featureKey: 'visitor_management',
   });
   assert.ok(adminRes.actions.some((a) => a.type === 'UPGRADE_PLAN'));
   assert.ok(!adminRes.actions.some((a) => a.type === 'ASK_ADMIN'));
@@ -72,7 +72,7 @@ test('Feature Access: role-sensitive messaging adapts actions to caller role', a
     schoolId: 1,
     userId: '984f8a31-a135-465f-ab88-211e1157b341',
     role: 'teacher',
-    featureKey: 'omr_scanner',
+    featureKey: 'visitor_management',
   });
   assert.ok(!teacherRes.actions.some((a) => a.type === 'UPGRADE_PLAN'));
   const askAdminAction = teacherRes.actions.find((a) => a.type === 'ASK_ADMIN');

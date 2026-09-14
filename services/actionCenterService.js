@@ -1,7 +1,6 @@
 import sql from '../db.js';
 import logger from '../utils/logger.js';
 import { getSafetyDashboard } from './transportSafetyService.js';
-import { getComplianceSummary } from './studentDocumentService.js';
 import { getAcademicCoordinatorOverview } from './syllabusService.js';
 import { getAttendanceRiskInsights } from './attendanceRiskService.js';
 import { getUdiseReadinessOverview } from './udiseReadinessService.js';
@@ -250,36 +249,6 @@ export async function getActionCenterData(schoolId, user = {}) {
     } catch (err) {
       degradedDomains.add('academics'); systemHealth.academics = 'UNKNOWN';
       logger.warn({ err: err.message }, '[ActionCenter] Failed checking syllabus progress');
-    }
-  }
-
-  // 7. MISSING ADMISSION DOCUMENTS
-  if (isAdmin || isFinance) {
-    try {
-      const docSummary = await getComplianceSummary(schoolId);
-      if (docSummary.non_compliant_students > 0) {
-        needsAttentionItems.push({
-          id: 'missing_admission_docs',
-          category: 'governance',
-          severity: 'NEEDS_ATTENTION',
-          title: 'Missing Admission Documents',
-          description: `${docSummary.non_compliant_students} student${docSummary.non_compliant_students > 1 ? 's are' : ' is'} missing mandatory admission records (${docSummary.compliance_rate_pct}% compliance)`,
-          count: docSummary.non_compliant_students,
-          action_url: '/admin/document-alerts',
-          action_label: 'Review Missing Docs',
-        });
-      } else {
-        informationalItems.push({
-          id: 'admission_docs_compliant',
-          category: 'governance',
-          title: 'Admission Documents 100% Compliant',
-          description: 'All enrolled students have required admission certificates on file',
-          count: docSummary.total_students,
-        });
-      }
-    } catch (err) {
-      degradedDomains.add('documents'); systemHealth.governance = 'UNKNOWN';
-      logger.warn({ err: err.message }, '[ActionCenter] Failed checking doc compliance');
     }
   }
 

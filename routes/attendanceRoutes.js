@@ -12,6 +12,7 @@ const router = express.Router();
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import { recordAdminAttendanceBatch } from '../services/staffAttendanceV2Service.js';
 import { resolveSchoolDay } from '../services/workingDayResolver.js';
+import { enrichStudentsWithStreaks } from '../services/attendanceStreakService.js';
 
 const ATTENDANCE_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -296,10 +297,10 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
 
   if (date && class_section_id) {
     // Get full student list with attendance for a specific date and class
-    attendance = await sql`
+    const studentList = await sql`
       SELECT
         da.id, da.attendance_date, da.status, da.morning_status, da.afternoon_status, da.marked_at,
-        s.id as student_id, s.admission_no, se.roll_number,
+        s.id as student_id, s.admission_no, s.admission_date, se.roll_number, se.start_date, se.id as enrollment_id,
         p.display_name as student_name, p.photo_url,
         marker.display_name as marked_by_name
       FROM student_enrollments se
@@ -322,6 +323,13 @@ router.get('/', requirePermission('attendance.view'), asyncHandler(async (req, r
       ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
       LIMIT ${classListLimit}
     `;
+
+    attendance = await enrichStudentsWithStreaks(sql, {
+      schoolId: req.schoolId,
+      classSectionId: class_section_id,
+      targetDate: date,
+      students: studentList,
+    });
   } else if (student_id && from_date && to_date) {
     // Get attendance history for a student
     attendance = await sql`
@@ -857,7 +865,7 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
   // 4. Load students for this class section (reusing logic)
   const students = await sql`
     SELECT 
-      s.id as student_id, s.admission_no, se.roll_number,
+      s.id as student_id, s.admission_no, s.admission_date, se.roll_number, se.start_date,
       p.display_name as student_name, p.photo_url,
       se.id as enrollment_id,
       da.id as attendance_id, da.status, da.morning_status, da.afternoon_status, da.marked_at
@@ -877,6 +885,13 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
+  const enrichedStudents = await enrichStudentsWithStreaks(sql, {
+    schoolId: req.schoolId,
+    classSectionId: classSection.id,
+    targetDate: date,
+    students,
+  });
+
   const [classInfo] = await sql`
     SELECT c.name as class_name, s.name as section_name
     FROM class_sections cs
@@ -891,11 +906,11 @@ router.get('/my-class', requireAuth, asyncHandler(async (req, res) => {
     class_section_id: classSection.id,
     class_name: classInfo?.class_name,
     section_name: classInfo?.section_name,
-    total_students: students.length,
-    marked_count: students.filter((s) => s.status).length,
-    morning_marked_count: students.filter((s) => s.morning_status).length,
-    afternoon_marked_count: students.filter((s) => s.afternoon_status).length,
-    students
+    total_students: enrichedStudents.length,
+    marked_count: enrichedStudents.filter((s) => s.status).length,
+    morning_marked_count: enrichedStudents.filter((s) => s.morning_status).length,
+    afternoon_marked_count: enrichedStudents.filter((s) => s.afternoon_status).length,
+    students: enrichedStudents
   });
 }));
 
@@ -936,7 +951,7 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
   // Get all students in the class with their attendance status for the date
   const students = await sql`
     SELECT 
-      s.id as student_id, s.admission_no, se.roll_number,
+      s.id as student_id, s.admission_no, s.admission_date, se.roll_number, se.start_date,
       p.display_name as student_name, p.photo_url,
       se.id as enrollment_id,
       da.id as attendance_id, da.status, da.morning_status, da.afternoon_status, da.marked_at
@@ -956,6 +971,13 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
     ORDER BY se.roll_number ASC NULLS LAST, p.display_name ASC
   `;
 
+  const enrichedStudents = await enrichStudentsWithStreaks(sql, {
+    schoolId: req.schoolId,
+    classSectionId,
+    targetDate: date,
+    students,
+  });
+
   // Get class info
   const [classInfo] = await sql`
     SELECT c.name as class_name, s.name as section_name
@@ -970,11 +992,11 @@ router.get('/class/:classSectionId', requirePermission('attendance.view'), async
     class_section_id: classSectionId,
     class_name: classInfo?.class_name,
     section_name: classInfo?.section_name,
-    total_students: students.length,
-    marked_count: students.filter((s) => s.status).length,
-    morning_marked_count: students.filter((s) => s.morning_status).length,
-    afternoon_marked_count: students.filter((s) => s.afternoon_status).length,
-    students
+    total_students: enrichedStudents.length,
+    marked_count: enrichedStudents.filter((s) => s.status).length,
+    morning_marked_count: enrichedStudents.filter((s) => s.morning_status).length,
+    afternoon_marked_count: enrichedStudents.filter((s) => s.afternoon_status).length,
+    students: enrichedStudents
   });
 }));
 
