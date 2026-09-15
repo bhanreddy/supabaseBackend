@@ -6,11 +6,6 @@ import { verifyEcdsaSignature } from './staffDeviceService.js';
 
 const ADMIN_ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'half_day']);
 
-function sameId(a, b) {
-  if (a == null || b == null) return false;
-  return String(a).toLowerCase() === String(b).toLowerCase();
-}
-
 function assertValidAttendanceDateAndStatus(attendanceDate, status = null) {
   const value = String(attendanceDate || '');
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -546,8 +541,6 @@ export async function recordAdminAttendanceAction({
     throw err;
   }
 
-  // Prevent admin from modifying their own attendance through this endpoint
-  const [adminUser] = await sql`SELECT person_id FROM users WHERE id = ${adminUserId} AND school_id = ${schoolId} LIMIT 1`;
   const [targetStaff] = await sql`
     SELECT person_id FROM staff
     WHERE id = ${targetStaffId} AND school_id = ${schoolId} AND deleted_at IS NULL
@@ -560,11 +553,6 @@ export async function recordAdminAttendanceAction({
     throw err;
   }
 
-  if (adminUser?.person_id === targetStaff?.person_id) {
-    const err = new Error('Administrators cannot manually mark or correct their own attendance');
-    err.code = 'SELF_MODIFICATION_FORBIDDEN';
-    throw err;
-  }
   return await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${targetStaffId}:${attendanceDate}`}, 0))`;
 
@@ -704,21 +692,10 @@ export async function recordAdminAttendanceBatch({
     err.code = 'STAFF_NOT_FOUND';
     throw err;
   }
-  const selfStaffIds = new Set(
-    targetStaff
-      .filter((staff) => sameId(staff.person_id, adminUser.person_id))
-      .map((staff) => String(staff.id).toLowerCase())
-  );
-  const writable = normalized.filter((row) => !selfStaffIds.has(String(row.staffId).toLowerCase()));
-  if (!writable.length) {
-    const err = new Error('Administrators cannot manually mark or correct their own attendance');
-    err.code = 'SELF_MODIFICATION_FORBIDDEN';
-    throw err;
-  }
 
   return sql.begin(async (tx) => {
     const results = [];
-    for (const row of writable) {
+    for (const row of normalized) {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${row.staffId}:${attendanceDate}`}, 0))`;
       const rowKey = `${idempotencyKey}:${row.staffId}`;
       const [priorEvent] = await tx`
@@ -826,11 +803,6 @@ export async function reopenStaffAttendance({
   if (!adminUser) {
     const err = new Error('Administrator was not found in this school');
     err.code = 'ADMIN_NOT_FOUND';
-    throw err;
-  }
-  if (adminUser.person_id === targetStaff.person_id) {
-    const err = new Error('Administrators cannot reopen their own attendance');
-    err.code = 'SELF_MODIFICATION_FORBIDDEN';
     throw err;
   }
 
