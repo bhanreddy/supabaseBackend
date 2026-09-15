@@ -1,6 +1,4 @@
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const archiver = require('archiver');
+import { ZipArchive } from 'archiver';
 import XLSX from 'xlsx';
 import { interpolateVariables } from './documentDataResolver.js';
 
@@ -718,7 +716,7 @@ export function buildDocumentHtml({ template, studentsData, pageSettings = {} })
  * Builds a ZIP archive of individual personalized slips organized by class & section.
  */
 export async function buildZipArchive({ template, studentsData, pageSettings = {} }) {
-  const archive = archiver('zip', { zlib: { level: 9 } });
+  const archive = new ZipArchive({ zlib: { level: 9 } });
 
   for (const student of studentsData) {
     const singleHtml = buildDocumentHtml({
