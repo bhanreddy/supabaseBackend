@@ -6,6 +6,11 @@ import { verifyEcdsaSignature } from './staffDeviceService.js';
 
 const ADMIN_ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'half_day']);
 
+function sameId(a, b) {
+  if (a == null || b == null) return false;
+  return String(a).toLowerCase() === String(b).toLowerCase();
+}
+
 function assertValidAttendanceDateAndStatus(attendanceDate, status = null) {
   const value = String(attendanceDate || '');
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -699,7 +704,13 @@ export async function recordAdminAttendanceBatch({
     err.code = 'STAFF_NOT_FOUND';
     throw err;
   }
-  if (targetStaff.some((staff) => staff.person_id === adminUser.person_id)) {
+  const selfStaffIds = new Set(
+    targetStaff
+      .filter((staff) => sameId(staff.person_id, adminUser.person_id))
+      .map((staff) => String(staff.id).toLowerCase())
+  );
+  const writable = normalized.filter((row) => !selfStaffIds.has(String(row.staffId).toLowerCase()));
+  if (!writable.length) {
     const err = new Error('Administrators cannot manually mark or correct their own attendance');
     err.code = 'SELF_MODIFICATION_FORBIDDEN';
     throw err;
@@ -707,7 +718,7 @@ export async function recordAdminAttendanceBatch({
 
   return sql.begin(async (tx) => {
     const results = [];
-    for (const row of normalized) {
+    for (const row of writable) {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${row.staffId}:${attendanceDate}`}, 0))`;
       const rowKey = `${idempotencyKey}:${row.staffId}`;
       const [priorEvent] = await tx`

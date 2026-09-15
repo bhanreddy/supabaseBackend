@@ -2941,7 +2941,12 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
 
       const amountPaid = Number(ledger?.amount_paid || 0);
       const currentDue = Number(fee.fee_amount) + Number(ledger?.adjustment_total || 0);
-      const remaining = Math.max(currentDue - amountPaid, 0);
+      const remaining = Math.max(Math.round((currentDue - amountPaid) * 100) / 100, 0);
+      if (isWaive && remaining <= 0) {
+        const err = new Error('This fee is fully paid or waived. Use Add to post an extra charge.');
+        err.status = 422;
+        throw err;
+      }
       if (isWaive && parsedAmount > remaining) {
         const err = new Error(`Cannot waive more than the outstanding amount (₹${remaining})`);
         err.status = 422;
@@ -3003,7 +3008,14 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
       throw err;
     }
 
-    const remaining = Number(fee.amount_due) - Number(fee.discount) - Number(fee.amount_paid);
+    const remaining = Math.round(
+      (Number(fee.amount_due) - Number(fee.discount) - Number(fee.amount_paid)) * 100
+    ) / 100;
+    if (isWaive && remaining <= 0) {
+      const err = new Error('This fee is fully paid or waived. Use Add to post an extra charge.');
+      err.status = 422;
+      throw err;
+    }
     if (isWaive && parsedAmount > remaining) {
       const err = new Error(`Cannot waive more than the outstanding amount (₹${remaining})`);
       err.status = 422;
@@ -3039,6 +3051,8 @@ router.post('/adjust', requireRole('admin', 'principal'), asyncHandler(async (re
         RETURNING id, amount_due, amount_paid, discount, status, updated_at
       `;
     } else {
+      // Adding extra charges is allowed even when remaining is 0
+      // (fully paid or fully waived). Increasing amount_due reopens a due.
       [updatedFee] = await tx`
         UPDATE student_fees
         SET amount_due = amount_due + ${parsedAmount},

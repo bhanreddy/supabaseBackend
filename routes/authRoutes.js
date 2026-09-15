@@ -444,6 +444,7 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
     has_staff_profile: dbUser.has_staff_profile,
     has_student_profile: dbUser.has_student_profile,
     staffId: dbUser.staff_id || null,
+    personId: dbUser.person_id || null,
     staff_code: dbUser.staff_code || null,
     admission_no: dbUser.admission_no || null,
     class_section_id: classSectionId,

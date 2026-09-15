@@ -1014,7 +1014,7 @@ router.get('/staff', requirePermission('attendance.view'), asyncHandler(async (r
 
   const attendance = await sql`
         SELECT 
-            s.id as staff_id, s.staff_code,
+            s.id as staff_id, s.staff_code, s.person_id,
             p.display_name as staff_name, p.photo_url,
             sd.name as designation,
             sa.id as attendance_id, sa.attendance_date, sa.status, sa.marked_at

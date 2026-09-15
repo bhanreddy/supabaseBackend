@@ -94,6 +94,24 @@ test('fully paid transport due remains visible as a paid student fee row', () =>
   assert.equal(fee.is_transport, true);
 });
 
+test('fully waived transport due remains visible so extra charges can be added', () => {
+  const fee = transportDueToStudentFee({
+    transport_fee_id: 'transport-fee-2',
+    fee_amount: 0,
+    paid_amount: 0,
+    waived_amount: 1500,
+    balance_due: 0,
+    due_date: '2027-03-31',
+    academic_year: '2026-27',
+    fee_not_set: false,
+  }, 'student-3');
+
+  assert.ok(fee);
+  assert.equal(fee.status, 'paid');
+  assert.equal(fee.amount_due, 0);
+  assert.equal(fee.amount_paid, 0);
+});
+
 test('transport fee without a configured stop fee is not added to the ledger', () => {
   const fee = transportDueToStudentFee({
     transport_fee_id: null,

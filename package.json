@@ -25,6 +25,7 @@
     "node": ">=18.18.0"
   },
   "dependencies": {
+    "@google-cloud/storage": "^8.1.0",
     "@google/generative-ai": "^0.24.1",
     "@phonepe-pg/pg-sdk-node": "^2.0.6",
     "@supabase/supabase-js": "^2.90.1",

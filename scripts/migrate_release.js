@@ -36,6 +36,8 @@ const omrEngineMigrationName = '20260913_v436_premium_omr_engine.sql';
 const omrEngineHardeningMigrationName = '20260913_v437_omr_engine_hardening.sql';
 const contentEngineMigrationName = '20260914_v438_content_engine.sql';
 const contentEngineHardeningMigrationName = '20260914_v439_content_engine_hardening.sql';
+const databaseBackupMigrationName = '20260914_v445_database_backup_subsystem.sql';
+const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
   const body = fs.readFileSync(new URL(`../migrations/${filename}`, import.meta.url), 'utf8');
@@ -217,6 +219,8 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, finePenaltyMigrationName, 4220912);
   await applyNamedSqlMigration(db, fineHardeningMigrationName, 4230912);
   await applyNamedSqlMigration(db, celebrationSettingsMigrationName, 4240912);
+  await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
+  await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -372,7 +376,13 @@ export async function verifyReleaseDatabase(db) {
     WHERE p.id IS NULL
   `;
   if (contentPerms.count) throw new Error('Content engine school permissions are incomplete');
-  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine', freshBaseline: readReleaseBaseline().manifest.id };
+  const [backupJobsTable] = await db`SELECT to_regclass('public.backup_jobs') AS name`;
+  if (!backupJobsTable?.name) throw new Error('Database backup subsystem tables are missing');
+  const [backupEventsTable] = await db`SELECT to_regclass('public.backup_events') AS name`;
+  if (!backupEventsTable?.name) throw new Error('Database backup events table is missing');
+  const [backupSettingsTable] = await db`SELECT to_regclass('public.backup_settings') AS name`;
+  if (!backupSettingsTable?.name) throw new Error('Database backup settings table is missing');
+  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine + Database Backups', freshBaseline: readReleaseBaseline().manifest.id };
 }
 
 function sessionConnectionUrl(source) {
@@ -388,7 +398,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const source = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL;
   if (!source) throw new Error('Set DATABASE_URL_DIRECT to a direct/session connection');
-  const connectionUrl = mode === '--student-login-qr' ? sessionConnectionUrl(source) : source;
+  const connectionUrl = sessionConnectionUrl(source);
   if (/pooler\.supabase\.com:6543/i.test(connectionUrl)) {
     throw new Error('Use a direct/session connection, not the transaction pooler');
   }
@@ -423,6 +433,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, omrEngineHardeningMigrationName, 4370913);
       await applyNamedSqlMigration(db, contentEngineMigrationName, 4380914);
       await applyNamedSqlMigration(db, contentEngineHardeningMigrationName, 4390914);
+      await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
+      await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

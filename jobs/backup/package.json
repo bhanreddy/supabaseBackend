@@ -1,0 +1,25 @@
+{
+  "name": "schoolims-db-backup",
+  "version": "1.0.0",
+  "description": "Production-grade automated database backup worker for SchoolIMS",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "backup:daily": "node src/index.js --type=daily",
+    "backup:weekly": "node src/index.js --type=weekly",
+    "backup:monthly": "node src/index.js --type=monthly",
+    "backup:manual": "node src/index.js --type=manual",
+    "restore:validate": "node ../../scripts/restore_test.js"
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.15.0",
+    "dotenv": "^17.3.1",
+    "pino": "^9.9.0",
+    "postgres": "^3.4.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
