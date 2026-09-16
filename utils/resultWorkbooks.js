@@ -1,11 +1,20 @@
 import XLSX from 'xlsx';
 
 import { gradeForFinalPercentage } from '../services/finalResultCalculationService.js';
+import {
+  examTotalMaximum,
+  marksEntryStatusLabel,
+  subjectPercentage,
+  summarizeStudentMarks,
+} from '../services/marksTotalsService.js';
 
 const safeNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
 };
+
+/** Blank cells stay blank so a missing entry is never read as a zero score. */
+const numericCell = (value) => value == null ? '' : value;
 
 const markValue = (subject, field = 'marks_obtained') => {
   if (!subject?.mark_id) return '';
@@ -16,9 +25,9 @@ const markValue = (subject, field = 'marks_obtained') => {
 const gradeValue = (subject) => {
   if (!subject?.mark_id) return '';
   if (subject.is_absent) return 'AB';
-  const maximum = safeNumber(subject.max_marks);
-  if (maximum <= 0) return '';
-  return gradeForFinalPercentage((safeNumber(subject.marks_obtained) / maximum) * 100).grade;
+  const percentage = subjectPercentage(subject.marks_obtained, subject.max_marks);
+  if (percentage == null) return '';
+  return gradeForFinalPercentage(percentage).grade;
 };
 
 export function classifyMarksResult(papers = [], subjects = []) {
@@ -150,13 +159,16 @@ const classMarksWorksheet = ({
       { top: paper.subject_name, sub: 'Grade', key: 'grade', width: 10 },
     ];
   });
-  const totalMax = papers.reduce((total, paper) => total + safeNumber(paper.max_marks), 0);
+  const examMaximum = examTotalMaximum(papers);
+  // Obtained and Maximum are separate numeric columns: a single "Total /300"
+  // header cannot describe a student whose marks are only partly entered.
   const summaryColumns = [
-    { top: 'Overall', sub: `Total /${totalMax}`, width: 14 },
+    { top: 'Overall', sub: 'Total Obtained', width: 15 },
+    { top: 'Overall', sub: 'Total Maximum', width: 15 },
     { top: 'Overall', sub: 'Percentage', width: 13 },
     { top: 'Overall', sub: 'Rank', width: 9 },
     { top: 'Overall', sub: 'Result', width: 14 },
-    { top: 'Overall', sub: 'Entry Status', width: 15 },
+    { top: 'Overall', sub: 'Entry Status', width: 24 },
   ];
   const allColumns = [...baseColumns, ...paperColumns, ...summaryColumns];
   const topHeader = allColumns.map((column) => column.top);
@@ -174,21 +186,21 @@ const classMarksWorksheet = ({
       }
       return [markValue(subject), gradeValue(subject)];
     });
+    // Recomputed from the shared service rather than trusting the caller, so
+    // the workbook can never disagree with the progress report screen.
+    const totals = summarizeStudentMarks({ papers, subjects: student.subjects });
     return [
       index + 1,
       student.student_name || '',
       student.admission_no || '',
       student.roll_number ?? '',
       ...subjectCells,
-      student.total_obtained,
-      student.percentage == null ? '' : safeNumber(student.percentage),
+      numericCell(totals.total_obtained),
+      totals.total_max > 0 ? totals.total_max : '',
+      numericCell(totals.percentage),
       student.rank ?? '',
       student.result_status || '',
-      papers.length === 0
-        ? 'No exam papers configured'
-        : student.completed_subjects === papers.length
-          ? 'Complete'
-          : `${student.completed_subjects}/${papers.length} entered`,
+      marksEntryStatusLabel(totals, papers.length),
     ];
   });
   const rankingLabel = {
@@ -200,7 +212,7 @@ const classMarksWorksheet = ({
     [`${schoolName || 'School'} — ${exam?.name || 'Class Marks'}`],
     ['Class Teacher', teacherName || ''],
     ['Class', `${classSection?.class_name || ''}-${classSection?.section_name || ''}`, 'Academic Year', classSection?.academic_year || ''],
-    ['Ranking Algorithm', rankingLabel],
+    ['Ranking Algorithm', rankingLabel, 'Exam Maximum Marks', examMaximum],
     filterLabel ? ['Export Filters', filterLabel] : [],
     topHeader,
     subHeader,
@@ -239,7 +251,9 @@ const classMarksWorksheet = ({
       if (worksheet[address]) worksheet[address].s = headerStyle;
     }
   }
-  const percentageColumn = allColumns.length - 4;
+  const percentageColumn = allColumns.findIndex((column) =>
+    column.top === 'Overall' && column.sub === 'Percentage',
+  );
   for (let row = 7; row < dataRows.length + 7; row += 1) {
     const address = XLSX.utils.encode_cell({ r: row, c: percentageColumn });
     if (worksheet[address]) worksheet[address].z = '0.00"%"';
@@ -270,7 +284,9 @@ export function buildSchoolMarksWorkbook({
     const students = section.students || [];
     const papers = section.papers || [];
     const completeStudents = papers.length > 0
-      ? students.filter((student) => student.completed_subjects === papers.length).length
+      ? students.filter((student) =>
+        summarizeStudentMarks({ papers, subjects: student.subjects }).is_complete,
+      ).length
       : 0;
     return [
       index + 1,
@@ -279,6 +295,7 @@ export function buildSchoolMarksWorkbook({
       section.teacherName || '',
       students.length,
       papers.length,
+      examTotalMaximum(papers),
       completeStudents,
       students.length - completeStudents,
     ];
@@ -288,16 +305,16 @@ export function buildSchoolMarksWorkbook({
     ['Academic Year', exam?.academic_year || ''],
     ['Generated', new Date().toLocaleString('en-IN')],
     filterLabel ? ['Export Filters', filterLabel] : [],
-    ['S.No.', 'Class', 'Section', 'Class Teacher', 'Students', 'Subjects', 'Complete Students', 'Incomplete Students'],
+    ['S.No.', 'Class', 'Section', 'Class Teacher', 'Students', 'Subjects', 'Exam Maximum Marks', 'Complete Students', 'Incomplete Students'],
     ...overviewRows,
   ]);
-  overview['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }];
+  overview['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
   overview['!cols'] = [
     { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 28 },
-    { wch: 12 }, { wch: 12 }, { wch: 19 }, { wch: 21 },
+    { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 19 }, { wch: 21 },
   ];
   overview['!freeze'] = { xSplit: 0, ySplit: 5 };
-  overview['!autofilter'] = { ref: `A5:H${Math.max(5, overviewRows.length + 5)}` };
+  overview['!autofilter'] = { ref: `A5:I${Math.max(5, overviewRows.length + 5)}` };
   const usedNames = new Set(['Overview']);
   for (const section of sections) {
     const baseName = safeSheetName(`${section.classSection?.class_name || 'Class'}-${section.classSection?.section_name || 'Section'}`);

@@ -46,6 +46,10 @@ import {
 } from '../services/finalResultCalculationService.js';
 import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
 import {
+  subjectPercentage,
+  summarizeStudentMarks,
+} from '../services/marksTotalsService.js';
+import {
   buildClassMarksWorkbook,
   buildMissingMarksWorkbook,
   buildSchoolMarksWorkbook,
@@ -1544,18 +1548,22 @@ router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission
     });
   }
 
+  const normalizedPapers = papers.map((paper) => ({
+    ...paper,
+    max_marks: Number(paper.max_marks || 0),
+    participation_max_marks: Number(paper.participation_max_marks || 10),
+    written_work_max_marks: Number(paper.written_work_max_marks || 10),
+    project_work_max_marks: Number(paper.project_work_max_marks || 10),
+    slip_test_max_marks: Number(paper.slip_test_max_marks || 20),
+  }));
   const students = [...studentMap.values()].map((student) => {
-    const entered = student.subjects.filter((subject) => subject.mark_id);
-    const totalObtained = entered.reduce(
-      (total, subject) => total + (subject.is_absent ? 0 : Number(subject.marks_obtained || 0)),
-      0,
-    );
-    const totalMax = entered.reduce((total, subject) => total + Number(subject.max_marks || 0), 0);
+    const totals = summarizeStudentMarks({ papers: normalizedPapers, subjects: student.subjects });
     return {
       ...student,
-      total_obtained: Number(totalObtained.toFixed(2)),
-      percentage: totalMax > 0 ? Number(((totalObtained / totalMax) * 100).toFixed(2)) : null,
-      completed_subjects: entered.length,
+      total_obtained: totals.total_obtained,
+      total_max: totals.total_max,
+      percentage: totals.percentage,
+      completed_subjects: totals.entered_subjects,
       attendance_percentage: attendanceByStudent.get(String(student.student_id)) ?? null,
     };
   });
@@ -1568,14 +1576,6 @@ router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission
   const exportStudents = students.map((student) => ({
     ...student,
     rank: rankByStudent.get(String(student.student_id)) ?? null,
-  }));
-  const normalizedPapers = papers.map((paper) => ({
-    ...paper,
-    max_marks: Number(paper.max_marks || 0),
-    participation_max_marks: Number(paper.participation_max_marks || 10),
-    written_work_max_marks: Number(paper.written_work_max_marks || 10),
-    project_work_max_marks: Number(paper.project_work_max_marks || 10),
-    slip_test_max_marks: Number(paper.slip_test_max_marks || 20),
   }));
   const workbook = buildClassMarksWorkbook({
     schoolName: school?.name,
@@ -1874,18 +1874,14 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
   const exportSections = classSections.map((classSection) => {
     const sectionPapers = papersByClass.get(String(classSection.class_id)) || [];
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
-      const entered = student.subjects.filter((subject) => subject.mark_id);
-      const totalObtained = entered.reduce(
-        (total, subject) => total + (subject.is_absent ? 0 : Number(subject.marks_obtained || 0)),
-        0,
-      );
-      const totalMax = entered.reduce((total, subject) => total + Number(subject.max_marks || 0), 0);
+      const totals = summarizeStudentMarks({ papers: sectionPapers, subjects: student.subjects });
       const classification = classifyMarksResult(sectionPapers, student.subjects);
       return {
         ...student,
-        total_obtained: Number(totalObtained.toFixed(2)),
-        percentage: totalMax > 0 ? Number(((totalObtained / totalMax) * 100).toFixed(2)) : null,
-        completed_subjects: entered.length,
+        total_obtained: totals.total_obtained,
+        total_max: totals.total_max,
+        percentage: totals.percentage,
+        completed_subjects: totals.entered_subjects,
         ...classification,
         attendance_percentage: attendanceByStudent.get(`${classSection.id}:${student.student_id}`) ?? null,
       };
@@ -2099,31 +2095,20 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       weightage_20: subject.mark_id && subject.assessment_schema === 'component'
         ? componentWeightage20(componentTotal, componentMaximums)
         : null,
-      percentage: subject.mark_id && maximum > 0
-        ? Number(((Number(obtained || 0) / maximum) * 100).toFixed(2))
+      percentage: subject.mark_id
+        ? subjectPercentage(subject.is_absent ? 0 : obtained, maximum)
         : null,
       entry_status: subject.is_absent ? 'absent' : subject.mark_id ? 'complete' : 'missing',
     };
   });
 
-  const cohort = await sql`
+  // Raw paper rows, aggregated in JavaScript by the shared marks service so the
+  // rank a student sees is derived from the same percentage the report shows.
+  const cohortRows = await sql`
     SELECT
       enrolled_student.id AS student_id, enrolled_student.admission_no,
-      COALESCE(
-        SUM(CASE WHEN mark.is_absent THEN 0 ELSE mark.marks_obtained END)
-          FILTER (WHERE mark.id IS NOT NULL),
-        0
-      ) AS total_obtained,
-      COALESCE(SUM(paper.max_marks) FILTER (WHERE mark.id IS NOT NULL), 0) AS total_max,
-      ROUND(
-        COALESCE(
-          SUM(CASE WHEN mark.is_absent THEN 0 ELSE mark.marks_obtained END)
-            FILTER (WHERE mark.id IS NOT NULL),
-          0
-        )::numeric
-        / NULLIF(SUM(paper.max_marks) FILTER (WHERE mark.id IS NOT NULL), 0) * 100,
-        2
-      ) AS percentage
+      paper.id AS exam_subject_id, paper.max_marks,
+      mark.id AS mark_id, mark.marks_obtained, mark.is_absent
     FROM student_enrollments enrollment
     JOIN students enrolled_student ON enrolled_student.id = enrollment.student_id
       AND enrolled_student.school_id = ${req.schoolId}
@@ -2141,8 +2126,29 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       AND paper.class_id = ${classSection.class_id}
       AND paper.school_id = ${req.schoolId}
       AND paper.deleted_at IS NULL
-    GROUP BY enrolled_student.id, enrolled_student.admission_no
   `;
+  const cohortByStudent = new Map();
+  for (const row of cohortRows) {
+    const studentKey = String(row.student_id);
+    if (!cohortByStudent.has(studentKey)) {
+      cohortByStudent.set(studentKey, {
+        student_id: row.student_id,
+        admission_no: row.admission_no,
+        subjects: [],
+      });
+    }
+    cohortByStudent.get(studentKey).subjects.push(row);
+  }
+  const cohort = [...cohortByStudent.values()].map((entry) => {
+    const totals = summarizeStudentMarks({ papers: rawSubjects, subjects: entry.subjects });
+    return {
+      student_id: entry.student_id,
+      admission_no: entry.admission_no,
+      total_obtained: totals.total_obtained,
+      total_max: totals.total_max,
+      percentage: totals.percentage,
+    };
+  });
 
   const attendanceRows = await sql`
     SELECT
@@ -2217,9 +2223,7 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
     attendance_percentage: null,
   };
 
-  const totalObtained = subjects.reduce((total, subject) => total + Number(subject.marks_obtained || 0), 0);
-  const totalMax = subjects.reduce((total, subject) => total + Number(subject.max_marks || 0), 0);
-  const percentage = totalMax > 0 ? Number(((totalObtained / totalMax) * 100).toFixed(2)) : 0;
+  const totals = summarizeStudentMarks({ papers: rawSubjects, subjects });
 
   return sendSuccess(res, req.schoolId, {
     class_section: {
@@ -2232,13 +2236,16 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
     exam,
     subjects,
     summary: {
-      total_obtained: totalObtained,
-      total_max: totalMax,
-      percentage,
+      total_obtained: totals.total_obtained ?? 0,
+      total_max: totals.total_max,
+      exam_total_max: totals.exam_total_max,
+      percentage: totals.percentage ?? 0,
       rank: rankedStudent?.rank ?? null,
-      subject_count: rawSubjects.length,
-      completed_subjects: subjects.length,
-      missing_subjects: rawSubjects.length - subjects.length,
+      subject_count: totals.subject_count,
+      completed_subjects: totals.entered_subjects,
+      missing_subjects: totals.missing_subjects,
+      unassessable_subjects: totals.unassessable_subjects,
+      is_complete: totals.is_complete,
       ranking_method: rankingMethod,
     },
     attendance: {
