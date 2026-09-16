@@ -42,7 +42,7 @@ export const NotificationEventConfig = Object.freeze({
         bodyTemplate: '📊 {{message}}',
         titleTemplate_te: '🏆 ఫలితాలు ప్రకటించబడ్డాయి',
         bodyTemplate_te: '📊 {{message_te}}',
-        deepLink: '/results',
+        deepLink: '/(tabs)/results',
         requiredParams: ['message']
     },
 
@@ -88,7 +88,7 @@ export const NotificationEventConfig = Object.freeze({
         bodyTemplate: '🕐 {{message}}',
         titleTemplate_te: '📅 టైమ్‌టేబుల్ నవీకరణ',
         bodyTemplate_te: '🕐 {{message_te}}',
-        deepLink: '/Screen/timetable',
+        deepLink: '/(tabs)/timetable',
         requiredParams: ['message']
     },
 
@@ -352,7 +352,7 @@ export const NotificationEventConfig = Object.freeze({
         bodyTemplate: '🔓 {{message}}',
         titleTemplate_te: '🔐 యాక్సెస్ అభ్యర్థన నవీకరణ',
         bodyTemplate_te: '🔓 {{message_te}}',
-        deepLink: '/Screen/access',
+        deepLink: '/accounts/dashboard',
         requiredParams: ['message']
     },
 

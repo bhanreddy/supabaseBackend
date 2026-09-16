@@ -1,4 +1,5 @@
 import sql from '../db.js';
+import { supabase, supabaseAdmin } from '../db.js';
 import config from '../config/env.js';
 import {
   LoginQrError,
@@ -6,6 +7,7 @@ import {
   buildSchoolIMSLoginQr,
   deriveLoginQrSecret,
   hashLoginQrSecret,
+  normalizeQrOtpType,
   parseSchoolIMSLoginQr,
   verifyLoginQrSecret,
 } from '../utils/studentLoginQr.js';
@@ -38,7 +40,7 @@ function toCredentialResponse(row) {
     issuedAt: row.issued_at,
     version: row.version,
   });
-  if (hashLoginQrSecret(secret) !== row.token_hash) throw new LoginQrError('LOGIN_QR_KEY_ROTATED');
+  if (hashLoginQrSecret(secret) !== String(row.token_hash || '').trim()) throw new LoginQrError('LOGIN_QR_KEY_ROTATED');
   return {
     qrPayload: buildSchoolIMSLoginQr({
       credentialId: row.id,
@@ -266,24 +268,45 @@ export async function resolveLoginQrCredential(rawPayload, requestedSchoolId) {
   assertSameLoginQrSchool(parsed.schoolId, requestedSchoolId);
 
   const [row] = await sql`
-    SELECT qr.*, u.account_status, s.status_id
+    SELECT qr.id, qr.school_id, qr.student_id, qr.user_id, qr.token_hash, qr.version,
+      qr.issued_at, qr.expires_at, qr.revoked_at,
+      u.account_status, u.deleted_at AS user_deleted_at, u.person_id,
+      s.status_id, s.deleted_at AS student_deleted_at, s.person_id AS student_person_id
     FROM student_login_qr_credentials qr
-    JOIN users u ON u.id = qr.user_id AND u.school_id = qr.school_id AND u.deleted_at IS NULL
-    JOIN students s ON s.id = qr.student_id AND s.school_id = qr.school_id AND s.deleted_at IS NULL
-      AND s.person_id = u.person_id
-    JOIN persons p ON p.id = s.person_id AND p.school_id = qr.school_id AND p.deleted_at IS NULL
-    JOIN schools school ON school.id = qr.school_id AND school.is_active = true
+    LEFT JOIN users u ON u.id = qr.user_id AND u.school_id = qr.school_id
+    LEFT JOIN students s ON s.id = qr.student_id AND s.school_id = qr.school_id
     WHERE qr.id = ${parsed.credentialId} AND qr.school_id = ${requestedSchoolId}
-      AND qr.version = ${parsed.version} AND qr.revoked_at IS NULL AND qr.expires_at > NOW()
-      AND u.account_status = 'active' AND s.status_id = 1
-      AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
-        WHERE ur.user_id = u.id AND ur.school_id = qr.school_id AND r.school_id = qr.school_id
-          AND ur.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code = 'student')
-      AND NOT EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
-        WHERE ur.user_id = u.id AND ur.deleted_at IS NULL AND r.deleted_at IS NULL AND r.code <> 'student')
     LIMIT 1`;
-  if (!row) throw new LoginQrError('LOGIN_QR_NO_LONGER_VALID');
+  if (!row) throw new LoginQrError('QR_TOKEN_NOT_FOUND');
+  if (row.revoked_at) throw new LoginQrError('QR_TOKEN_REVOKED');
+  if (!(new Date(row.expires_at).getTime() > Date.now())) throw new LoginQrError('QR_TOKEN_EXPIRED');
+  if (Number(row.version) !== Number(parsed.version)) throw new LoginQrError('QR_INVALID');
 
+  const [school] = await sql`
+    SELECT id FROM schools WHERE id = ${row.school_id} AND is_active = true LIMIT 1`;
+  if (!school) throw new LoginQrError('QR_SCHOOL_NOT_FOUND');
+
+  if (!row.user_id || row.user_deleted_at) throw new LoginQrError('QR_USER_NOT_FOUND');
+  if (row.account_status !== 'active') throw new LoginQrError('QR_USER_INACTIVE');
+  if (!row.student_id || row.student_deleted_at || Number(row.status_id) !== 1) {
+    throw new LoginQrError('QR_USER_INACTIVE');
+  }
+  if (row.person_id && row.student_person_id && String(row.person_id) !== String(row.student_person_id)) {
+    throw new LoginQrError('QR_LOGIN_NOT_ALLOWED');
+  }
+
+  const roleRows = await sql`
+    SELECT r.code
+    FROM user_roles ur
+    JOIN roles r ON r.id = ur.role_id AND r.school_id = ur.school_id AND r.deleted_at IS NULL
+    WHERE ur.user_id = ${row.user_id} AND ur.school_id = ${row.school_id}
+      AND ur.deleted_at IS NULL`;
+  const roleCodes = roleRows.map((item) => item.code).filter(Boolean);
+  if (!roleCodes.includes('student') || roleCodes.some((code) => code !== 'student')) {
+    throw new LoginQrError('QR_LOGIN_NOT_ALLOWED');
+  }
+
+  const storedHash = String(row.token_hash || '').trim();
   const expectedSecret = deriveLoginQrSecret({
     masterSecret: config.loginQr.secret,
     credentialId: row.id,
@@ -292,14 +315,71 @@ export async function resolveLoginQrCredential(rawPayload, requestedSchoolId) {
     issuedAt: row.issued_at,
     version: row.version,
   });
-  if (!verifyLoginQrSecret(parsed.secret, expectedSecret, row.token_hash)) {
-    throw new LoginQrError('LOGIN_QR_NO_LONGER_VALID');
+  if (hashLoginQrSecret(expectedSecret) !== storedHash) {
+    throw new LoginQrError('LOGIN_QR_KEY_ROTATED');
+  }
+  if (!verifyLoginQrSecret(parsed.secret, expectedSecret, storedHash)) {
+    throw new LoginQrError('QR_INVALID');
   }
 
   const used = await sql`UPDATE student_login_qr_credentials
     SET last_used_at = NOW(), use_count = use_count + 1
     WHERE id = ${row.id} AND school_id = ${requestedSchoolId} AND revoked_at IS NULL
       AND expires_at > NOW() RETURNING id`;
-  if (!used.length) throw new LoginQrError('LOGIN_QR_NO_LONGER_VALID');
+  if (!used.length) throw new LoginQrError('QR_TOKEN_REVOKED');
   return { credentialId: row.id, userId: row.user_id, schoolId: row.school_id };
+}
+
+export async function exchangeLoginQrForSession(rawPayload, requestedSchoolId) {
+  const credential = await resolveLoginQrCredential(rawPayload, requestedSchoolId);
+  const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(credential.userId);
+  const email = userData?.user?.email;
+  if (userError || !email || userData.user.id !== credential.userId ||
+    (userData.user.banned_until && new Date(userData.user.banned_until) > new Date())) {
+    throw new LoginQrError('QR_USER_INACTIVE');
+  }
+
+  const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  });
+  const tokenHash = linkData?.properties?.hashed_token;
+  const emailOtp = linkData?.properties?.email_otp;
+  if (linkError || (linkData?.user?.id && linkData.user.id !== credential.userId) || (!tokenHash && !emailOtp)) {
+    throw new LoginQrError('QR_SESSION_CREATE_FAILED');
+  }
+
+  const verifyType = normalizeQrOtpType(linkData?.properties?.verification_type);
+  let session = null;
+  if (tokenHash) {
+    const hashed = await supabase.auth.verifyOtp({
+      token_hash: tokenHash,
+      type: verifyType,
+    });
+    if (!hashed.error && hashed.data?.session?.user?.id === credential.userId) {
+      session = hashed.data.session;
+    }
+  }
+  if (!session && emailOtp) {
+    const otp = await supabase.auth.verifyOtp({
+      email,
+      token: emailOtp,
+      type: 'email',
+    });
+    if (!otp.error && otp.data?.session?.user?.id === credential.userId) {
+      session = otp.data.session;
+    }
+  }
+  if (!session?.access_token || !session.refresh_token) {
+    throw new LoginQrError('QR_SESSION_CREATE_FAILED');
+  }
+
+  return {
+    credential,
+    session: {
+      token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: session.expires_at,
+    },
+  };
 }

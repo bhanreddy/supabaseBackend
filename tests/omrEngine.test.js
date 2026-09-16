@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import {
   calculateTemplateGeometry,
   generateSheetSvg,
+  wrapOmrSheetsForPrint,
   TEMPLATE_PRESETS
 } from '../services/omr/omrTemplateEngine.js';
 import {
@@ -48,15 +49,25 @@ describe('OMR Template Engine (Engine A)', () => {
       }
     }
 
-    // Verify 6-digit roll number grid
+    // Verify 6-digit admission number grid
     assert.equal(geom.rollGrid.columns, 6);
     assert.equal(geom.rollGrid.bubbles.length, 60); // 6 cols x 10 digits
+
+    const q1 = geom.questions[0];
+    const q1Top = q1.bubbles[0].cy - q1.bubbles[0].radius;
+    assert.ok(q1Top > geom.answers.y + 58);
+    assert.ok(q1.bubbles[0].cy > geom.rollGrid.y + geom.rollGrid.height);
+    const lastQ = geom.questions[geom.questions.length - 1];
+    assert.ok(lastQ.bubbles[0].cy + lastQ.bubbles[0].radius < geom.answers.y + geom.answers.height);
   });
 
   test('calculates correct geometry for 100-Question and 20-Question presets', () => {
     const geom100 = calculateTemplateGeometry({ code: 'A4_100Q_4OPT_V1' });
     assert.equal(geom100.totalQuestions, 100);
     assert.equal(geom100.questions.length, 100);
+    const first100 = geom100.questions[0];
+    assert.ok(first100.bubbles[0].cy - first100.bubbles[0].radius > geom100.answers.y + 58);
+    assert.ok(first100.bubbles[0].cy > geom100.rollGrid.y + geom100.rollGrid.height);
 
     const geom20 = calculateTemplateGeometry({ code: 'A4_20Q_4OPT_V1' });
     assert.equal(geom20.totalQuestions, 20);
@@ -75,9 +86,30 @@ describe('OMR Template Engine (Engine A)', () => {
     assert.ok(svg.includes('Greenwood High International'));
     assert.ok(svg.includes('Mid-Term Science Exam'));
     assert.ok(svg.includes('SHT-TEST-9988'));
-    assert.ok(svg.includes('CANDIDATE RESPONSES'));
-    assert.ok(svg.includes('ROLL NUMBER'));
+    assert.ok(svg.includes('ANSWERS'));
+    assert.ok(svg.includes('ADMISSION NUMBER'));
     assert.ok(svg.endsWith('</svg>'));
+  });
+
+  test('print wrapper keeps school name in the document header and A4 pages', () => {
+    const svg = generateSheetSvg({
+      schoolName: 'Slate School Kosgi',
+      examTitle: 'Class 8 Science FA-2',
+      sheetId: 'SHT-PRINT-01',
+      examId: 'EXAM-PRINT-01',
+    });
+    const html = wrapOmrSheetsForPrint({
+      schoolName: 'Slate School Kosgi',
+      examTitle: 'Class 8 Science FA-2',
+      sheets: [svg, svg],
+    });
+
+    assert.ok(html.includes('<title>Slate School Kosgi'));
+    assert.ok(html.includes('@page { size: A4 portrait; margin: 0; }'));
+    assert.equal((html.match(/class="omr-page"/g) || []).length, 2);
+    assert.ok(html.includes('Slate School Kosgi'));
+    assert.ok(html.includes('ANSWERS'));
+    assert.ok(html.includes('ADMISSION NUMBER'));
   });
 });
 

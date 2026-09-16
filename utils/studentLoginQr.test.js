@@ -7,7 +7,9 @@ import {
   deriveLoginQrSecret,
   hashLoginQrSecret,
   hasStudentLoginQrRole,
+  normalizeQrOtpType,
   parseSchoolIMSLoginQr,
+  qrLoginErrorBody,
   STUDENT_LOGIN_QR_ALLOWED_ROLES,
   STUDENT_LOGIN_QR_DENIED_ROLES,
   verifyLoginQrSecret,
@@ -69,7 +71,34 @@ test('QR management role policy allows management/accounts and denies student-fa
 
 test('cross-school QR payloads fail closed before credential lookup', () => {
   assert.throws(() => assertSameLoginQrSchool(17, 18), (error) => (
-    error instanceof LoginQrError && error.code === 'LOGIN_QR_SCHOOL_MISMATCH'
+    error instanceof LoginQrError && error.code === 'QR_SCHOOL_MISMATCH'
   ));
   assert.doesNotThrow(() => assertSameLoginQrSchool(17, '17'));
+});
+
+test('parser accepts trimmed BOM, numeric-string schoolId, and double-encoded JSON', () => {
+  const secret = deriveLoginQrSecret(seed);
+  const raw = buildSchoolIMSLoginQr({ credentialId: seed.credentialId, schoolId: seed.schoolId, secret });
+  const padded = `\uFEFF ${raw} `;
+  assert.equal(parseSchoolIMSLoginQr(padded).schoolId, 17);
+  const stringSchool = raw.replace('"schoolId":17', '"schoolId":"17"');
+  assert.equal(parseSchoolIMSLoginQr(stringSchool).schoolId, 17);
+  assert.equal(parseSchoolIMSLoginQr(JSON.stringify(raw)).schoolId, 17);
+});
+
+test('OTP verification type is normalized away from deprecated magiclink/signup', () => {
+  assert.equal(normalizeQrOtpType('magiclink'), 'email');
+  assert.equal(normalizeQrOtpType('signup'), 'email');
+  assert.equal(normalizeQrOtpType(undefined), 'email');
+  assert.equal(normalizeQrOtpType('email'), 'email');
+  assert.equal(normalizeQrOtpType('recovery'), 'recovery');
+});
+
+test('QR login errors keep specific codes without leaking internals', () => {
+  assert.equal(qrLoginErrorBody('QR_TOKEN_EXPIRED').code, 'QR_TOKEN_EXPIRED');
+  assert.equal(qrLoginErrorBody('QR_TOKEN_REVOKED').status, 401);
+  assert.equal(qrLoginErrorBody('QR_SCHOOL_MISMATCH').message.includes('another school'), true);
+  assert.equal(qrLoginErrorBody('QR_USER_INACTIVE').code, 'QR_USER_INACTIVE');
+  assert.equal(qrLoginErrorBody('postgres_crash').code, 'QR_SERVER_ERROR');
+  assert.equal(qrLoginErrorBody('QR_SERVER_ERROR').message.includes('relation'), false);
 });

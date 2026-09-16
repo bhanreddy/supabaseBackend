@@ -19,6 +19,102 @@ import sql, { supabaseAdmin } from '../db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Fine tables shipped across v422/v423. Some environments have `fines` without
+// the later child tables, so hard-delete must skip missing relations.
+const FINE_RELATED_TABLES = [
+  'fines',
+  'fine_attachments',
+  'fine_adjustments',
+  'fine_waivers',
+  'fine_disputes',
+  'fine_payments',
+  'fine_warning_events',
+];
+
+async function existingPublicTables(db, names) {
+  if (!names.length) return new Set();
+  const rows = await db`
+    SELECT c.relname AS name
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND c.relname = ANY(${names})
+  `;
+  return new Set(rows.map((row) => row.name));
+}
+
+async function countMatching(db, run) {
+  const [row] = await run();
+  return Number(row?.count ?? 0);
+}
+
+async function queryFineRelatedCounts(db, schoolId, studentId, tables) {
+  let fineCount = 0;
+  let related = 0;
+
+  if (tables.has('fines')) {
+    fineCount = await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fines
+      WHERE student_id = ${studentId} AND school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_waivers')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_waivers
+      WHERE student_id = ${studentId} AND school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_disputes')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_disputes
+      WHERE student_id = ${studentId} AND school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_payments') && tables.has('fines')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_payments fp
+      JOIN public.fines f ON f.id = fp.fine_id
+      WHERE f.student_id = ${studentId}
+        AND f.school_id = ${schoolId}
+        AND fp.school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_adjustments') && tables.has('fines')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_adjustments fadj
+      JOIN public.fines f ON f.id = fadj.fine_id
+      WHERE f.student_id = ${studentId}
+        AND f.school_id = ${schoolId}
+        AND fadj.school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_attachments') && tables.has('fines')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_attachments fatt
+      JOIN public.fines f ON f.id = fatt.fine_id
+      WHERE f.student_id = ${studentId}
+        AND f.school_id = ${schoolId}
+        AND fatt.school_id = ${schoolId}
+    `);
+  }
+  if (tables.has('fine_warning_events')) {
+    related += await countMatching(db, () => db`
+      SELECT COUNT(*)::int AS count
+      FROM public.fine_warning_events
+      WHERE student_id = ${studentId} AND school_id = ${schoolId}
+    `);
+  }
+
+  return { fineCount, related };
+}
+
 function validateDeleteTarget(schoolId, studentId) {
   const sid = typeof schoolId === 'number' ? schoolId : Number(schoolId);
   if (!Number.isInteger(sid) || sid <= 0) throw new Error('Invalid schoolId');
@@ -31,17 +127,20 @@ function normalizeFeePreview(row = {}) {
   const paymentTransactionCount = Number(row.payment_transaction_count ?? 0);
   const receiptCount = Number(row.receipt_count ?? 0);
   const relatedFinancialRecordCount = Number(row.related_financial_record_count ?? 0);
+  const fineCount = Number(row.fine_count ?? 0);
 
   return {
     has_fee_records: feeRecordCount > 0
       || paymentTransactionCount > 0
       || receiptCount > 0
-      || relatedFinancialRecordCount > 0,
+      || relatedFinancialRecordCount > 0
+      || fineCount > 0,
     fee_record_count: feeRecordCount,
     active_fee_record_count: Number(row.active_fee_record_count ?? 0),
     payment_transaction_count: paymentTransactionCount,
     receipt_count: receiptCount,
     related_financial_record_count: relatedFinancialRecordCount,
+    fine_count: fineCount,
     total_due: Number(row.total_due ?? 0),
     total_discount: Number(row.total_discount ?? 0),
     total_paid: Number(row.total_paid ?? 0),
@@ -50,6 +149,7 @@ function normalizeFeePreview(row = {}) {
 }
 
 async function queryFeePreview(db, schoolId, studentId) {
+  const fineTables = await existingPublicTables(db, FINE_RELATED_TABLES);
   const [row] = await db`
     SELECT
       (SELECT COUNT(*)::int
@@ -94,8 +194,13 @@ async function queryFeePreview(db, schoolId, studentId) {
        FROM public.student_fees sf
        WHERE sf.student_id = ${studentId} AND sf.school_id = ${schoolId}) AS balance
   `;
+  const { fineCount, related } = await queryFineRelatedCounts(db, schoolId, studentId, fineTables);
 
-  return normalizeFeePreview(row);
+  return normalizeFeePreview({
+    ...row,
+    related_financial_record_count: Number(row.related_financial_record_count ?? 0) + related,
+    fine_count: fineCount,
+  });
 }
 
 export class FeeRecordsConfirmationRequiredError extends Error {
@@ -272,6 +377,79 @@ async function runDeleteTransaction(tx, schoolId, studentId, confirmFeeDeletion)
       WHERE tfp.student_id = ts.id AND tfp.school_id = ${schoolId}
       RETURNING tfp.id
     ) SELECT count(*)::int AS count FROM deleted`);
+
+  // Fines reference students with ON DELETE RESTRICT. Child tables (payments /
+  // waivers / disputes / adjustments) also restrict deletes of the fine itself.
+  // Skip any relation that this database has not migrated yet.
+  const fineTables = await existingPublicTables(tx, FINE_RELATED_TABLES);
+
+  if (fineTables.has('fine_attachments') && fineTables.has('fines')) {
+    await del('fine_attachments', `
+      WITH deleted AS (
+        DELETE FROM public.fine_attachments fa
+        USING public.fines f, target_students ts
+        WHERE fa.fine_id = f.id AND f.student_id = ts.id AND fa.school_id = ${schoolId}
+        RETURNING fa.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fine_adjustments') && fineTables.has('fines')) {
+    await del('fine_adjustments', `
+      WITH deleted AS (
+        DELETE FROM public.fine_adjustments fadj
+        USING public.fines f, target_students ts
+        WHERE fadj.fine_id = f.id AND f.student_id = ts.id AND fadj.school_id = ${schoolId}
+        RETURNING fadj.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fine_waivers') && fineTables.has('fines')) {
+    await del('fine_waivers', `
+      WITH deleted AS (
+        DELETE FROM public.fine_waivers fw
+        USING public.fines f, target_students ts
+        WHERE fw.fine_id = f.id AND f.student_id = ts.id AND fw.school_id = ${schoolId}
+        RETURNING fw.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fine_disputes') && fineTables.has('fines')) {
+    await del('fine_disputes', `
+      WITH deleted AS (
+        DELETE FROM public.fine_disputes fd
+        USING public.fines f, target_students ts
+        WHERE fd.fine_id = f.id AND fd.student_id = ts.id AND fd.school_id = ${schoolId}
+        RETURNING fd.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fine_payments') && fineTables.has('fines')) {
+    await del('fine_payments', `
+      WITH deleted AS (
+        DELETE FROM public.fine_payments fp
+        USING public.fines f, target_students ts
+        WHERE fp.fine_id = f.id AND f.student_id = ts.id AND fp.school_id = ${schoolId}
+        RETURNING fp.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fines')) {
+    await del('fines', `
+      WITH deleted AS (
+        DELETE FROM public.fines f USING target_students ts
+        WHERE f.student_id = ts.id AND f.school_id = ${schoolId}
+        RETURNING f.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
+
+  if (fineTables.has('fine_warning_events')) {
+    await del('fine_warning_events', `
+      WITH deleted AS (
+        DELETE FROM public.fine_warning_events fwe USING target_students ts
+        WHERE fwe.student_id = ts.id AND fwe.school_id = ${schoolId}
+        RETURNING fwe.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  }
 
   // ── Academics ────────────────────────────────────────────────────────────────
   await del('daily_attendance', `

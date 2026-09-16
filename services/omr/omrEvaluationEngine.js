@@ -445,6 +445,29 @@ export async function resolveEnrollment({ schoolId, classId, enrollmentId, rollN
 
   if (!rollNumber) return null;
 
+  const digits = String(rollNumber).replace(/\D/g, '');
+  const unpadded = digits.replace(/^0+/, '') || '0';
+
+  if (digits) {
+    const [byAdmission] = await sql`
+      SELECT se.id, se.student_id, se.roll_number, p.first_name, p.last_name, s.admission_no
+      FROM student_enrollments se
+      JOIN students s ON s.id = se.student_id AND s.school_id = ${schoolId} AND s.deleted_at IS NULL
+      JOIN persons p ON p.id = s.person_id
+      JOIN class_sections cs ON cs.id = se.class_section_id AND cs.school_id = ${schoolId}
+      WHERE cs.class_id = ${classId}
+        AND se.school_id = ${schoolId}
+        AND se.status = 'active'
+        AND se.deleted_at IS NULL
+        AND (
+          regexp_replace(COALESCE(s.admission_no, ''), '[^0-9]', '', 'g') = ${digits}
+          OR regexp_replace(COALESCE(s.admission_no, ''), '[^0-9]', '', 'g') = ${unpadded}
+        )
+      LIMIT 1
+    `;
+    if (byAdmission) return byAdmission;
+  }
+
   const [enrollment] = await sql`
     SELECT se.id, se.student_id, se.roll_number, p.first_name, p.last_name, s.admission_no
     FROM student_enrollments se

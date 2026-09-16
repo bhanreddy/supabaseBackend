@@ -16,83 +16,96 @@ import {
 } from '../services/accessContextService.js';
 import { checkDeviceOwnershipConflict } from '../services/staffDeviceService.js';
 import {
-  resolveLoginQrCredential,
+  exchangeLoginQrForSession,
   revokeLoginQrForUser,
 } from '../services/studentLoginQrService.js';
-import { LoginQrError } from '../utils/studentLoginQr.js';
+import {
+  LoginQrError,
+  loginQrCredentialFingerprint,
+  qrLoginErrorBody,
+} from '../utils/studentLoginQr.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
 /**
  * POST /auth/qr/resolve
- * Exchange a revocable SchoolIMS QR bearer envelope for a short-lived Supabase
- * magic-link token. No password or long-lived session token is present in the QR.
+ * Exchange a revocable SchoolIMS QR bearer envelope for a short-lived session.
+ * The QR never contains a password. Tenant ownership is enforced server-side.
  */
 router.post('/qr/resolve', qrLoginLimiter, asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'no-store');
+  const requestId = req.id || req.requestId || null;
   const qrPayload = req.body?.qrPayload;
   if (typeof qrPayload !== 'string') {
-    await recordQrLoginAttempt(req, { success: false, code: 'INVALID_LOGIN_QR' });
-    return res.status(400).json({
-      error: 'This is not a valid SchoolIMS login QR.',
-      code: 'INVALID_LOGIN_QR',
-    });
+    await recordQrLoginAttempt(req, { success: false, code: 'QR_MALFORMED' });
+    logQrLogin({ result: 'rejected', code: 'QR_MALFORMED', schoolId: req.schoolId, requestId });
+    return sendQrLoginError(res, 'QR_MALFORMED');
   }
 
   try {
-    const credential = await resolveLoginQrCredential(qrPayload, req.schoolId);
-    const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(credential.userId);
-    const email = userData?.user?.email;
-    if (userError || !email || userData.user.id !== credential.userId ||
-      (userData.user.banned_until && new Date(userData.user.banned_until) > new Date())) {
-      throw new LoginQrError('LOGIN_QR_NO_LONGER_VALID');
-    }
-
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email,
-    });
-    const tokenHash = linkData?.properties?.hashed_token;
-    if (linkError || !tokenHash || linkData.user?.id !== credential.userId) {
-      console.error('[auth/qr/resolve] Supabase link exchange failed');
-      await recordQrLoginAttempt(req, {
-        success: false,
-        code: 'QR_LOGIN_UNAVAILABLE',
-        userId: credential.userId,
-        credentialId: credential.credentialId,
-      });
-      return res.status(503).json({
-        error: 'QR login is temporarily unavailable. Please try again.',
-        code: 'QR_LOGIN_UNAVAILABLE',
-      });
-    }
+    const { credential, session } = await exchangeLoginQrForSession(qrPayload, req.schoolId);
 
     await sql`INSERT INTO audit_logs
       (school_id, user_id, action, entity, entity_id, details, ip_address, user_agent, request_id)
       VALUES (${credential.schoolId}, ${credential.userId}, 'LOGIN_QR_RESOLVED',
         'student_login_qr', ${credential.credentialId}, ${sql.json({ login_method: 'qr', success: true })},
-        ${req.ip}, ${req.headers['user-agent'] || null}, ${req.requestId || req.id || null})`;
+        ${req.ip}, ${req.headers['user-agent'] || null}, ${requestId})`;
 
-    return sendSuccess(res, req.schoolId, { tokenHash, type: 'magiclink' });
+    logQrLogin({
+      result: 'success',
+      code: 'QR_LOGIN_SUCCESS',
+      schoolId: credential.schoolId,
+      requestId,
+      credentialFingerprint: loginQrCredentialFingerprint(credential.credentialId),
+    });
+
+    return res.status(200).json({
+      success: true,
+      code: 'QR_LOGIN_SUCCESS',
+      school_id: credential.schoolId,
+      data: session,
+    });
   } catch (error) {
     if (!(error instanceof LoginQrError)) {
-      await recordQrLoginAttempt(req, { success: false, code: 'QR_LOGIN_UNAVAILABLE' });
-      return res.status(503).json({ error: 'QR login is temporarily unavailable.', code: 'QR_LOGIN_UNAVAILABLE' });
+      logger.error({
+        event: 'qr_login_validation',
+        result: 'rejected',
+        code: 'QR_SERVER_ERROR',
+        school_id: req.schoolId ? String(req.schoolId) : null,
+        request_id: requestId,
+        err: error?.code || error?.name || 'unknown',
+      }, 'QR login validation failed');
+      await recordQrLoginAttempt(req, { success: false, code: 'QR_SERVER_ERROR' });
+      return sendQrLoginError(res, 'QR_SERVER_ERROR');
     }
-    const code = error.code;
-    await recordQrLoginAttempt(req, { success: false, code });
-    if (code === 'LOGIN_QR_NOT_CONFIGURED') {
-      return res.status(503).json({ error: 'QR login is temporarily unavailable.', code });
-    }
-    if (code === 'NOT_SCHOOLIMS_LOGIN_QR' || code === 'UNSUPPORTED_LOGIN_QR_VERSION' || code === 'INVALID_LOGIN_QR') {
-      return res.status(400).json({ error: 'This is not a valid SchoolIMS login QR.', code });
-    }
-    return res.status(401).json({
-      error: 'This login QR is no longer valid. Please request a new QR from your school.',
-      code: 'LOGIN_QR_NO_LONGER_VALID',
-    });
+    const mapped = qrLoginErrorBody(error.code);
+    logQrLogin({ result: 'rejected', code: mapped.code, schoolId: req.schoolId, requestId });
+    await recordQrLoginAttempt(req, { success: false, code: mapped.code });
+    return sendQrLoginError(res, error.code);
   }
 }));
+
+function sendQrLoginError(res, code) {
+  const mapped = qrLoginErrorBody(code);
+  return res.status(mapped.status).json({
+    success: false,
+    code: mapped.code,
+    message: mapped.message,
+    error: mapped.message,
+  });
+}
+
+function logQrLogin({ result, code, schoolId, requestId, credentialFingerprint = null }) {
+  logger.info({
+    event: 'qr_login_validation',
+    result,
+    code,
+    school_id: schoolId != null ? String(schoolId) : null,
+    request_id: requestId || null,
+    credential_fingerprint: credentialFingerprint,
+  });
+}
 
 async function recordQrLoginAttempt(req, { success, code, userId = null, credentialId = null }) {
   try {

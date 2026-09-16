@@ -8,7 +8,7 @@ import express from 'express';
 import multer from 'multer';
 import sql from '../db.js';
 import { requireAuth, requirePermission, requireAnyPermission } from '../middleware/auth.js';
-import { calculateTemplateGeometry, generateSheetSvg } from '../services/omr/omrTemplateEngine.js';
+import { calculateTemplateGeometry, generateSheetSvg, wrapOmrSheetsForPrint } from '../services/omr/omrTemplateEngine.js';
 import { processOmrImage } from '../services/omr/omrVisionEngine.js';
 import {
   evaluateAnswers,
@@ -40,6 +40,36 @@ router.use(requireAuth);
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
+
+function isPlaceholderSchoolName(value) {
+  const t = String(value ?? '').trim();
+  if (!t) return true;
+  return /^(n\/?a|na|nil|null|none|undefined|-|—|\.{2,}|_{2,}|schoolims academy|school ims)$/i.test(t);
+}
+
+async function resolveOmrSchoolName(schoolId) {
+  const [school] = await sql`SELECT name FROM schools WHERE id = ${schoolId} LIMIT 1`;
+  let settingName = '';
+  try {
+    const [setting] = await sql`
+      SELECT value FROM school_settings
+      WHERE school_id = ${schoolId} AND key = 'school_name'
+      LIMIT 1
+    `;
+    settingName = String(setting?.value || '').trim();
+  } catch {
+    settingName = '';
+  }
+  if (!isPlaceholderSchoolName(settingName)) return settingName;
+  if (!isPlaceholderSchoolName(school?.name)) return school.name;
+  return school?.name || 'School';
+}
+
+function clampCopyCount(raw, fallback = 1, max = 50) {
+  const n = Number.parseInt(String(raw ?? fallback), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, max);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. OMR TEMPLATES
@@ -169,8 +199,7 @@ router.get('/templates/:id/sheet-svg', requirePermission('omr.view'), asyncHandl
     return res.status(404).json({ error: 'Template not found' });
   }
 
-  const [school] = await sql`SELECT name FROM schools WHERE id = ${req.schoolId} LIMIT 1`;
-  const schoolName = school?.name || 'SchoolIMS Academy';
+  const schoolName = await resolveOmrSchoolName(req.schoolId);
 
   const svg = generateSheetSvg({
     schoolName,
@@ -179,11 +208,52 @@ router.get('/templates/:id/sheet-svg', requirePermission('omr.view'), asyncHandl
     examId: req.query.examId || 'EXAM-OMR',
     templateCode: template.code,
     studentName: req.query.studentName || '',
-    rollNumber: req.query.rollNumber || ''
+    rollNumber: req.query.rollNumber || req.query.admissionNumber || ''
   });
 
   res.setHeader('Content-Type', 'image/svg+xml');
   res.send(svg);
+}));
+
+/**
+ * GET /api/v1/omr/templates/:id/print-html
+ * Print-ready A4 HTML of blank scanner-aligned OMR sheets.
+ */
+router.get('/templates/:id/print-html', requirePermission('omr.view'), asyncHandler(async (req, res) => {
+  const [template] = await sql`
+    SELECT * FROM omr_templates
+    WHERE id = ${req.params.id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!template) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+
+  const schoolName = await resolveOmrSchoolName(req.schoolId);
+  const copies = clampCopyCount(req.query.copies, 1, 50);
+  const examTitle = req.query.title || template.name || 'OMR ASSESSMENT SHEET';
+  const sheets = [];
+  for (let i = 0; i < copies; i += 1) {
+    sheets.push(generateSheetSvg({
+      schoolName,
+      examTitle,
+      sheetId: `SHT-BLANK-${String(i + 1).padStart(3, '0')}`,
+      examId: req.query.examId || template.code,
+      templateCode: template.code,
+    }));
+  }
+
+  const html = wrapOmrSheetsForPrint({ schoolName, examTitle, sheets });
+  res.json({
+    success: true,
+    data: {
+      html,
+      school_name: schoolName,
+      page_count: sheets.length,
+      template_code: template.code,
+      mode: 'blank',
+    },
+  });
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,6 +481,104 @@ router.get('/exams/:id/sheets', requirePermission('omr.view'), asyncHandler(asyn
   });
 
   res.json({ success: true, data: { exam: { id: omrExam.id, title: omrExam.title, template_code: omrExam.template_code }, sheets } });
+}));
+
+/**
+ * GET /api/v1/omr/exams/:id/print-html
+ * Print-ready A4 HTML: blank copies, or one personalized sheet per enrolled student.
+ */
+router.get('/exams/:id/print-html', requirePermission('omr.view'), asyncHandler(async (req, res) => {
+  const [omrExam] = await sql`
+    SELECT oe.id, oe.template_id, oe.title, t.code as template_code, t.name as template_name,
+           es.class_id, e.academic_year_id, s.name as subject_name, c.name as class_name
+    FROM omr_exams oe
+    JOIN omr_templates t ON t.id = oe.template_id
+    JOIN exam_subjects es ON es.id = oe.exam_subject_id AND es.school_id = ${req.schoolId}
+    JOIN exams e ON e.id = es.exam_id AND e.school_id = ${req.schoolId}
+    JOIN subjects s ON s.id = es.subject_id
+    JOIN classes c ON c.id = es.class_id
+    WHERE oe.id = ${req.params.id} AND oe.school_id = ${req.schoolId} AND oe.deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (!omrExam) return res.status(404).json({ error: 'OMR Exam not found' });
+
+  const schoolName = await resolveOmrSchoolName(req.schoolId);
+  const examTitle = omrExam.title || `${omrExam.class_name || ''} ${omrExam.subject_name || ''}`.trim() || 'OMR ASSESSMENT SHEET';
+  const mode = String(req.query.mode || 'students').toLowerCase() === 'blank' ? 'blank' : 'students';
+  const sheets = [];
+
+  if (mode === 'blank') {
+    const copies = clampCopyCount(req.query.copies, 1, 50);
+    for (let i = 0; i < copies; i += 1) {
+      const sheetId = generateSheetId({
+        schoolId: req.schoolId,
+        omrExamId: omrExam.id,
+        sequence: i + 1,
+      });
+      sheets.push(generateSheetSvg({
+        schoolName,
+        examTitle,
+        sheetId,
+        examId: omrExam.id,
+        templateCode: omrExam.template_code,
+      }));
+    }
+  } else {
+    const students = await sql`
+      SELECT se.id as student_enrollment_id, se.student_id, se.roll_number,
+             p.first_name, p.last_name, s.admission_no
+      FROM student_enrollments se
+      JOIN students s ON s.id = se.student_id AND s.school_id = ${req.schoolId} AND s.deleted_at IS NULL
+      JOIN persons p ON p.id = s.person_id
+      JOIN class_sections cs ON cs.id = se.class_section_id AND cs.school_id = ${req.schoolId}
+      WHERE cs.class_id = ${omrExam.class_id}
+        AND se.academic_year_id = ${omrExam.academic_year_id}
+        AND se.school_id = ${req.schoolId}
+        AND se.status = 'active'
+        AND se.deleted_at IS NULL
+      ORDER BY se.roll_number ASC NULLS LAST, p.first_name ASC
+      LIMIT 120
+    `;
+
+    if (students.length === 0) {
+      return res.status(400).json({
+        error: 'No enrolled students found for this exam class. Print blank copies instead.',
+        code: 'NO_STUDENTS',
+      });
+    }
+
+    for (const st of students) {
+      const sheetId = generateSheetId({
+        schoolId: req.schoolId,
+        omrExamId: omrExam.id,
+        studentEnrollmentId: st.student_enrollment_id,
+      });
+      const studentName = [st.first_name, st.last_name].filter(Boolean).join(' ').trim();
+      sheets.push(generateSheetSvg({
+        schoolName,
+        examTitle,
+        sheetId,
+        examId: omrExam.id,
+        templateCode: omrExam.template_code,
+        studentName,
+        admissionNumber: st.admission_no || '',
+        rollNumber: st.admission_no || st.roll_number || '',
+      }));
+    }
+  }
+
+  const html = wrapOmrSheetsForPrint({ schoolName, examTitle, sheets });
+  res.json({
+    success: true,
+    data: {
+      html,
+      school_name: schoolName,
+      page_count: sheets.length,
+      template_code: omrExam.template_code,
+      exam_title: examTitle,
+      mode,
+    },
+  });
 }));
 
 router.get('/templates/:id/svg', requirePermission('omr.view'), asyncHandler(async (req, res) => {

@@ -21,8 +21,48 @@ export function hasStudentLoginQrRole(roleCodes) {
 
 export function assertSameLoginQrSchool(parsedSchoolId, requestedSchoolId) {
   if (String(parsedSchoolId) !== String(requestedSchoolId)) {
-    throw new LoginQrError('LOGIN_QR_SCHOOL_MISMATCH');
+    throw new LoginQrError('QR_SCHOOL_MISMATCH');
   }
+}
+
+export const QR_LOGIN_ERROR_HTTP = Object.freeze({
+  INVALID_LOGIN_QR: { status: 400, code: 'QR_MALFORMED', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  QR_MALFORMED: { status: 400, code: 'QR_MALFORMED', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  NOT_SCHOOLIMS_LOGIN_QR: { status: 400, code: 'QR_INVALID', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  UNSUPPORTED_LOGIN_QR_VERSION: { status: 400, code: 'QR_INVALID', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  QR_INVALID: { status: 400, code: 'QR_INVALID', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  QR_TOKEN_NOT_FOUND: { status: 401, code: 'QR_TOKEN_NOT_FOUND', message: 'This QR code is not a valid SchoolIMS login QR.' },
+  QR_TOKEN_EXPIRED: { status: 401, code: 'QR_TOKEN_EXPIRED', message: 'This QR code has expired. Please generate a new QR.' },
+  QR_TOKEN_REVOKED: { status: 401, code: 'QR_TOKEN_REVOKED', message: 'This QR code has been revoked by your school administrator.' },
+  QR_TOKEN_ALREADY_USED: { status: 401, code: 'QR_TOKEN_ALREADY_USED', message: 'This login QR is no longer valid. Please request a new QR from your school.' },
+  LOGIN_QR_SCHOOL_MISMATCH: { status: 401, code: 'QR_SCHOOL_MISMATCH', message: 'This QR belongs to another school.' },
+  QR_SCHOOL_MISMATCH: { status: 401, code: 'QR_SCHOOL_MISMATCH', message: 'This QR belongs to another school.' },
+  QR_SCHOOL_NOT_FOUND: { status: 401, code: 'QR_SCHOOL_NOT_FOUND', message: 'This QR belongs to another school.' },
+  QR_USER_NOT_FOUND: { status: 401, code: 'QR_USER_NOT_FOUND', message: 'Unable to sign in using this QR. Please contact your school administrator.' },
+  QR_USER_INACTIVE: { status: 401, code: 'QR_USER_INACTIVE', message: 'This account is currently inactive.' },
+  QR_LOGIN_NOT_ALLOWED: { status: 401, code: 'QR_LOGIN_NOT_ALLOWED', message: 'QR login is not allowed for this account.' },
+  LOGIN_QR_KEY_ROTATED: { status: 401, code: 'QR_TOKEN_REVOKED', message: 'This QR code has been revoked by your school administrator.' },
+  LOGIN_QR_NO_LONGER_VALID: { status: 401, code: 'QR_TOKEN_EXPIRED', message: 'This QR code has expired. Please generate a new QR.' },
+  LOGIN_QR_NOT_CONFIGURED: { status: 503, code: 'QR_LOGIN_UNAVAILABLE', message: 'QR login is temporarily unavailable. Please wait and try again.' },
+  QR_SESSION_CREATE_FAILED: { status: 503, code: 'QR_SESSION_CREATE_FAILED', message: "We couldn't complete the login. Please try again." },
+  QR_LOGIN_UNAVAILABLE: { status: 503, code: 'QR_LOGIN_UNAVAILABLE', message: 'QR login is temporarily unavailable. Please wait and try again.' },
+  QR_SERVER_ERROR: { status: 503, code: 'QR_SERVER_ERROR', message: "We couldn't complete QR login right now. Please try again." },
+});
+
+export function qrLoginErrorBody(code) {
+  return QR_LOGIN_ERROR_HTTP[code] || QR_LOGIN_ERROR_HTTP.QR_SERVER_ERROR;
+}
+
+export function normalizeQrOtpType(verificationType) {
+  if (!verificationType || verificationType === 'magiclink' || verificationType === 'signup') {
+    return 'email';
+  }
+  return String(verificationType);
+}
+
+export function loginQrCredentialFingerprint(credentialId) {
+  if (!credentialId) return null;
+  return createHash('sha256').update(String(credentialId), 'utf8').digest('hex').slice(0, 12);
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -79,16 +119,28 @@ export function buildSchoolIMSLoginQr({
   });
 }
 
+function coerceLoginQrSchoolId(value) {
+  if (Number.isInteger(value) && value > 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const schoolId = Number(value.trim());
+    if (Number.isInteger(schoolId) && schoolId > 0) return schoolId;
+  }
+  return null;
+}
+
 export function parseSchoolIMSLoginQr(raw) {
-  if (typeof raw !== 'string' || raw.length < 20 || raw.length > SCHOOLIMS_LOGIN_QR_MAX_LENGTH) {
-    throw new LoginQrError();
+  if (typeof raw !== 'string') throw new LoginQrError('QR_MALFORMED');
+  const normalized = raw.replace(/^\uFEFF/, '').trim();
+  if (normalized.length < 20 || normalized.length > SCHOOLIMS_LOGIN_QR_MAX_LENGTH) {
+    throw new LoginQrError('QR_MALFORMED');
   }
 
   let value;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(normalized);
+    if (typeof value === 'string') value = JSON.parse(value);
   } catch {
-    throw new LoginQrError();
+    throw new LoginQrError('QR_MALFORMED');
   }
 
   if (!value || value.type !== SCHOOLIMS_LOGIN_QR_TYPE) {
@@ -97,18 +149,20 @@ export function parseSchoolIMSLoginQr(raw) {
   if (value.version !== SCHOOLIMS_LOGIN_QR_VERSION) {
     throw new LoginQrError('UNSUPPORTED_LOGIN_QR_VERSION');
   }
-  if (!Number.isInteger(value.schoolId) || value.schoolId <= 0 || typeof value.payload !== 'string') {
-    throw new LoginQrError();
+  const schoolId = coerceLoginQrSchoolId(value.schoolId);
+  if (!schoolId || typeof value.payload !== 'string') {
+    throw new LoginQrError('QR_MALFORMED');
   }
+  value = { ...value, schoolId };
 
   const separator = value.payload.indexOf('.');
   if (separator < 1 || value.payload.indexOf('.', separator + 1) !== -1) {
-    throw new LoginQrError();
+    throw new LoginQrError('QR_MALFORMED');
   }
   const credentialId = value.payload.slice(0, separator);
   const secret = value.payload.slice(separator + 1);
   if (!UUID_PATTERN.test(credentialId) || !SECRET_PATTERN.test(secret)) {
-    throw new LoginQrError();
+    throw new LoginQrError('QR_MALFORMED');
   }
 
   return {

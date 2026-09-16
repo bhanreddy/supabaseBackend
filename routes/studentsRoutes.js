@@ -1868,8 +1868,8 @@ router.delete('/:id', requirePermission('students.delete'), async (req, res) => 
 /**
  * GET /students/:id/hard-delete-preview
  * Read-only pre-check for the permanent-delete dialog. It reports fee/payment
- * records that will be destroyed, including soft-deleted fee rows which the
- * hard-delete service also removes.
+ * records that will be destroyed, including soft-deleted fee rows and fines
+ * which the hard-delete service also removes.
  */
 router.get('/:id/hard-delete-preview', requirePermission('students.delete'), async (req, res) => {
   try {
@@ -1887,7 +1887,7 @@ router.get('/:id/hard-delete-preview', requirePermission('students.delete'), asy
 /**
  * POST /students/:id/hard-delete
  * PERMANENT, irreversible wipe of a student and ALL data belonging to them
- * (fees, receipts, marks, attendance, transport, parent links, login accounts…).
+ * (fees, receipts, fines, marks, attendance, transport, parent links, login accounts…).
  * Requires an explicit `{ confirm: true }` body so it can never fire by accident,
  * plus `{ confirm_fee_deletion: true }` whenever the pre-check finds financial data,
  * and is gated by the same `students.delete` permission as soft delete.

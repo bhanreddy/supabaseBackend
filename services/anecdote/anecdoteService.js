@@ -10,6 +10,7 @@ import {
   resolveStaffId,
 } from './anecdoteAccessService.js';
 import { notifyFollowUpAssigned } from '../intelligence/intelligenceNotificationService.js';
+import { normalizeAnecdoteContext, normalizeClientGeneratedId } from './anecdoteNormalize.js';
 
 /**
  * Create a new Anecdote observation with offline idempotency and fast enrichment.
@@ -32,6 +33,8 @@ export async function createAnecdote({ schoolId, userId, payload, ipAddress = nu
     client_generated_id = null,
     tags = [],
   } = payload;
+  const resolvedContext = normalizeAnecdoteContext(context);
+  const resolvedClientId = normalizeClientGeneratedId(client_generated_id);
 
   if (!student_id || !observation_text?.trim()) {
     throw new Error('Student ID and observation text are required');
@@ -40,17 +43,17 @@ export async function createAnecdote({ schoolId, userId, payload, ipAddress = nu
   await assertStudentInSchool({ schoolId, studentId: student_id });
 
   // 1. Idempotency Check for Offline Sync: Return existing record if already synced
-  if (client_generated_id) {
+  if (resolvedClientId) {
     const [existing] = await sql`
       SELECT id, student_id, observation_text, status, created_at
       FROM public.anecdotes
       WHERE school_id = ${schoolId}
-        AND client_generated_id = ${client_generated_id}
+        AND client_generated_id = ${resolvedClientId}
         AND deleted_at IS NULL
       LIMIT 1
     `;
     if (existing) {
-      logger.info({ schoolId, client_generated_id, id: existing.id }, 'Anecdote already synced (idempotent duplicate prevented)');
+      logger.info({ schoolId, client_generated_id: resolvedClientId, id: existing.id }, 'Anecdote already synced (idempotent duplicate prevented)');
       return { ...existing, is_duplicate: true };
     }
   }
@@ -121,7 +124,7 @@ export async function createAnecdote({ schoolId, userId, payload, ipAddress = nu
       ${resolvedClassSectionId},
       ${finalTitle},
       ${observation_text.trim()},
-      ${context},
+      ${resolvedContext},
       ${finalType},
       ${finalCategoryId},
       ${finalSubcategoryId},
@@ -131,7 +134,7 @@ export async function createAnecdote({ schoolId, userId, payload, ipAddress = nu
       ${status},
       ${sql.json(inferredMeta)},
       ${observed_at},
-      ${client_generated_id},
+      ${resolvedClientId},
       ${userId}
     )
     RETURNING *
@@ -181,6 +184,7 @@ export async function getAnecdotes({
   studentId = null,
   classSectionId = null,
   categoryId = null,
+  categoryCode = null,
   observationType = null,
   sentiment = null,
   severity = null,
@@ -273,6 +277,13 @@ export async function getAnecdotes({
   if (studentId) conditions.push(sql`a.student_id = ${studentId}`);
   if (classSectionId) conditions.push(sql`a.class_section_id = ${classSectionId}`);
   if (categoryId) conditions.push(sql`a.category_id = ${categoryId}`);
+  if (categoryCode) {
+    conditions.push(sql`EXISTS (
+      SELECT 1 FROM public.anecdote_categories cat_filter
+      WHERE cat_filter.id = a.category_id
+        AND cat_filter.code = ${categoryCode}
+    )`);
+  }
   if (observationType) conditions.push(sql`a.observation_type = ${observationType}`);
   if (sentiment) conditions.push(sql`a.sentiment = ${sentiment}`);
   if (severity) conditions.push(sql`a.severity = ${severity}`);
@@ -283,7 +294,22 @@ export async function getAnecdotes({
 
   if (search && search.trim()) {
     const term = `%${search.trim()}%`;
-    conditions.push(sql`(a.title ILIKE ${term} OR a.observation_text ILIKE ${term})`);
+    conditions.push(sql`(
+      a.title ILIKE ${term}
+      OR a.observation_text ILIKE ${term}
+      OR EXISTS (
+        SELECT 1
+        FROM public.students st_search
+        JOIN public.persons p_search ON p_search.id = st_search.person_id
+        WHERE st_search.id = a.student_id
+          AND (
+            p_search.display_name ILIKE ${term}
+            OR p_search.first_name ILIKE ${term}
+            OR p_search.last_name ILIKE ${term}
+            OR st_search.admission_no ILIKE ${term}
+          )
+      )
+    )`);
   }
 
   const whereClause = conditions.reduce((acc, cond) => sql`${acc} AND ${cond}`);
@@ -325,6 +351,9 @@ export async function getAnecdotes({
       student_person.display_name AS student_name,
       student_person.photo_url AS student_photo_url,
       student.admission_no,
+      student.admission_no AS student_admission_no,
+      c.name AS class_name,
+      sec.name AS section_name,
       COALESCE(
         (
           SELECT json_agg(
@@ -356,6 +385,9 @@ export async function getAnecdotes({
     LEFT JOIN public.persons creator_person ON creator_person.id = creator_user.person_id
     LEFT JOIN public.students student ON student.id = a.student_id
     LEFT JOIN public.persons student_person ON student_person.id = student.person_id
+    LEFT JOIN public.class_sections cs ON cs.id = a.class_section_id
+    LEFT JOIN public.classes c ON c.id = cs.class_id
+    LEFT JOIN public.sections sec ON sec.id = cs.section_id
     WHERE ${whereClause}
     ORDER BY a.observed_at DESC, a.created_at DESC
     LIMIT ${safeLimit} OFFSET ${offset}
@@ -494,7 +526,7 @@ export async function updateAnecdote({ schoolId, id, userId, updates, ipAddress 
 
   const nextTitle = title !== undefined ? title : existing.title;
   const nextText = observation_text !== undefined ? observation_text.trim() : existing.observation_text;
-  const nextContext = context !== undefined ? context : existing.context;
+  const nextContext = context !== undefined ? normalizeAnecdoteContext(context, existing.context) : existing.context;
   const nextType = observation_type !== undefined ? observation_type : existing.observation_type;
   const nextCategoryId = category_id !== undefined ? category_id : existing.category_id;
   const nextSubcategoryId = subcategory_id !== undefined ? subcategory_id : existing.subcategory_id;
