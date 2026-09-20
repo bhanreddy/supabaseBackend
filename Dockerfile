@@ -41,10 +41,11 @@ COPY --from=builder --chown=appuser:appuser /app/node_modules ./node_modules
 # Copy source code LAST to optimize caching
 COPY --chown=appuser:appuser . .
 
-# Healthcheck: using Node's native HTTP module to avoid installing curl/wget (Minimal Attack Surface)
-# We append ?school_id=healthcheck because the global middleware requires a school_id
+# Healthcheck: use the lightweight route registered before auth, rate limiting,
+# tenant resolution, and database access. This verifies that the process can
+# answer HTTP without making a wedged database look like a dead container.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/api/v1/health?school_id=healthcheck', (r) => { if (r.statusCode !== 200) process.exit(1); process.exit(0); }).on('error', () => process.exit(1));"
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/api/v1/healthz', (r) => { if (r.statusCode !== 200) process.exit(1); process.exit(0); }).on('error', () => process.exit(1));"
 
 # Expose port (metadata)
 EXPOSE 8080

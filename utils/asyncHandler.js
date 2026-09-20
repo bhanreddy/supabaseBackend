@@ -13,7 +13,9 @@ export const asyncHandler = (fn) => (req, res, next) => {
  * Centralizes error handling for all routes
  */
 export const errorHandler = (err, req, res, next) => {
-  const requestId = req.requestId || 'no-id';
+  if (res.headersSent) return next(err);
+
+  const requestId = req.id || req.requestId || 'no-id';
 
   // Handle known error types
   if (err.name === 'ValidationError') {
@@ -79,12 +81,28 @@ export const errorHandler = (err, req, res, next) => {
   }
 
   // Handle transient DB/network errors → 503 (so frontend can auto-retry)
-  const transientCodes = ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'CONNECTION_ENDED', 'CONNECTION_CLOSED'];
-  if (transientCodes.includes(err.code) || err.message?.includes('ETIMEDOUT') || err.message?.includes('Connect Timeout')) {
-
+  const transientCodes = new Set([
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'CONNECT_TIMEOUT',
+    'CONNECTION_ENDED',
+    'CONNECTION_CLOSED',
+    '53300', // too_many_connections
+    '57P01', // admin_shutdown
+    '57P02', // crash_shutdown
+    '57P03', // cannot_connect_now
+  ]);
+  const isTransientDatabaseError =
+    transientCodes.has(err.code) ||
+    String(err.code || '').startsWith('08') ||
+    /ETIMEDOUT|connect timeout|connection terminated|connection closed/i.test(err.message || '');
+  if (isTransientDatabaseError) {
+    res.setHeader('Retry-After', '5');
     return res.status(503).json({
       error: 'Service temporarily unavailable. Please retry.',
-      requestId
+      code: 'SERVICE_UNAVAILABLE',
+      requestId,
     });
   }
 

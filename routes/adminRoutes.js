@@ -119,89 +119,74 @@ function isValidYmd(value) {
 /**
  * GET /admin/dashboard-stats
  * Get aggregated statistics for the admin dashboard
- * AR1: fee_transactions scoped via student_fees.school_id join
+ * Financial aggregates are scoped directly by their tenant columns.
  */
 router.get('/dashboard-stats', requireAuth, asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
 
-    const [
-        [studentCount],
-        [totalStaff],
-        [staffPresentQuery],
-        [complaintCount],
-        [todayCollection],
-        [totalCollection],
-        [todayDiaryCount],
-    ] = await Promise.all([
-        sql`
-        SELECT COUNT(*)::int as count
-        FROM students
-        WHERE deleted_at IS NULL
-          AND status_id = 1
-          AND school_id = ${schoolId}
-    `,
-        sql`
-        SELECT COUNT(*)::int as count FROM staff WHERE status_id = 1 AND deleted_at IS NULL AND school_id = ${schoolId}
-    `,
-        sql`
-        SELECT COUNT(*)::int as count FROM staff_attendance sa
-        JOIN staff st ON sa.staff_id = st.id
-        WHERE sa.attendance_date = CURRENT_DATE
-          AND sa.status = 'present'
-          AND sa.deleted_at IS NULL
-          AND st.school_id = ${schoolId}
-    `,
-        sql`
-        SELECT COUNT(*)::int as count FROM complaints WHERE status = 'open' AND school_id = ${schoolId}
-    `,
-        sql`
+    // Keep this dashboard snapshot on one pool connection. The previous seven
+    // parallel queries consumed most of an instance's 10-connection pool every
+    // time the admin screen mounted, starving even trivial reads behind it.
+    const [stats] = await sql`
         SELECT
+          (SELECT COUNT(*)::int
+             FROM students
+            WHERE deleted_at IS NULL
+              AND status_id = 1
+              AND school_id = ${schoolId}) AS student_count,
+          (SELECT COUNT(*)::int
+             FROM staff
+            WHERE status_id = 1
+              AND deleted_at IS NULL
+              AND school_id = ${schoolId}) AS total_staff,
+          (SELECT COUNT(*)::int
+             FROM staff_attendance sa
+             JOIN staff st ON st.id = sa.staff_id
+            WHERE sa.attendance_date = CURRENT_DATE
+              AND sa.status = 'present'
+              AND sa.deleted_at IS NULL
+              AND st.school_id = ${schoolId}) AS staff_present,
+          (SELECT COUNT(*)::int
+             FROM complaints
+            WHERE status = 'open'
+              AND school_id = ${schoolId}) AS complaint_count,
           COALESCE((
             SELECT SUM(ft.amount)
-            FROM fee_transactions ft
-            WHERE ft.paid_at::DATE = CURRENT_DATE
-              AND ft.school_id = ${schoolId}
-          ), 0) +
-          COALESCE((
+              FROM fee_transactions ft
+             WHERE ft.paid_at >= CURRENT_DATE
+               AND ft.paid_at < CURRENT_DATE + INTERVAL '1 day'
+               AND ft.school_id = ${schoolId}
+          ), 0) + COALESCE((
             SELECT SUM(tfp.amount)
-            FROM transport_fee_payments tfp
-            WHERE tfp.paid_at::DATE = CURRENT_DATE
-              AND tfp.school_id = ${schoolId}
-          ), 0) AS total
-    `,
-        sql`
-        SELECT
+              FROM transport_fee_payments tfp
+             WHERE tfp.paid_at >= CURRENT_DATE
+               AND tfp.paid_at < CURRENT_DATE + INTERVAL '1 day'
+               AND tfp.school_id = ${schoolId}
+          ), 0) AS today_collection,
           COALESCE((
             SELECT SUM(ft.amount)
-            FROM fee_transactions ft
-            WHERE ft.school_id = ${schoolId}
-          ), 0) +
-          COALESCE((
+              FROM fee_transactions ft
+             WHERE ft.school_id = ${schoolId}
+          ), 0) + COALESCE((
             SELECT SUM(tfp.amount)
-            FROM transport_fee_payments tfp
-            WHERE tfp.school_id = ${schoolId}
-          ), 0) AS total
-    `,
-        sql`
-        SELECT COUNT(*)::int as count 
-        FROM diary_entries 
-        WHERE school_id = ${schoolId} 
-          AND entry_date = CURRENT_DATE 
-          AND deleted_at IS NULL
-    `,
-    ]);
-
-    const activeStaffCount = parseInt(totalStaff.count) || 0;
-    const staffPresent = parseInt(staffPresentQuery.count) || 0;
+              FROM transport_fee_payments tfp
+             WHERE tfp.school_id = ${schoolId}
+          ), 0) AS total_collection,
+          (SELECT COUNT(*)::int
+             FROM diary_entries
+            WHERE school_id = ${schoolId}
+              AND entry_date = CURRENT_DATE
+              AND deleted_at IS NULL) AS today_diary_count
+    `;
 
     return sendSuccess(res, req.schoolId, {
-        totalStudents: parseInt(studentCount.count),
-        staffPresent: staffPresent,
-        totalStaff: activeStaffCount,
-        complaints: parseInt(complaintCount.count),
-        collection: parseFloat(totalCollection?.total || 0),
-        todayCollection: parseFloat(todayCollection?.total || 0),
-        diaryEntriesToday: parseInt(todayDiaryCount?.count || 0)
+        totalStudents: parseInt(stats.student_count, 10) || 0,
+        staffPresent: parseInt(stats.staff_present, 10) || 0,
+        totalStaff: parseInt(stats.total_staff, 10) || 0,
+        complaints: parseInt(stats.complaint_count, 10) || 0,
+        collection: parseFloat(stats.total_collection || 0),
+        todayCollection: parseFloat(stats.today_collection || 0),
+        diaryEntriesToday: parseInt(stats.today_diary_count, 10) || 0,
     });
 }));
 

@@ -16,8 +16,9 @@ const sql = postgres(config.databaseUrl, {
     ssl: config.nodeEnv === 'production' ? 'require' : { rejectUnauthorized: false },
     // Increase idle timeout for server-less environments or long-running queries
     idle_timeout: 20,
+    connect_timeout: config.database.connectTimeoutSeconds,
     max_lifetime: 60 * 30,
-    max: 10,
+    max: config.database.poolMax,
     prepare: false, // Required for PgBouncer / Transaction pooler mode
     // Required alongside `prepare: false` for PgBouncer/Supavisor transaction pooling.
     // postgres.js pipelines queued queries onto an already-busy connection by default

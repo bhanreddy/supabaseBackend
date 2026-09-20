@@ -889,23 +889,47 @@ function generateInsights(financials, attendance, academics, staff) {
     return insights.slice(0, 10);
 }
 
+const ANALYTICS_CACHE_TTL_MS = 30_000;
 const _analyticsCache = new Map();
+const _analyticsInFlight = new Map();
 
 async function getOrFetchAnalytics(range, period, schoolId, force = false) {
     const key = `${schoolId}:${range}:${period}`;
     const cached = _analyticsCache.get(key);
     if (!force && cached && Date.now() < cached.expiresAt) return cached.data;
 
-    const [financials, attendance, academics, staff] = await Promise.all([
-        fetchFinancials(range, schoolId),
-        fetchAttendance(period, schoolId),
-        fetchAcademics(range, schoolId),
-        fetchStaff(schoolId),
-    ]);
-    const data = { financials, attendance, academics, staff };
-    // Short 15s cache to avoid redundant roundtrips while keeping data fresh
-    _analyticsCache.set(key, { data, expiresAt: Date.now() + 15_000 });
-    return data;
+    // A dashboard load can fan out into 30+ aggregate queries. Multiple mounts,
+    // refreshes, or callers asking for / and /insights at the same time used to
+    // launch a duplicate fan-out for every request and exhaust the 10-connection
+    // pool. Share the active load for this school/range, including forced loads;
+    // force bypasses only completed cached data, not an identical query already
+    // running against the database.
+    const active = _analyticsInFlight.get(key);
+    if (active) return active;
+
+    const load = (async () => {
+        const [financials, attendance, academics, staff] = await Promise.all([
+            fetchFinancials(range, schoolId),
+            fetchAttendance(period, schoolId),
+            fetchAcademics(range, schoolId),
+            fetchStaff(schoolId),
+        ]);
+        const data = { financials, attendance, academics, staff };
+        _analyticsCache.set(key, {
+            data,
+            expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
+        });
+        return data;
+    })();
+
+    _analyticsInFlight.set(key, load);
+    try {
+        return await load;
+    } finally {
+        if (_analyticsInFlight.get(key) === load) {
+            _analyticsInFlight.delete(key);
+        }
+    }
 }
 
 /**

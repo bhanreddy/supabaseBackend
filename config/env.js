@@ -64,6 +64,17 @@ const config = {
     logLevel: optional('LOG_LEVEL', isProduction ? 'info' : 'debug'),
     bodyLimit: optional('BODY_LIMIT', '1mb'),
     databaseUrl: required('DATABASE_URL'),
+    database: {
+        poolMax: boundedNumber('DATABASE_POOL_MAX', optional('DATABASE_POOL_MAX', '10'), 1, 50),
+        // Fail before the edge gateway's ~20s deadline when a new database
+        // connection cannot be established. Existing queries are unaffected.
+        connectTimeoutSeconds: boundedNumber(
+            'DATABASE_CONNECT_TIMEOUT_SECONDS',
+            optional('DATABASE_CONNECT_TIMEOUT_SECONDS', '10'),
+            1,
+            20,
+        ),
+    },
     supabase: {
         url: required('SUPABASE_URL'),
         anonKey: required('SUPABASE_ANON_KEY'),
@@ -146,6 +157,7 @@ const config = {
 };
 
 Object.freeze(config);
+Object.freeze(config.database);
 Object.freeze(config.supabase);
 Object.freeze(config.cors);
 Object.freeze(config.firebase);
