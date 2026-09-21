@@ -15,7 +15,10 @@ import {
 } from '../services/anecdote/anecdoteService.js';
 import { getTaxonomy, inferAnecdoteTaxonomy } from '../services/anecdote/anecdoteTaxonomyService.js';
 import { getAnecdoteAuditHistory } from '../services/anecdote/anecdoteAuditService.js';
-import { uploadAnecdoteEvidence } from '../services/anecdote/anecdoteEvidenceStorage.js';
+import {
+  getAnecdoteEvidenceSignedUrl,
+  uploadAnecdoteEvidence,
+} from '../services/anecdote/anecdoteEvidenceStorage.js';
 import {
   AnecdoteAccessError,
   assertStudentAccessible,
@@ -190,11 +193,37 @@ router.post('/:id/evidence', requireAuth, upload.single('file'), asyncHandler(as
   const anecdoteId = req.params.id;
   const { evidence_type = 'photo' } = req.body || {};
 
+  if (!isStaffRecorderRole(req.user?.roles || [])) {
+    return res.status(403).json({ error: 'Only authorized staff can attach observation evidence' });
+  }
+
+  const target = await getAnecdoteById({
+    schoolId: req.schoolId,
+    id: anecdoteId,
+    userRoles: req.user?.roles || [],
+  });
+  if (!target) {
+    return res.status(404).json({ error: 'Observation not found' });
+  }
+  try {
+    await assertStudentAccessible({
+      schoolId: req.schoolId,
+      studentId: target.student_id,
+      user: req.user,
+    });
+  } catch (err) {
+    if (err instanceof AnecdoteAccessError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    throw err;
+  }
+
   let fileUrl = req.body.file_url;
   let storagePath = null;
   let fileName = req.body.file_name || null;
   let fileSize = null;
   let mimeType = req.body.mime_type || null;
+  let signedFileUrl = null;
 
   if (req.file) {
     const uploaded = await uploadAnecdoteEvidence({
@@ -204,14 +233,15 @@ router.post('/:id/evidence', requireAuth, upload.single('file'), asyncHandler(as
       mimeType: req.file.mimetype,
       originalFileName: req.file.originalname,
     });
-    fileUrl = uploaded.url;
+    signedFileUrl = uploaded.url;
+    fileUrl = null;
     storagePath = uploaded.storagePath;
     fileName = uploaded.fileName;
     fileSize = uploaded.fileSize;
     mimeType = uploaded.mimeType;
   }
 
-  if (!fileUrl && evidence_type !== 'note' && evidence_type !== 'record_reference') {
+  if (!fileUrl && !storagePath && evidence_type !== 'note' && evidence_type !== 'record_reference') {
     return res.status(400).json({ error: 'File upload or file_url is required' });
   }
 
@@ -230,7 +260,18 @@ router.post('/:id/evidence', requireAuth, upload.single('file'), asyncHandler(as
     },
   });
 
-  return sendSuccess(res, req.schoolId, evidence, 201);
+  if (!signedFileUrl && evidence.storage_path) {
+    signedFileUrl = await getAnecdoteEvidenceSignedUrl({
+      schoolId: req.schoolId,
+      storagePath: evidence.storage_path,
+    });
+  }
+
+  const { storage_path: _storagePath, ...safeEvidence } = evidence;
+  return sendSuccess(res, req.schoolId, {
+    ...safeEvidence,
+    file_url: signedFileUrl || evidence.file_url,
+  }, 201);
 }));
 
 /**

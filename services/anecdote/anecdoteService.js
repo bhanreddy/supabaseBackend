@@ -11,6 +11,7 @@ import {
 } from './anecdoteAccessService.js';
 import { notifyFollowUpAssigned } from '../intelligence/intelligenceNotificationService.js';
 import { normalizeAnecdoteContext, normalizeClientGeneratedId } from './anecdoteNormalize.js';
+import { signAnecdoteEvidenceList } from './anecdoteEvidenceStorage.js';
 
 /**
  * Create a new Anecdote observation with offline idempotency and fast enrichment.
@@ -361,6 +362,7 @@ export async function getAnecdotes({
               'id', e.id,
               'evidence_type', e.evidence_type,
               'file_url', e.file_url,
+              'storage_path', e.storage_path,
               'file_name', e.file_name,
               'mime_type', e.mime_type
             )
@@ -393,8 +395,13 @@ export async function getAnecdotes({
     LIMIT ${safeLimit} OFFSET ${offset}
   `;
 
+  const items = await Promise.all(rows.map(async (row) => ({
+    ...row,
+    evidence: await signAnecdoteEvidenceList(row.evidence, schoolId),
+  })));
+
   return {
-    items: rows,
+    items,
     total: countResult?.total || 0,
     page: safePage,
     limit: safeLimit,
@@ -429,6 +436,7 @@ export async function getAnecdoteById({ schoolId, id, userRoles = [] }) {
               'id', e.id,
               'evidence_type', e.evidence_type,
               'file_url', e.file_url,
+              'storage_path', e.storage_path,
               'file_name', e.file_name,
               'file_size', e.file_size,
               'mime_type', e.mime_type,
@@ -490,7 +498,10 @@ export async function getAnecdoteById({ schoolId, id, userRoles = [] }) {
     return null;
   }
 
-  return anecdote;
+  return {
+    ...anecdote,
+    evidence: await signAnecdoteEvidenceList(anecdote.evidence, schoolId),
+  };
 }
 
 /**
@@ -652,9 +663,10 @@ export async function addEvidence({ schoolId, anecdoteId, userId, evidenceData }
       mime_type,
       metadata,
       created_by
-    ) VALUES (
+    )
+    SELECT
       ${schoolId},
-      ${anecdoteId},
+      a.id,
       ${evidence_type},
       ${file_url},
       ${storage_path},
@@ -663,9 +675,18 @@ export async function addEvidence({ schoolId, anecdoteId, userId, evidenceData }
       ${mime_type},
       ${sql.json(metadata)},
       ${userId}
-    )
+    FROM public.anecdotes a
+    WHERE a.id = ${anecdoteId}
+      AND a.school_id = ${schoolId}
+      AND a.deleted_at IS NULL
     RETURNING *
   `;
+
+  if (!row) {
+    const error = new Error('Anecdote not found');
+    error.status = 404;
+    throw error;
+  }
 
   return row;
 }
@@ -796,6 +817,7 @@ export async function getStudentTimeline({
               'id', e.id,
               'evidence_type', e.evidence_type,
               'file_url', e.file_url,
+              'storage_path', e.storage_path,
               'file_name', e.file_name
             )
           )
@@ -974,7 +996,11 @@ export async function getStudentTimeline({
     `;
   }
 
-  let combined = [...anecdotes, ...interventions, ...signals, ...insights, ...outcomes];
+  const signedAnecdotes = await Promise.all(anecdotes.map(async (item) => ({
+    ...item,
+    evidence: await signAnecdoteEvidenceList(item.evidence, schoolId),
+  })));
+  let combined = [...signedAnecdotes, ...interventions, ...signals, ...insights, ...outcomes];
 
   const filter = String(filterCategory || 'ALL').toUpperCase();
   if (filter && filter !== 'ALL') {

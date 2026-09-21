@@ -3,6 +3,7 @@ import sql from '../db.js';
 import { sendNotificationToUsers } from './notificationService.js';
 import { getStudentTransportDue, resolveAcademicYearCode } from './transportFeeService.js';
 import { emitSchoolEvent, AUTOMATION_EVENTS } from './automationEventService.js';
+import { assertTenantScope } from '../utils/tenantQuery.js';
 
 const VALID_METHODS = ['cash', 'card', 'upi', 'bank_transfer', 'cheque', 'online'];
 
@@ -20,6 +21,7 @@ export async function postTermFeePayment(tx, {
   schoolId,
   receipt_group = null,
 }) {
+  const tenantSchoolId = assertTenantScope(schoolId);
   const parsedAmount = Number(amount);
   if (isNaN(parsedAmount) || parsedAmount <= 0) {
     const err = new Error('Amount must be a positive number');
@@ -38,7 +40,10 @@ export async function postTermFeePayment(tx, {
   }
 
   const [existing] = await tx`
-    SELECT id FROM fee_transactions WHERE transaction_ref = ${transaction_ref}
+    SELECT id
+    FROM fee_transactions
+    WHERE school_id = ${tenantSchoolId}
+      AND transaction_ref = ${transaction_ref}
   `;
   if (existing) {
     const err = new Error(`Transaction reference '${transaction_ref}' already exists`);
@@ -50,7 +55,7 @@ export async function postTermFeePayment(tx, {
     SELECT id, amount_due, amount_paid, discount, student_id
     FROM student_fees
     WHERE id = ${student_fee_id}
-      AND school_id = ${schoolId}
+      AND school_id = ${tenantSchoolId}
     FOR UPDATE
   `;
 
@@ -76,7 +81,7 @@ export async function postTermFeePayment(tx, {
       ${transaction_ref},
       ${user?.internal_id || null},
       ${remarks || null},
-      ${schoolId},
+      ${tenantSchoolId},
       ${receipt_group || null}
     )
     RETURNING *
@@ -86,7 +91,7 @@ export async function postTermFeePayment(tx, {
     UPDATE student_fees
     SET updated_at = NOW()
     WHERE id = ${student_fee_id}
-      AND school_id = ${schoolId}
+      AND school_id = ${tenantSchoolId}
     RETURNING *
   `;
 

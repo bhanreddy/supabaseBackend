@@ -236,57 +236,66 @@ export async function notifyEventCancelled(schoolId, event, reason) {
 /**
  * Process pending event reminders whose remind_at <= now().
  */
-export async function processPendingReminders() {
+export async function processPendingReminders({ db = sql, notify = sendNotificationToUsers } = {}) {
+  const startedAt = Date.now();
   try {
-    const pending = await sql`
-      SELECT 
-        r.id as reminder_id, r.school_id, r.event_id, r.remind_at,
-        e.title, e.description, e.start_date, e.start_datetime, e.end_datetime,
-        e.is_all_day, e.location, e.status
-      FROM calendar_event_reminders r
-      JOIN calendar_events e ON r.event_id = e.id
-      WHERE r.status = 'PENDING'
-        AND r.remind_at <= now()
-        AND e.status = 'PUBLISHED'
-        AND e.deleted_at IS NULL
-      LIMIT 100
-    `;
+    const processedCount = await db.begin(async (tx) => {
+      const pending = await tx`
+        SELECT
+          r.id as reminder_id, r.school_id, r.event_id, r.remind_at,
+          e.title, e.description, e.start_date, e.start_datetime, e.end_datetime,
+          e.is_all_day, e.location, e.status
+        FROM calendar_event_reminders r
+        JOIN calendar_events e ON r.event_id = e.id
+        WHERE r.status = 'PENDING'
+          AND r.remind_at <= now()
+          AND e.status = 'PUBLISHED'
+          AND e.deleted_at IS NULL
+        ORDER BY r.remind_at, r.id
+        LIMIT 100
+        FOR UPDATE OF r SKIP LOCKED
+      `;
 
-    for (const item of pending) {
-      try {
-        const userIds = await resolveTargetUserIds(item.school_id, item.event_id);
-        if (userIds && userIds.length > 0) {
-          const formattedTime = formatEventDate(item);
-          const message = `Upcoming: ${formattedTime}${item.location ? ` at ${item.location}` : ''}.`;
-          await sendNotificationToUsers(userIds, 'CALENDAR_EVENT_REMINDER', {
-            title: item.title,
-            message,
-          }, {
-            schoolId: item.school_id,
-            deepLink: `/Screen/calendar?eventId=${event.id}`,
-          });
+      for (const item of pending) {
+        try {
+          const userIds = await resolveTargetUserIds(item.school_id, item.event_id, tx);
+          if (userIds && userIds.length > 0) {
+            const formattedTime = formatEventDate(item);
+            const message = `Upcoming: ${formattedTime}${item.location ? ` at ${item.location}` : ''}.`;
+            await notify(userIds, 'CALENDAR_EVENT_REMINDER', {
+              title: item.title,
+              message,
+            }, {
+              schoolId: item.school_id,
+              deepLink: `/Screen/calendar?eventId=${item.event_id}`,
+            });
+          }
+
+          await tx`
+            UPDATE calendar_event_reminders
+            SET status = 'SENT', sent_at = now(), updated_at = now()
+            WHERE id = ${item.reminder_id}
+          `;
+        } catch (err) {
+          logger.error({ err, reminderId: item.reminder_id }, 'calendar_reminder_dispatch_failed');
+          await tx`
+            UPDATE calendar_event_reminders
+            SET
+              attempts = attempts + 1,
+              failure_reason = ${err.message || 'Dispatch error'},
+              status = CASE WHEN attempts + 1 >= 3 THEN 'FAILED' ELSE 'PENDING' END,
+              updated_at = now()
+            WHERE id = ${item.reminder_id}
+          `;
         }
-
-        await sql`
-          UPDATE calendar_event_reminders
-          SET status = 'SENT', sent_at = now(), updated_at = now()
-          WHERE id = ${item.reminder_id}
-        `;
-      } catch (err) {
-        logger.error({ err, reminderId: item.reminder_id }, 'calendar_reminder_dispatch_failed');
-        await sql`
-          UPDATE calendar_event_reminders
-          SET 
-            attempts = attempts + 1,
-            failure_reason = ${err.message || 'Dispatch error'},
-            status = CASE WHEN attempts + 1 >= 3 THEN 'FAILED' ELSE 'PENDING' END,
-            updated_at = now()
-          WHERE id = ${item.reminder_id}
-        `;
       }
-    }
+      return pending.length;
+    });
+    logger.info({ processedCount, durationMs: Date.now() - startedAt }, 'calendar_reminder_worker_completed');
+    return processedCount;
   } catch (err) {
     logger.error({ err }, 'process_pending_reminders_failed');
+    return 0;
   }
 }
 
@@ -325,4 +334,3 @@ export function stopCalendarReminderWorker() {
     reminderTimer = null;
   }
 }
-

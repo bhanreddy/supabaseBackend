@@ -138,6 +138,7 @@ export async function scanAndApplyLateFeesForSchool(schoolId, options = {}) {
               calculation_details = ${sql.json(calc.details)},
               updated_at = NOW()
             WHERE id = ${existingFine.id}
+              AND school_id = ${Number(schoolId)}
           `;
 
           await logFineEvent({

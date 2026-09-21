@@ -657,6 +657,8 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
       JOIN fee_structures fs ON sf.fee_structure_id = fs.id
       JOIN fee_types ft ON fs.fee_type_id = ft.id
       WHERE sf.student_id = ${studentId}
+        AND sf.school_id = ${req.schoolId}
+        AND fs.school_id = ${req.schoolId}
         AND sf.deleted_at IS NULL
         AND fs.deleted_at IS NULL
         AND fs.academic_year_id = ${academic_year_id}
@@ -678,6 +680,8 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
       JOIN fee_types ft ON fs.fee_type_id = ft.id
       JOIN academic_years ay ON fs.academic_year_id = ay.id
       WHERE sf.student_id = ${studentId}
+        AND sf.school_id = ${req.schoolId}
+        AND fs.school_id = ${req.schoolId}
         AND sf.deleted_at IS NULL
         AND fs.deleted_at IS NULL
         ${structureModeFilter}
@@ -695,6 +699,8 @@ router.get('/students/:studentId', requirePermission('fees.view'), asyncHandler(
     FROM student_fees sf
     JOIN fee_structures fs ON sf.fee_structure_id = fs.id
     WHERE sf.student_id = ${studentId}
+      AND sf.school_id = ${req.schoolId}
+      AND fs.school_id = ${req.schoolId}
       AND sf.deleted_at IS NULL
       AND fs.deleted_at IS NULL
       ${structureModeFilter}
@@ -1594,11 +1600,12 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
       ft.name as fee_type,
       t.payment_method, t.transaction_ref, t.paid_at
     FROM receipt_items ri
-    JOIN fee_transactions t ON ri.fee_transaction_id = t.id
-    JOIN student_fees sf ON t.student_fee_id = sf.id
-    JOIN fee_structures fs ON sf.fee_structure_id = fs.id
-    JOIN fee_types ft ON fs.fee_type_id = ft.id
+    JOIN fee_transactions t ON ri.fee_transaction_id = t.id AND t.school_id = ${req.schoolId}
+    JOIN student_fees sf ON t.student_fee_id = sf.id AND sf.school_id = ${req.schoolId}
+    JOIN fee_structures fs ON sf.fee_structure_id = fs.id AND fs.school_id = ${req.schoolId}
+    JOIN fee_types ft ON fs.fee_type_id = ft.id AND ft.school_id = ${req.schoolId}
     WHERE ri.receipt_id = ${id}
+      AND ri.school_id = ${req.schoolId}
   `;
 
   if (items.length === 0 && receipt.transport_payment_id) {
