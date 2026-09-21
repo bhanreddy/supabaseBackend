@@ -39,7 +39,7 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'supabasebackend'
+      - 'simsbackend'
       - '--image=gcr.io/$PROJECT_ID/supabasebackend:$COMMIT_SHA'
       - '--region=asia-south1'
       - '--platform=managed'
@@ -54,7 +54,7 @@ steps:
       # the pool size so Cloud Run scales instances instead of building a long
       # in-process database queue.
       - '--concurrency=8'
-      - '--set-secrets=DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_ANON_KEY=SUPABASE_ANON_KEY:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest'
+      - '--update-secrets=DATABASE_URL=DATABASE_URL:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_ANON_KEY=SUPABASE_ANON_KEY:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,LOGIN_QR_HMAC_SECRET=LOGIN_QR_HMAC_SECRET:latest'
       - '--set-env-vars=NODE_ENV=production,PORT=8080,RATE_LIMIT_API_MAX=2000,RATE_LIMIT_API_WINDOW_MS=900000'
 
 images:
