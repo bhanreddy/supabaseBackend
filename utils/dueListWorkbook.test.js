@@ -96,6 +96,28 @@ test('due-list workbook leaves unavailable transport fee blank but keeps configu
     assert.equal(rows[9][15], 0);
 });
 
+test('due-list workbook includes transport collections in Paid Fee', () => {
+    const { rows } = readWorkbook(buildDueListWorkbook({
+        schoolName: 'Slate School',
+        academicYear: '2026-27',
+        rows: [{
+            ...sampleRow,
+            school_total_fee: '30000',
+            discount_given: '30000',
+            final_fee: '0',
+            paid_fee: '0',
+            transport_paid_fee: '5000',
+            due_amount: '0',
+            transport_pending_fee: '0',
+        }],
+        filters: {},
+    }));
+
+    assert.equal(rows[8][13], 5000);
+    assert.equal(rows[10][13], 5000);
+    assert.equal(rows[5][9], 5000);
+});
+
 test('due-list workbook records a selected fee type in the applied filters', () => {
     const { rows } = readWorkbook(buildDueListWorkbook({
         schoolName: 'Slate School',

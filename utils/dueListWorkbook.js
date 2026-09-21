@@ -10,13 +10,17 @@ function optionalMoney(value) {
     return money(value);
 }
 
+function totalPaid(row) {
+    return money(row.paid_fee) + money(row.transport_paid_fee);
+}
+
 export function buildDueListWorkbook({ schoolName, academicYear, rows, filters }) {
     const generatedAt = new Date().toLocaleString('en-IN');
     const totals = rows.reduce((acc, row) => ({
         schoolTotal: acc.schoolTotal + money(row.school_total_fee),
         discount: acc.discount + money(row.discount_given),
         finalFee: acc.finalFee + money(row.final_fee),
-        paid: acc.paid + money(row.paid_fee),
+        paid: acc.paid + totalPaid(row),
         due: acc.due + money(row.due_amount),
         transportPending: acc.transportPending + money(row.transport_pending_fee),
     }), { schoolTotal: 0, discount: 0, finalFee: 0, paid: 0, due: 0, transportPending: 0 });
@@ -52,7 +56,7 @@ export function buildDueListWorkbook({ schoolName, academicYear, rows, filters }
             money(row.school_total_fee),
             money(row.discount_given),
             money(row.final_fee),
-            money(row.paid_fee),
+            totalPaid(row),
             money(row.due_amount),
             optionalMoney(row.transport_pending_fee),
             Number(row.fee_item_count || 0),

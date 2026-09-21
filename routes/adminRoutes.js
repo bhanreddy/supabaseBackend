@@ -1196,6 +1196,8 @@ router.get('/pending-fees/filter-options', requirePermission('fees.view'), async
  * school total − discount − paid at the student level so it stays consistent
  * with the Discount Given column. Transport pending fee is derived from the
  * active stop's configured fee, adjustments, and payments for the same year.
+ * Paid Fee includes both school-fee and transport-fee collections unless the
+ * report is narrowed to a specific school fee type.
  */
 router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
@@ -1281,6 +1283,7 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
         transport_agg AS (
             SELECT
                 st.student_id,
+                COALESCE(pay.paid_amount, 0)::numeric AS transport_paid_fee,
                 GREATEST(
                     tf.fee_amount
                     + COALESCE(adj.net_amount, 0)
@@ -1364,6 +1367,10 @@ router.get('/pending-fees/export', requirePermission('fees.view'), asyncHandler(
             COALESCE(fa.discount_given, 0)::numeric AS discount_given,
             COALESCE(fa.final_fee, 0)::numeric AS final_fee,
             COALESCE(fa.paid_fee, 0)::numeric AS paid_fee,
+            ${fee_type_id
+                ? sql`0::numeric`
+                : sql`COALESCE(ta.transport_paid_fee, 0)::numeric`
+            } AS transport_paid_fee,
             COALESCE(fa.due_amount, 0)::numeric AS due_amount,
             ta.transport_pending_fee,
             (
