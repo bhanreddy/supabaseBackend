@@ -21,7 +21,8 @@
     "test": "node --experimental-test-module-mocks --test services/*.test.js utils/*.test.js tests/*.test.js",
     "migrate:release": "node scripts/migrate_release.js",
     "migrate:batch2": "node scripts/run_batch2_migrations.js",
-    "migrate:batch3": "node scripts/run_batch3_migrations.js"
+    "migrate:batch3": "node scripts/run_batch3_migrations.js",
+    "test:transport": "node scripts/verify_transport_repair.mjs"
   },
   "type": "module",
   "engines": {

@@ -10,6 +10,7 @@ import {
   getSectionExamSchedule,
   getTeacherExamSchedule,
   normalizeSyllabus,
+  selectEffectiveSectionPapers,
   ExamTimetableError,
 } from '../services/examTimetableService.js';
 import {
@@ -75,11 +76,14 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
     const [row] = await sql`
       SELECT
         es.id, es.exam_date, es.start_time::text AS start_time, es.end_time::text AS end_time,
-        es.class_id, e.name AS exam_name, sub.name AS subject_name, c.name AS class_name
+        es.class_id, es.class_section_id, e.name AS exam_name,
+        sub.name AS subject_name, c.name AS class_name, section.name AS section_name
       FROM exam_subjects es
       JOIN exams e ON e.id = es.exam_id
       LEFT JOIN subjects sub ON sub.id = es.subject_id
       LEFT JOIN classes c ON c.id = es.class_id
+      LEFT JOIN class_sections class_section ON class_section.id = es.class_section_id
+      LEFT JOIN sections section ON section.id = class_section.section_id
       WHERE es.id = ${examSubjectId} AND es.school_id = ${schoolId}
     `;
     if (!row?.exam_date) {
@@ -87,7 +91,9 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
       return;
     }
     const subjectLabel = row.subject_name || 'Paper';
-    const classLabel = row.class_name ? ` Class ${row.class_name}` : '';
+    const classLabel = row.class_name
+      ? ` Class ${row.class_name}${row.section_name ? `-${row.section_name}` : ''}`
+      : '';
     await CalendarService.syncSourceEvent({
       schoolId,
       sourceModule: 'EXAM',
@@ -105,7 +111,11 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
         attendance_enabled: false,
         timetable_enabled: false,
       },
-      targets: row.class_id ? [{ target_type: 'CLASS', target_id: row.class_id }] : [{ target_type: 'ENTIRE_SCHOOL', target_id: 'ALL' }],
+      targets: row.class_section_id
+        ? [{ target_type: 'SECTION', target_id: row.class_section_id }]
+        : row.class_id
+          ? [{ target_type: 'CLASS', target_id: row.class_id }]
+          : [{ target_type: 'ENTIRE_SCHOOL', target_id: 'ALL' }],
     });
   } catch (err) {
     console.error(`[resultsRoutes] Failed to sync exam subject ${examSubjectId} to calendar:`, err.message);
@@ -606,7 +616,7 @@ router.delete('/exams/:id', requirePermission('exams.manage'), asyncHandler(asyn
  */
 router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { subject_id, class_id, exam_date, start_time, end_time, max_marks, passing_marks } = req.body;
+  const { subject_id, class_id, class_section_id, exam_date, start_time, end_time, max_marks, passing_marks } = req.body;
 
   if (!subject_id || !class_id) {
     return res.status(400).json({ error: 'subject_id and class_id are required' });
@@ -614,7 +624,11 @@ router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandl
 
   // RES3 FIX: Verify exam ownership
   const [examCheck] = await sql`
-    SELECT id, results_published FROM exams WHERE id = ${id} AND school_id = ${req.schoolId}
+    SELECT id, academic_year_id, results_published
+    FROM exams
+    WHERE id = ${id}
+      AND school_id = ${req.schoolId}
+      AND deleted_at IS NULL
   `;
   if (!examCheck) {
     return res.status(404).json({ error: 'Exam not found' });
@@ -623,10 +637,24 @@ router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandl
     return res.status(409).json({ error: 'Unpublish the exam results before adding a paper.' });
   }
 
+  if (class_section_id) {
+    const [sectionCheck] = await sql`
+      SELECT id FROM class_sections
+      WHERE id = ${class_section_id}
+        AND class_id = ${class_id}
+        AND academic_year_id = ${examCheck.academic_year_id}
+        AND school_id = ${req.schoolId}
+        AND deleted_at IS NULL
+    `;
+    if (!sectionCheck) {
+      return res.status(400).json({ error: 'Invalid class_section_id for the exam class and academic year' });
+    }
+  }
+
   // RES3 FIX: Add school_id to exam_subjects INSERT
   const [examSubject] = await sql`
-    INSERT INTO exam_subjects (school_id, exam_id, subject_id, class_id, exam_date, start_time, end_time, max_marks, passing_marks)
-    VALUES (${req.schoolId}, ${id}, ${subject_id}, ${class_id}, ${exam_date ?? null}, ${start_time ?? null}, ${end_time ?? null}, ${max_marks || 100}, ${passing_marks || 35})
+    INSERT INTO exam_subjects (school_id, exam_id, subject_id, class_id, class_section_id, exam_date, start_time, end_time, max_marks, passing_marks)
+    VALUES (${req.schoolId}, ${id}, ${subject_id}, ${class_id}, ${class_section_id || null}, ${exam_date ?? null}, ${start_time ?? null}, ${end_time ?? null}, ${max_marks || 100}, ${passing_marks || 35})
     RETURNING *
   `;
 
@@ -663,7 +691,7 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
   // RES4 FIX: Validate exam_subject ownership against both exam_subjects and exams school_id.
   const [examSubject] = await sql`
-    SELECT es.id, es.max_marks, es.exam_id, es.class_id, e.school_id, e.results_published
+    SELECT es.id, es.max_marks, es.exam_id, es.class_id, es.class_section_id, e.school_id, e.results_published
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id
     WHERE es.id = ${exam_subject_id}
@@ -691,11 +719,13 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
       JOIN students s ON s.id=se.student_id AND s.school_id=${req.schoolId} AND s.deleted_at IS NULL
       JOIN class_sections cs ON cs.id=se.class_section_id AND cs.school_id=${req.schoolId}
       WHERE se.id=${student_enrollment_id} AND se.school_id=${req.schoolId}
-        AND cs.class_id=${examSubject.class_id} AND se.status='active'
+        AND cs.class_id=${examSubject.class_id}
+        AND (${examSubject.class_section_id}::uuid IS NULL OR cs.id = ${examSubject.class_section_id})
+        AND se.status='active'
       LIMIT 1
     `;
     if (!enrollment) {
-      results.push({ student_enrollment_id, error: 'Enrollment is not active in this school and exam class' });
+      results.push({ student_enrollment_id, error: 'Enrollment is not active in this school and exam class/section' });
       continue;
     }
 
@@ -896,6 +926,7 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
       JOIN persons p ON s.person_id = p.id
       JOIN class_sections cs ON se.class_section_id = cs.id AND cs.school_id = ${req.schoolId}
       WHERE cs.class_id = ${classId}
+        AND (es.class_section_id IS NULL OR es.class_section_id = cs.id)
         AND es.exam_id = ${examId}
         AND es.subject_id = ${subject_id}
         AND se.status = 'active'
@@ -919,7 +950,7 @@ router.get('/marks/class/:classId/exam/:examId', requirePermission('marks.view')
       JOIN student_enrollments se ON s.id = se.student_id AND se.school_id = ${req.schoolId}
       JOIN class_sections cs ON se.class_section_id = cs.id AND cs.school_id = ${req.schoolId}
       LEFT JOIN marks m ON m.student_enrollment_id = se.id AND m.school_id = ${req.schoolId}
-      LEFT JOIN exam_subjects es ON m.exam_subject_id = es.id AND es.exam_id = ${examId} AND es.school_id = ${req.schoolId}
+      LEFT JOIN exam_subjects es ON m.exam_subject_id = es.id AND es.exam_id = ${examId} AND es.school_id = ${req.schoolId} AND (es.class_section_id IS NULL OR es.class_section_id = cs.id)
       LEFT JOIN subjects sub ON es.subject_id = sub.id
       WHERE cs.class_id = ${classId}
         AND se.status = 'active'
@@ -1191,6 +1222,7 @@ router.get('/exam-analytics/context', requirePermission('admin.manage'), asyncHa
       FROM exams exam
       JOIN exam_subjects paper ON paper.exam_id = exam.id
         AND paper.class_id = ${selectedClassSection.class_id}
+        AND (paper.class_section_id IS NULL OR paper.class_section_id = ${selectedClassSection.id})
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
       WHERE exam.school_id = ${req.schoolId}
@@ -1330,6 +1362,14 @@ router.get('/exam-analytics', requirePermission('admin.manage'), asyncHandler(as
       AND active_student.id IS NOT NULL
     WHERE paper.exam_id = ${exam.id}
       AND paper.class_id = ${classSection.class_id}
+      AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM exam_subjects es2
+        WHERE es2.exam_id = ${exam.id}
+          AND es2.class_section_id = ${classSection.id}
+          AND es2.subject_id = paper.subject_id
+          AND es2.school_id = ${req.schoolId}
+          AND es2.deleted_at IS NULL
+      )))
       AND paper.school_id = ${req.schoolId}
       AND paper.deleted_at IS NULL
     GROUP BY subject.id, subject.name, paper.assessment_schema, paper.max_marks
@@ -1455,6 +1495,14 @@ router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission
         AND subject.deleted_at IS NULL
       WHERE paper.exam_id = ${examId}
         AND paper.class_id = ${classSection.class_id}
+        AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+          SELECT 1 FROM exam_subjects es2
+          WHERE es2.exam_id = ${examId}
+            AND es2.class_section_id = ${classSection.id}
+            AND es2.subject_id = paper.subject_id
+            AND es2.school_id = ${req.schoolId}
+            AND es2.deleted_at IS NULL
+        )))
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
       ORDER BY subject.name
@@ -1483,6 +1531,14 @@ router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission
         AND enrollment.deleted_at IS NULL
         AND paper.exam_id = ${examId}
         AND paper.class_id = ${classSection.class_id}
+        AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+          SELECT 1 FROM exam_subjects es2
+          WHERE es2.exam_id = ${examId}
+            AND es2.class_section_id = ${classSection.id}
+            AND es2.subject_id = paper.subject_id
+            AND es2.school_id = ${req.schoolId}
+            AND es2.deleted_at IS NULL
+        )))
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
       ORDER BY enrollment.roll_number NULLS LAST, student.admission_no, person.display_name, paper.id
@@ -1616,7 +1672,7 @@ router.get('/accounts/marks-export/context', requireAuth, requireRole('accounts'
       JOIN exam_subjects paper ON paper.exam_id = exam.id
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
-      LEFT JOIN class_sections class_section ON class_section.class_id = paper.class_id
+      LEFT JOIN class_sections class_section ON (paper.class_section_id IS NULL AND class_section.class_id = paper.class_id OR class_section.id = paper.class_section_id)
         AND class_section.academic_year_id = exam.academic_year_id
         AND class_section.school_id = ${req.schoolId}
         AND class_section.deleted_at IS NULL
@@ -1710,6 +1766,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
           SELECT 1 FROM exam_subjects configured_paper
           WHERE configured_paper.exam_id = exam.id
             AND configured_paper.class_id = class_section.class_id
+            AND (configured_paper.class_section_id IS NULL OR configured_paper.class_section_id = class_section.id)
             AND configured_paper.school_id = ${req.schoolId}
             AND configured_paper.deleted_at IS NULL
         )
@@ -1719,7 +1776,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
     `,
     sql`
       SELECT
-        paper.id AS exam_subject_id, paper.class_id, paper.assessment_schema,
+        paper.id AS exam_subject_id, paper.class_id, paper.class_section_id, paper.assessment_schema,
         paper.max_marks, paper.passing_marks,
         paper.participation_max_marks, paper.written_work_max_marks,
         paper.project_work_max_marks, paper.slip_test_max_marks,
@@ -1759,6 +1816,14 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       JOIN persons person ON person.id = student.person_id
       LEFT JOIN exam_subjects paper ON paper.exam_id = exam.id
         AND paper.class_id = class_section.class_id
+        AND (paper.class_section_id = class_section.id OR (paper.class_section_id IS NULL AND NOT EXISTS (
+          SELECT 1 FROM exam_subjects es2
+          WHERE es2.exam_id = exam.id
+            AND es2.class_section_id = class_section.id
+            AND es2.subject_id = paper.subject_id
+            AND es2.school_id = ${req.schoolId}
+            AND es2.deleted_at IS NULL
+        )))
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
       LEFT JOIN marks mark ON mark.exam_subject_id = paper.id
@@ -1771,6 +1836,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
           SELECT 1 FROM exam_subjects configured_paper
           WHERE configured_paper.exam_id = exam.id
             AND configured_paper.class_id = class_section.class_id
+            AND (configured_paper.class_section_id IS NULL OR configured_paper.class_section_id = class_section.id)
             AND configured_paper.school_id = ${req.schoolId}
             AND configured_paper.deleted_at IS NULL
         )
@@ -1872,7 +1938,10 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
 
   const rankingMethod = await getRequestedRankingMethod(req);
   const exportSections = classSections.map((classSection) => {
-    const sectionPapers = papersByClass.get(String(classSection.class_id)) || [];
+    const sectionPapers = selectEffectiveSectionPapers(
+      papersByClass.get(String(classSection.class_id)) || [],
+      classSection.id
+    );
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
       const totals = summarizeStudentMarks({ papers: sectionPapers, subjects: student.subjects });
       const classification = classifyMarksResult(sectionPapers, student.subjects);
@@ -1977,6 +2046,7 @@ router.get('/progress-card-assistant/context', requireAnyPermission(['results.vi
       FROM exams exam
       JOIN exam_subjects paper ON paper.exam_id = exam.id
         AND paper.class_id = ${classSection.class_id}
+        AND (paper.class_section_id IS NULL OR paper.class_section_id = ${classSection.id})
         AND paper.school_id = ${req.schoolId}
         AND paper.deleted_at IS NULL
       WHERE exam.school_id = ${req.schoolId}
@@ -2063,6 +2133,14 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       AND mark.school_id = ${req.schoolId}
     WHERE paper.exam_id = ${exam.id}
       AND paper.class_id = ${classSection.class_id}
+      AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM exam_subjects es2
+        WHERE es2.exam_id = ${exam.id}
+          AND es2.class_section_id = ${classSection.id}
+          AND es2.subject_id = paper.subject_id
+          AND es2.school_id = ${req.schoolId}
+          AND es2.deleted_at IS NULL
+      )))
       AND paper.school_id = ${req.schoolId}
       AND paper.deleted_at IS NULL
     ORDER BY subject.name
@@ -2124,6 +2202,14 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       AND enrollment.deleted_at IS NULL
       AND paper.exam_id = ${exam.id}
       AND paper.class_id = ${classSection.class_id}
+      AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM exam_subjects es2
+        WHERE es2.exam_id = ${exam.id}
+          AND es2.class_section_id = ${classSection.id}
+          AND es2.subject_id = paper.subject_id
+          AND es2.school_id = ${req.schoolId}
+          AND es2.deleted_at IS NULL
+      )))
       AND paper.school_id = ${req.schoolId}
       AND paper.deleted_at IS NULL
   `;
@@ -2298,6 +2384,14 @@ router.get('/progress-card-assistant/student/:studentId/final-calculations', req
       AND exam.deleted_at IS NULL
     JOIN exam_subjects paper ON paper.exam_id = exam.id
       AND paper.class_id = ${classSection.class_id}
+      AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM exam_subjects es2
+        WHERE es2.exam_id = exam.id
+          AND es2.class_section_id = ${classSection.id}
+          AND es2.subject_id = paper.subject_id
+          AND es2.school_id = ${req.schoolId}
+          AND es2.deleted_at IS NULL
+      )))
       AND paper.school_id = ${req.schoolId}
       AND paper.deleted_at IS NULL
     JOIN subjects subject ON subject.id = paper.subject_id
@@ -2522,6 +2616,14 @@ router.get('/generate', requirePermission('results.generate'), asyncHandler(asyn
     JOIN persons p ON st.person_id = p.id
     LEFT JOIN exam_subjects es ON es.exam_id = ${exam_id}
       AND es.class_id = ${classSection?.class_id}
+      AND (es.class_section_id = ${class_section_id} OR (es.class_section_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM exam_subjects es2
+        WHERE es2.exam_id = ${exam_id}
+          AND es2.class_section_id = ${class_section_id}
+          AND es2.subject_id = es.subject_id
+          AND es2.school_id = ${req.schoolId}
+          AND es2.deleted_at IS NULL
+      )))
       AND es.school_id = ${req.schoolId}
       AND es.deleted_at IS NULL
     LEFT JOIN subjects sub ON es.subject_id = sub.id
@@ -2805,8 +2907,10 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
     WHERE exam_id = ${exam.id}
       AND subject_id = ${subject_id}
       AND class_id = ${class_id}
+      AND (class_section_id = ${class_section_id} OR class_section_id IS NULL)
       AND school_id = ${req.schoolId}
       AND deleted_at IS NULL
+    ORDER BY CASE WHEN class_section_id = ${class_section_id} THEN 0 ELSE 1 END
     LIMIT 1
   `;
 
@@ -2971,13 +3075,20 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
 
   // 2. Find or Create Exam (B2: school_id scoped)
   let [exam] = await sql`
-    SELECT id, name, exam_type, results_published
-    FROM exams
-    WHERE academic_year_id = ${academic_year_id}
-      AND exam_type = ${exam_category}
-      AND name = ${sub_exam}
-      AND school_id = ${req.schoolId}
-      AND deleted_at IS NULL
+    SELECT e.id, e.name, e.exam_type, e.results_published, e.timetable_params,
+      EXISTS (
+        SELECT 1 FROM exam_subjects configured_paper
+        WHERE configured_paper.exam_id = e.id
+          AND configured_paper.school_id = ${req.schoolId}
+          AND configured_paper.class_section_id IS NOT NULL
+          AND configured_paper.deleted_at IS NULL
+      ) AS has_section_papers
+    FROM exams e
+    WHERE e.academic_year_id = ${academic_year_id}
+      AND e.exam_type = ${exam_category}
+      AND e.name = ${sub_exam}
+      AND e.school_id = ${req.schoolId}
+      AND e.deleted_at IS NULL
     LIMIT 1
   `;
 
@@ -2987,7 +3098,7 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     [exam] = await sql`
       INSERT INTO exams (school_id, name, name_te, academic_year_id, exam_type, start_date, status)
       VALUES (${req.schoolId}, ${sub_exam}, ${autoNameTe}, ${academic_year_id}, ${exam_category}, CURRENT_DATE, 'ongoing')
-      RETURNING id, name, exam_type, results_published
+      RETURNING id, name, exam_type, results_published, timetable_params
     `;
   }
 
@@ -3004,13 +3115,18 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     WHERE exam_id = ${exam.id}
       AND subject_id = ${subject_id}
       AND class_id = ${class_id}
+      AND (class_section_id = ${class_section_id} OR class_section_id IS NULL)
       AND school_id = ${req.schoolId}
       AND deleted_at IS NULL
+    ORDER BY CASE WHEN class_section_id = ${class_section_id} THEN 0 ELSE 1 END
     LIMIT 1
   `;
 
   const targetMaxMarks = requestedMaxMarks;
   const targetPassingMarks = Math.ceil(targetMaxMarks * 0.35); // 35% passing
+  const usesPerSectionPapers =
+    exam.timetable_params?.mode === 'per_section' || exam.has_section_papers === true;
+  const targetClassSectionId = usesPerSectionPapers ? class_section_id : null;
   const consolidatedMaxMarks = assessmentSchema === 'consolidated'
     ? targetMaxMarks
     : Number(examSubject?.consolidated_max_marks || 25);
@@ -3024,13 +3140,13 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
   if (!examSubject) {
     [examSubject] = await sql`
       INSERT INTO exam_subjects (
-        school_id, exam_id, subject_id, class_id, max_marks, passing_marks,
+        school_id, exam_id, subject_id, class_id, class_section_id, max_marks, passing_marks,
         assessment_schema, consolidated_max_marks,
         participation_max_marks, written_work_max_marks,
         project_work_max_marks, slip_test_max_marks
       )
       VALUES (
-        ${req.schoolId}, ${exam.id}, ${subject_id}, ${class_id}, ${targetMaxMarks},
+        ${req.schoolId}, ${exam.id}, ${subject_id}, ${class_id}, ${targetClassSectionId}, ${targetMaxMarks},
         ${targetPassingMarks}, ${assessmentSchema}, ${consolidatedMaxMarks},
         ${componentMaximums.participation}, ${componentMaximums.written_work},
         ${componentMaximums.project_work}, ${componentMaximums.slip_test}
@@ -3147,10 +3263,23 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
     }
   }
 
+  const successfulResults = processedResults.filter((result) => result.success);
+  if (successfulResults.length === 0) {
+    return res.status(422).json({
+      error: processedResults[0]?.error || 'No marks could be uploaded',
+      results: processedResults,
+    });
+  }
+
   return sendSuccess(res, req.schoolId, {
-    message: 'Marks uploaded successfully',
+    message:
+      successfulResults.length === processedResults.length
+        ? 'Marks uploaded successfully'
+        : `${successfulResults.length} mark(s) uploaded; ${processedResults.length - successfulResults.length} failed`,
     exam_id: exam.id,
     exam_subject_id: examSubject.id,
+    uploaded_count: successfulResults.length,
+    failed_count: processedResults.length - successfulResults.length,
     results: processedResults.map((r) => ({
       student_id: r.student_id,
       mark_id: r.mark_id,
@@ -3212,10 +3341,11 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
 
   const papers = await sql`
     SELECT
-      es.id, es.class_id, es.subject_id, es.exam_date::text AS exam_date,
+      es.id, es.class_id, es.class_section_id, es.subject_id, es.exam_date::text AS exam_date,
       es.start_time::text AS start_time, es.end_time::text AS end_time,
       es.max_marks, es.passing_marks, es.syllabus,
       c.name AS class_name,
+      sec.name AS section_name,
       s.name AS subject_name, s.name_te AS subject_name_te,
       EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id) AS has_marks,
       -- Whether a subject teacher is assigned for this class+subject in the
@@ -3225,7 +3355,7 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
         EXISTS (
           SELECT 1 FROM class_subjects csub
           JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
-          WHERE cs.class_id = es.class_id
+          WHERE (es.class_section_id IS NULL AND cs.class_id = es.class_id OR cs.id = es.class_section_id)
             AND csub.subject_id = es.subject_id
             AND cs.academic_year_id = ${exam.academic_year_id}
             AND cs.school_id = ${req.schoolId}
@@ -3235,7 +3365,7 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
         OR EXISTS (
           SELECT 1 FROM timetable_slots ts
           JOIN class_sections cs ON ts.class_section_id = cs.id AND cs.deleted_at IS NULL
-          WHERE cs.class_id = es.class_id
+          WHERE (es.class_section_id IS NULL AND cs.class_id = es.class_id OR cs.id = es.class_section_id)
             AND ts.subject_id = es.subject_id
             AND ts.academic_year_id = ${exam.academic_year_id}
             AND cs.academic_year_id = ${exam.academic_year_id}
@@ -3247,9 +3377,11 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
       ) AS has_teacher
     FROM exam_subjects es
     JOIN classes c ON es.class_id = c.id
+    LEFT JOIN class_sections cs_paper ON es.class_section_id = cs_paper.id AND cs_paper.deleted_at IS NULL
+    LEFT JOIN sections sec ON cs_paper.section_id = sec.id AND sec.deleted_at IS NULL
     JOIN subjects s ON es.subject_id = s.id
     WHERE es.exam_id = ${id} AND es.school_id = ${req.schoolId} AND es.deleted_at IS NULL
-    ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, c.sort_order NULLS LAST, c.name, s.name
+    ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, c.sort_order NULLS LAST, c.name, sec.name NULLS FIRST, s.name
   `;
 
   const resultReadiness = await getExamResultReadiness({
@@ -3310,9 +3442,9 @@ router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHand
     return res.status(404).json({ error: 'Class and section are not mapped for this exam academic year' });
   }
 
-  const papers = await sql`
+  const rawPapers = await sql`
     SELECT
-      es.id, es.class_id, es.subject_id, es.exam_date::text AS exam_date,
+      es.id, es.class_id, es.class_section_id, es.subject_id, es.exam_date::text AS exam_date,
       es.start_time::text AS start_time, es.end_time::text AS end_time,
       es.max_marks, es.passing_marks, es.syllabus,
       c.name AS class_name,
@@ -3323,10 +3455,13 @@ router.get('/exams/:id/hall-tickets', requirePermission('exams.view'), asyncHand
     JOIN subjects s ON es.subject_id = s.id
     WHERE es.exam_id = ${id}
       AND es.class_id = ${classId}
+      AND (es.class_section_id = ${classSection.id} OR es.class_section_id IS NULL)
       AND es.school_id = ${req.schoolId}
       AND es.deleted_at IS NULL
     ORDER BY es.exam_date NULLS LAST, es.start_time NULLS LAST, s.name
   `;
+
+  const papers = selectEffectiveSectionPapers(rawPapers, classSection.id);
 
   if (papers.length === 0) {
     return res.status(404).json({ error: 'No exam papers are scheduled for this class' });
@@ -3439,7 +3574,7 @@ router.patch('/exam-subjects/:id', requirePermission('exams.manage'), asyncHandl
         passing_marks = ${newPass},
         syllabus = ${syllabus !== undefined ? (normalizedSyllabus === null ? null : sql.json(normalizedSyllabus)) : sql`syllabus`}
     WHERE id = ${id} AND school_id = ${req.schoolId}
-    RETURNING id, class_id, subject_id, exam_date::text AS exam_date, start_time::text AS start_time, end_time::text AS end_time, max_marks, passing_marks, syllabus
+    RETURNING id, class_id, class_section_id, subject_id, exam_date::text AS exam_date, start_time::text AS start_time, end_time::text AS end_time, max_marks, passing_marks, syllabus
   `;
 
   // Seating is keyed by (date, session start): if either moved, existing room
@@ -3491,7 +3626,11 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
     FROM staff st
     JOIN persons p ON st.person_id = p.id
     JOIN users u ON u.person_id = p.id
-    WHERE u.id = ${req.user.id} AND st.school_id = ${req.schoolId} AND st.deleted_at IS NULL
+    WHERE u.id = ${req.user.internal_id || req.user.id}
+      AND u.school_id = ${req.schoolId}
+      AND u.deleted_at IS NULL
+      AND st.school_id = ${req.schoolId}
+      AND st.deleted_at IS NULL
   `;
   const isAdmin = req.user.roles?.includes('admin');
   if (!staff && !isAdmin) {
@@ -3500,7 +3639,7 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
 
   // Load the paper (school-scoped) with its exam's academic year.
   const [paper] = await sql`
-    SELECT es.id, es.class_id, es.subject_id, e.academic_year_id
+    SELECT es.id, es.class_id, es.class_section_id, es.subject_id, e.academic_year_id
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id AND e.deleted_at IS NULL
     WHERE es.id = ${id} AND es.school_id = ${req.schoolId} AND es.deleted_at IS NULL
@@ -3510,18 +3649,34 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
   }
 
   // Authorize: admins always; otherwise the caller must teach this subject in
-  // this class for the exam's academic year.
+  // this class/section for the exam's academic year.
   if (!isAdmin) {
     const [teaches] = await sql`
       SELECT 1
-      FROM class_subjects csub
-      JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
-      WHERE csub.teacher_id = ${staff.id}
-        AND csub.subject_id = ${paper.subject_id}
-        AND cs.class_id = ${paper.class_id}
-        AND cs.academic_year_id = ${paper.academic_year_id}
-        AND cs.school_id = ${req.schoolId}
-        AND csub.deleted_at IS NULL
+      WHERE EXISTS (
+        SELECT 1
+        FROM class_subjects csub
+        JOIN class_sections cs ON csub.class_section_id = cs.id AND cs.deleted_at IS NULL
+        WHERE csub.teacher_id = ${staff.id}
+          AND csub.subject_id = ${paper.subject_id}
+          AND ((${paper.class_section_id}::uuid IS NULL AND cs.class_id = ${paper.class_id}) OR cs.id = ${paper.class_section_id})
+          AND cs.academic_year_id = ${paper.academic_year_id}
+          AND cs.school_id = ${req.schoolId}
+          AND csub.school_id = ${req.schoolId}
+          AND csub.deleted_at IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM timetable_slots slot
+        JOIN class_sections cs ON slot.class_section_id = cs.id AND cs.deleted_at IS NULL
+        WHERE slot.teacher_id = ${staff.id}
+          AND slot.subject_id = ${paper.subject_id}
+          AND ((${paper.class_section_id}::uuid IS NULL AND cs.class_id = ${paper.class_id}) OR cs.id = ${paper.class_section_id})
+          AND slot.academic_year_id = ${paper.academic_year_id}
+          AND cs.academic_year_id = ${paper.academic_year_id}
+          AND cs.school_id = ${req.schoolId}
+          AND slot.school_id = ${req.schoolId}
+          AND slot.deleted_at IS NULL
+      )
       LIMIT 1
     `;
     if (!teaches) {
@@ -3718,7 +3873,11 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (classIds.length === 0) {
+  const classSectionIds = String(req.query.class_section_ids || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (classIds.length === 0 && classSectionIds.length === 0) {
     return sendSuccess(res, req.schoolId, []);
   }
 
@@ -3746,10 +3905,10 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
 
   const rows = await sql`
     WITH taught_subjects AS (
-      SELECT cs.class_id, csub.subject_id
+      SELECT cs.class_id, cs.id AS class_section_id, csub.subject_id
       FROM class_subjects csub
       JOIN class_sections cs ON csub.class_section_id = cs.id
-      WHERE cs.class_id = ANY(${classIds})
+      WHERE ${classSectionIds.length > 0 ? sql`cs.id = ANY(${classSectionIds})` : sql`cs.class_id = ANY(${classIds})`}
         AND cs.academic_year_id = ${academicYear.id}
         AND cs.school_id = ${req.schoolId}
         AND csub.school_id = ${req.schoolId}
@@ -3758,10 +3917,10 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
 
       UNION
 
-      SELECT cs.class_id, ts.subject_id
+      SELECT cs.class_id, cs.id AS class_section_id, ts.subject_id
       FROM timetable_slots ts
       JOIN class_sections cs ON ts.class_section_id = cs.id
-      WHERE cs.class_id = ANY(${classIds})
+      WHERE ${classSectionIds.length > 0 ? sql`cs.id = ANY(${classSectionIds})` : sql`cs.class_id = ANY(${classIds})`}
         AND cs.academic_year_id = ${academicYear.id}
         AND ts.academic_year_id = ${academicYear.id}
         AND cs.school_id = ${req.schoolId}
@@ -3770,7 +3929,7 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
         AND cs.deleted_at IS NULL
     )
     SELECT sub.id, sub.name, sub.name_te,
-           COUNT(DISTINCT taught.class_id)::int AS class_count
+           ${classSectionIds.length > 0 ? sql`COUNT(DISTINCT taught.class_section_id)::int` : sql`COUNT(DISTINCT taught.class_id)::int`} AS class_count
     FROM taught_subjects taught
     JOIN subjects sub ON taught.subject_id = sub.id
     WHERE sub.school_id = ${req.schoolId}

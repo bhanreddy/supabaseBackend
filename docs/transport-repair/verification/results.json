@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-23T07:48:08.433Z",
+  "passed": false,
+  "checks": [
+    {
+      "check": "postgres-initialize",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "check": "postgres-start",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "check": "backend-transport-unit",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "check": "backend-transport-integration",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "check": "frontend-transport",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "check": "native-config",
+      "passed": true,
+      "exit_code": 0
+    }
+  ],
+  "physical_device_tests": "not_run",
+  "production_deployment": "not_run"
+}

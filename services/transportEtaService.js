@@ -32,7 +32,7 @@ const haversineKm = (aLat, aLng, bLat, bLng) => {
   return R_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-const hasCoords = (s) => s && s.latitude != null && s.longitude != null;
+const hasCoords = s => s && s.latitude != null && s.longitude != null && Number.isFinite(Number(s.latitude)) && Math.abs(Number(s.latitude))<=90 && Number.isFinite(Number(s.longitude)) && Math.abs(Number(s.longitude))<=180;
 const num = (v) => Number(v);
 
 /** Segment lookup key. */
@@ -53,7 +53,9 @@ export function computeLearnedEta({
   boardingStopId,
   segments = {},
   fallbackSpeedKmh = DEFAULT_FALLBACK_SPEED_KMH,
+  now = Date.now(),
 }) {
+  if (!Number.isFinite(fallbackSpeedKmh) || fallbackSpeedKmh <= 0 || fallbackSpeedKmh > 250) fallbackSpeedKmh = DEFAULT_FALLBACK_SPEED_KMH;
   const none = {
     eta_minutes: null, eta_low_minutes: null, eta_high_minutes: null,
     confidence: 'low', distance_km: null, source: 'none',
@@ -66,12 +68,13 @@ export function computeLearnedEta({
   const boardingIdx = stops.findIndex((s) => s.id === boardingStopId);
   if (boardingIdx === -1) return none;
   const boarding = stops[boardingIdx];
-  if (['completed', 'skipped', 'arrived'].includes(boarding.status)) return done('arrived');
-  if (!location) return none;
+  if (['completed','skipped'].includes(boarding.status)) return {...none,source:boarding.status};
+  if (!hasCoords(location) || location.is_mocked || !Number.isFinite(Date.parse(location.recorded_at)) || now-Date.parse(location.recorded_at)>120000 || Date.parse(location.recorded_at)>now+5000) return {...none,source:'stale_or_unavailable'};
+  if (boarding.status==='arrived') return done('arrived');
 
   // First stop the bus is still heading to.
   const nextIdx = stops.findIndex((s) => s.status === 'pending' || s.status === 'arrived');
-  if (nextIdx === -1 || nextIdx > boardingIdx) return done('passed');
+  if (nextIdx === -1 || nextIdx > boardingIdx) return {...none,source:'passed'};
 
   let totalSec = 0;
   let totalVar = 0;
@@ -83,6 +86,7 @@ export function computeLearnedEta({
   // ── Live partial leg: bus → next stop ──
   const next = stops[nextIdx];
   const speed = num(location.speed) >= 5 ? num(location.speed) : fallbackSpeedKmh;
+  if (!hasCoords(next)) return none;
   if (hasCoords(next)) {
     const dKm = haversineKm(num(location.latitude), num(location.longitude), num(next.latitude), num(next.longitude));
     distanceKm += dKm;
@@ -96,7 +100,7 @@ export function computeLearnedEta({
     const a = stops[i];
     const b = stops[i + 1];
     const seg = segments[segKey(a.id, b.id)];
-    if (seg && seg.ewma != null) {
+    if (seg && Number.isFinite(seg.ewma) && seg.ewma >= 0 && seg.ewma <= 10800) {
       totalSec += seg.ewma;
       totalVar += Math.max(seg.ewvar || 0, (seg.ewma * LEARNED_SEG_MIN_REL_SD) ** 2);
       learnedSegs++;
@@ -112,7 +116,7 @@ export function computeLearnedEta({
       totalVar += (segSec * FALLBACK_SEG_REL_SD) ** 2;
       fallbackSegs++;
     } else {
-      fallbackSegs++; // unknown segment (no learned time, no coords)
+      return none; // A missing segment must not silently contribute zero travel time.
     }
   }
 

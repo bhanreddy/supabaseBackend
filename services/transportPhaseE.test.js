@@ -27,7 +27,7 @@ test('location batches sort, deduplicate, and reject stale fixes', () => {
     '2026-07-15T11:59:20.000Z',
     '2026-07-15T11:59:40.000Z',
   ]);
-  assert.equal(result.fixes[1].latitude, 18);
+  assert.equal(result.fixes[1].latitude, 17); // A repeated timestamp cannot rewrite the first observation.
   assert.equal(result.duplicateCount, 1);
   assert.equal(result.staleCount, 1);
 });

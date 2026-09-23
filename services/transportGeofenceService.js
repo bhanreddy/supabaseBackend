@@ -19,11 +19,7 @@
  */
 import sql from '../db.js';
 import { normalizeLeg, recordArrivalCalibration } from './transportCalibrationService.js';
-import {
-  notifyBoardingStopDeparted,
-  notifyParentsAtNextStop,
-} from './transportProactiveNotificationService.js';
-import logger from '../utils/logger.js';
+import { enqueueTransitionNotifications } from './transportTripService.js';
 
 export const GEOFENCE = {
   /** Consecutive in-radius fixes required before arriving (debounce a GPS spike). */
@@ -61,7 +57,7 @@ export const shouldAutoArrive = ({ hits, firstSeenMs, nowMs, speedKmh, distM, ra
   if (hits < GEOFENCE.DEBOUNCE_HITS) return false;
   const slow = speedKmh != null && Number(speedKmh) < GEOFENCE.SLOW_SPEED_KMH;
   const dwelled = firstSeenMs != null && nowMs - firstSeenMs >= GEOFENCE.DWELL_MS;
-  return slow || dwelled;
+  return speedKmh != null ? slow : dwelled;
 };
 
 /**
@@ -72,128 +68,33 @@ export const shouldAutoArrive = ({ hits, firstSeenMs, nowMs, speedKmh, distM, ra
  * @param {string} busId
  * @param {{latitude:number, longitude:number, speed?:number}} fix
  */
-export async function evaluateGeofence(schoolId, busId, fix, db = sql) {
-  try {
-    if (fix?.latitude == null || fix?.longitude == null) return;
-
-    const [trip] = await db`
-      SELECT id, route_id, trip_direction FROM trips
-      WHERE bus_id = ${busId} AND school_id = ${schoolId}
-        AND status IN ('active', 'in_progress')
-      ORDER BY created_at DESC LIMIT 1
-    `;
-    if (!trip) return;
-    const leg = normalizeLeg(trip.trip_direction);
-
-    const [cal] = await db`
-      SELECT is_calibrated FROM route_leg_calibration
-      WHERE school_id = ${schoolId} AND route_id = ${trip.route_id} AND trip_direction = ${leg}
-    `;
-    if (!cal?.is_calibrated) return; // manual mode until the leg graduates
-
-    // ── 1. Auto-complete the stop we're at, once the bus pulls away ──
-    const [arrived] = await db`
-      SELECT tss.id, tss.stop_id, g.latitude, g.longitude, g.radius_m
-      FROM trip_stop_status tss
-      JOIN route_stop_geo g
-        ON g.stop_id = tss.stop_id AND g.school_id = ${schoolId} AND g.trip_direction = ${leg}
-      WHERE tss.trip_id = ${trip.id} AND tss.school_id = ${schoolId} AND tss.status = 'arrived'
-      ORDER BY tss.stop_order ASC LIMIT 1
-    `;
-    if (arrived) {
-      const d = distanceMeters(fix.latitude, fix.longitude, Number(arrived.latitude), Number(arrived.longitude));
-      if (hasLeftRadius(d, Number(arrived.radius_m))) {
-        const [claimed] = await db`
-          UPDATE trip_stop_status SET status = 'completed', departure_time = now()
-          WHERE id = ${arrived.id} AND school_id = ${schoolId} AND status = 'arrived'
-          RETURNING stop_id
-        `;
-        if (claimed) {
-          setImmediate(() => Promise.allSettled([
-            notifyBoardingStopDeparted(schoolId, trip.id, claimed.stop_id, db),
-            notifyParentsAtNextStop(schoolId, trip.id, claimed.stop_id, db),
-          ]));
-        }
-      }
-      return; // one transition per fix; don't also arrive the next stop
-    }
-
-    // ── 2. Auto-arrive the next expected pending stop ──
-    const [next] = await db`
-      SELECT tss.id, tss.stop_id, tss.stop_order, tss.geofence_hits, tss.first_seen_in_radius,
-             g.latitude, g.longitude, g.radius_m
-      FROM trip_stop_status tss
-      JOIN route_stop_geo g
-        ON g.stop_id = tss.stop_id AND g.school_id = ${schoolId} AND g.trip_direction = ${leg}
-      WHERE tss.trip_id = ${trip.id} AND tss.school_id = ${schoolId} AND tss.status = 'pending'
-      ORDER BY tss.stop_order ASC LIMIT 1
-    `;
-    if (!next) return;
-
-    // Sequential guard: never arrive a stop while an earlier one is unresolved.
-    const [earlier] = await db`
-      SELECT 1 FROM trip_stop_status
-      WHERE trip_id = ${trip.id} AND school_id = ${schoolId}
-        AND stop_order < ${next.stop_order} AND status NOT IN ('completed', 'skipped')
-      LIMIT 1
-    `;
-    if (earlier) return;
-
-    const distM = distanceMeters(fix.latitude, fix.longitude, Number(next.latitude), Number(next.longitude));
-    const radiusM = Number(next.radius_m);
-
-    if (distM <= radiusM) {
-      // The counter is part of the claim, not an in-memory read/modify/write:
-      // two app instances may receive the same retry at the same time.
-      const [hitState] = await db`
-        UPDATE trip_stop_status
-        SET geofence_hits = geofence_hits + 1,
-            first_seen_in_radius = COALESCE(first_seen_in_radius, now())
-        WHERE id = ${next.id}
-          AND school_id = ${schoolId}
-          AND status = 'pending'
-        RETURNING geofence_hits, first_seen_in_radius
-      `;
-      if (!hitState) return;
-      const firstSeenMs = hitState.first_seen_in_radius
-        ? new Date(hitState.first_seen_in_radius).getTime()
-        : Date.now();
-      if (shouldAutoArrive({ hits: hitState.geofence_hits, firstSeenMs, nowMs: Date.now(), speedKmh: fix.speed, distM, radiusM })) {
-        const [claimed] = await db`
-          UPDATE trip_stop_status
-          SET status = 'arrived', arrival_time = now(), arrival_source = 'geofence'
-          WHERE id = ${next.id} AND school_id = ${schoolId} AND status = 'pending'
-          RETURNING arrival_time
-        `;
-        if (claimed) {
-          logger.info({ event: 'transport_geofence_auto_arrival', schoolId, busId, tripId: trip.id, stopId: next.stop_id }, 'Transport geofence auto-arrival');
-          setImmediate(() => notifyParentsAtNextStop(
-            schoolId,
-            trip.id,
-            next.stop_id,
-            db,
-          ));
-          // Keep learning segment times in auto mode (geo excluded by source).
-          recordArrivalCalibration({
-            schoolId,
-            tripId: trip.id,
-            routeId: trip.route_id,
-            tripDirection: trip.trip_direction,
-            stopId: next.stop_id,
-            stopOrder: next.stop_order,
-            arrivalTime: claimed.arrival_time,
-            source: 'geofence',
-          }, db);
-        }
-      }
-    } else if (next.geofence_hits > 0 || next.first_seen_in_radius) {
-      // Left the radius without arriving (drove past) — reset the debounce.
-      await db`
-        UPDATE trip_stop_status SET geofence_hits = 0, first_seen_in_radius = NULL
-        WHERE id = ${next.id} AND school_id = ${schoolId}
-      `;
-    }
-  } catch (err) {
-    logger.error({ err, event: 'transport_geofence_failed', schoolId, busId }, 'Transport geofence evaluation failed');
+export async function evaluateGeofence(schoolId, busId, fix, db = sql, trip) {
+  if (!trip?.auto_stops_enabled || fix.is_mocked || typeof fix.accuracy !== 'number' || fix.accuracy<0 || fix.accuracy>50) return;
+  const [stop] = await db`SELECT * FROM trip_stop_status WHERE school_id=${schoolId} AND trip_id=${trip.id}
+    AND status IN ('pending','arrived') ORDER BY stop_order LIMIT 1 FOR UPDATE`;
+  if (!stop || stop.snapshot_latitude == null || stop.snapshot_longitude == null) return;
+  const distM=distanceMeters(fix.latitude,fix.longitude,Number(stop.snapshot_latitude),Number(stop.snapshot_longitude));
+  const radiusM=Number(stop.snapshot_radius_m), nowMs=Date.parse(fix.recorded_at);
+  let target=null;
+  if (stop.status==='arrived') {
+    if (hasLeftRadius(distM-fix.accuracy,radiusM)) target='completed';
+  } else {
+    const continuous=stop.geofence_last_at && nowMs-new Date(stop.geofence_last_at).getTime()<=45000;
+    const inside=distM+fix.accuracy<=radiusM;
+    const hits=inside ? (continuous ? stop.geofence_hits : 0)+1 : 0;
+    const first=inside ? (continuous && stop.first_seen_in_radius ? stop.first_seen_in_radius : fix.recorded_at) : null;
+    await db`UPDATE trip_stop_status SET geofence_hits=${hits},first_seen_in_radius=${first},geofence_last_at=${fix.recorded_at}
+      WHERE id=${stop.id} AND school_id=${schoolId}`;
+    if (inside && shouldAutoArrive({hits,firstSeenMs:new Date(first).getTime(),nowMs,speedKmh:fix.speed,distM,radiusM})) target='arrived';
   }
+  if (!target) return;
+  const [updated]=await db`UPDATE trip_stop_status SET status=${target},
+    arrival_time=CASE WHEN ${target}='arrived' THEN ${fix.recorded_at}::timestamptz ELSE arrival_time END,
+    arrival_source=CASE WHEN ${target}='arrived' THEN 'geofence' ELSE arrival_source END,
+    departure_time=CASE WHEN ${target}='completed' THEN ${fix.recorded_at}::timestamptz ELSE departure_time END
+    WHERE id=${stop.id} AND school_id=${schoolId} AND status=${stop.status} RETURNING *`;
+  if (!updated) return;
+  await enqueueTransitionNotifications(trip,updated,db);
+  if (target==='arrived') await recordArrivalCalibration({schoolId,tripId:trip.id,routeId:trip.route_id,
+    tripDirection:trip.trip_direction,stopId:stop.stop_id,stopOrder:stop.stop_order,arrivalTime:fix.recorded_at,source:'geofence'},db);
 }

@@ -6,6 +6,7 @@ import {
   assignSubjects,
   normalizeParams,
   normalizeSyllabus,
+  selectEffectiveSectionPapers,
   ExamTimetableError,
 } from '../services/examTimetableService.js';
 import { seatStudents, assignInvigilators, sessionKey } from '../services/examAllocationService.js';
@@ -446,6 +447,82 @@ eq(noPool.get('d1').get('r1'), null, 'empty pool leaves rooms uninvigilated, not
 eq(sessionKey(null), '00:00:00', 'null session normalizes to 00:00:00');
 eq(sessionKey('09:30'), '09:30:00', 'HH:MM session normalizes to HH:MM:SS');
 eq(sessionKey('09:30:00'), '09:30:00', 'HH:MM:SS passes through');
+
+// ── per_section mode tests ──────────────────────────────────────────────
+const sectionSubjects = new Map([
+  ['s1', { class_id: 'c1', subject_ids: new Set(['math', 'sci', 'eng']) }],
+  ['s2', { class_id: 'c1', subject_ids: new Set(['math', 'eng']) }],
+]);
+const perSection = assignSubjects({
+  sectionSubjects,
+  subjectOrder: ['math', 'sci', 'eng'],
+  dates: ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23'],
+  mode: 'per_section',
+});
+eq(perSection.required, 3, 'per_section needs max(subjects per section) days');
+eq(perSection.assignments.length, 5, '3 papers for s1 + 2 papers for s2 = 5 papers total');
+
+const s1Math = perSection.assignments.find((a) => a.class_section_id === 's1' && a.subject_id === 'math');
+const s1Sci = perSection.assignments.find((a) => a.class_section_id === 's1' && a.subject_id === 'sci');
+const s1Eng = perSection.assignments.find((a) => a.class_section_id === 's1' && a.subject_id === 'eng');
+eq(s1Math.exam_date, '2026-07-20', 's1 math is day 1');
+eq(s1Sci.exam_date, '2026-07-21', 's1 sci is day 2');
+eq(s1Eng.exam_date, '2026-07-22', 's1 eng is day 3');
+eq(s1Math.class_id, 'c1', 's1 carries parent class_id');
+
+const s2Math = perSection.assignments.find((a) => a.class_section_id === 's2' && a.subject_id === 'math');
+const s2Eng = perSection.assignments.find((a) => a.class_section_id === 's2' && a.subject_id === 'eng');
+eq(s2Math.exam_date, '2026-07-20', 's2 math is day 1');
+eq(s2Eng.exam_date, '2026-07-21', 's2 eng is day 2 with no gap');
+ok(!perSection.assignments.some((a) => a.class_section_id === 's2' && a.subject_id === 'sci'), 's2 does not get unmapped sci paper');
+
+// per_section with 2 sessions per day
+const perSectionSessions = assignSubjects({
+  sectionSubjects,
+  subjectOrder: ['math', 'sci', 'eng'],
+  dates: ['2026-07-20', '2026-07-21', '2026-07-22'],
+  mode: 'per_section',
+  sessionsPerDay: 2,
+});
+eq(perSectionSessions.required, 2, '3 subjects at 2 sessions per day take 2 days for busiest section');
+eq(
+  perSectionSessions.assignments.find((a) => a.class_section_id === 's2' && a.subject_id === 'eng').session_index,
+  1,
+  'per_section: s2 second subject is in session 2 of day 1'
+);
+
+// normalizeParams with per_section
+const sectionNorm = normalizeParams({
+  ...base,
+  mode: 'per_section',
+  class_section_ids: ['cs1', 'cs2', 'cs1 '],
+});
+eq(sectionNorm.mode, 'per_section', 'mode per_section preserved');
+eq(sectionNorm.class_section_ids, ['cs1', 'cs2'], 'class_section_ids trimmed and deduplicated');
+
+assert.throws(
+  () => normalizeParams({ ...base, mode: 'per_section', class_section_ids: [] }),
+  ExamTimetableError,
+  'per_section requires at least one class_section_id'
+); assertions++;
+
+assert.throws(
+  () => normalizeParams({ ...base, mode: 'per_section', class_section_ids: 'not-an-array' }),
+  ExamTimetableError,
+  'class_section_ids must be an array'
+); assertions++;
+
+const effectiveMixedPapers = selectEffectiveSectionPapers([
+  { id: 'legacy-math', class_section_id: null, subject_id: 'math' },
+  { id: 'legacy-science', class_section_id: null, subject_id: 'science' },
+  { id: 'section-math', class_section_id: 'section-a', subject_id: 'math' },
+  { id: 'other-section-english', class_section_id: 'section-b', subject_id: 'english' },
+], 'section-a');
+eq(
+  effectiveMixedPapers.map((paper) => paper.id),
+  ['legacy-science', 'section-math'],
+  'section paper overrides only the matching legacy subject and never leaks another section'
+);
 
 console.log(`examTimetable.test.js: ${assertions} assertions passed`);
 process.exit(0);

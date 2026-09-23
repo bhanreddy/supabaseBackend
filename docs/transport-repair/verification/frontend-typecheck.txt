@@ -1,0 +1,28 @@
+app/accounts/addStudent.tsx(359,11): error TS2322: Type 'string | null | undefined' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/accounts/fees/index.tsx(1575,40): error TS2352: Conversion of type '(e: { metaKey?: boolean; ctrlKey?: boolean; key: string; preventDefault: () => void; }) => void' to type 'EventListener' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Types of parameters 'e' and 'evt' are incompatible.
+    Property 'key' is missing in type 'Event' but required in type '{ metaKey?: boolean | undefined; ctrlKey?: boolean | undefined; key: string; preventDefault: () => void; }'.
+app/accounts/fees/index.tsx(1576,56): error TS2352: Conversion of type '(e: { metaKey?: boolean; ctrlKey?: boolean; key: string; preventDefault: () => void; }) => void' to type 'EventListener' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Types of parameters 'e' and 'evt' are incompatible.
+    Property 'key' is missing in type 'Event' but required in type '{ metaKey?: boolean | undefined; ctrlKey?: boolean | undefined; key: string; preventDefault: () => void; }'.
+app/admin/academic-planner/risks.tsx(42,72): error TS2339: Property 'options' does not exist on type '{}'.
+app/admin/addStudent.tsx(460,11): error TS2322: Type 'string | null | undefined' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+app/admin/dashboard.tsx(1594,9): error TS2322: Type '() => Promise<SchoolStoryAuthor[] | null>' is not assignable to type '() => void | Promise<void>'.
+  Type 'Promise<SchoolStoryAuthor[] | null>' is not assignable to type 'void | Promise<void>'.
+    Type 'Promise<SchoolStoryAuthor[] | null>' is not assignable to type 'Promise<void>'.
+      Type 'SchoolStoryAuthor[] | null' is not assignable to type 'void'.
+        Type 'null' is not assignable to type 'void'.
+app/admin/events/[id]/index.tsx(253,50): error TS2339: Property 'configuration' does not exist on type 'EventItem'.
+app/admin/events/create.tsx(111,9): error TS2561: Object literal may only specify known properties, but 'start_time' does not exist in type 'Partial<EventItem>'. Did you mean to write 'start_date'?
+app/staff/diary.tsx(192,63): error TS2352: Conversion of type '({ readonly id: "sys-homework"; readonly name: "Homework"; readonly category: "homework"; readonly content: "Complete {homework}."; readonly variables: readonly [{ readonly key: "homework"; readonly label: "Homework"; }]; } | ... 20 more ... | { ...; })[]' to type 'DiaryTemplate[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ readonly id: "sys-homework"; readonly name: "Homework"; readonly category: "homework"; readonly content: "Complete {homework}."; readonly variables: readonly [{ readonly key: "homework"; readonly label: "Homework"; }]; } | ... 20 more ... | { ...; }' is not comparable to type 'DiaryTemplate'.
+    Type '{ readonly id: "sys-signature"; readonly name: "Parent Signature Required"; readonly category: "reminder"; readonly content: "Complete classwork corrections and get parent signature."; readonly variables: readonly []; }' is not comparable to type 'DiaryTemplate'.
+      Types of property 'variables' are incompatible.
+        The type 'readonly []' is 'readonly' and cannot be assigned to the mutable type '{ key: string; label: string; type?: string | undefined; default?: string | undefined; }[]'.
+app/staff/fine-request.tsx(67,6): error TS2322: Type '{ children: Element[]; }' is not assignable to type 'IntrinsicAttributes & KeyboardAwareScreenProps'.
+  Type '{ children: Element[]; }' is missing the following properties from type 'FixedVariantProps': variant, stickyContent
+src/features/popups/admin/PopupEditorScreen.tsx(214,112): error TS2322: Type '(role: TargetRoleGroup) => void' is not assignable to type '(v: string) => void'.
+  Types of parameters 'role' and 'v' are incompatible.
+    Type 'string' is not assignable to type 'TargetRoleGroup'.

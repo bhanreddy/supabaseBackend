@@ -1,8 +1,8 @@
 import sql from '../db.js';
 import logger from '../utils/logger.js';
 import { getSchoolAutomationRule, RULE_KEYS } from './automationRuleService.js';
-import { emitSchoolEvent as publishAutomationEvent, AUTOMATION_EVENTS } from './automationEventService.js';
-import { sendNotificationToUsers } from './notificationService.js';
+import { enqueueTransportUsers } from './transportOutboxService.js';
+import { withTransportTransaction } from './transportAccessService.js';
 
 export const INCIDENT_TYPES = {
   OVERSPEED: 'overspeed',
@@ -42,6 +42,7 @@ export function isSustainedOverspeed(fixes = [], speedLimit = 50, sustainedSecon
 
   for (const fix of sorted) {
     const speed = Number(fix.speed || 0);
+    if (consecutive.length && new Date(fix.recorded_at)-new Date(consecutive.at(-1).recorded_at)>30000) consecutive=[];
     if (speed > speedLimit) {
       consecutive.push(fix);
       if (consecutive.length > longestConsecutive.length) {
@@ -88,11 +89,11 @@ export async function resolveTransportManagerUserIds(schoolId, db = sql) {
     SELECT DISTINCT u.id AS user_id
     FROM users u
     JOIN user_roles ur ON ur.user_id = u.id AND ur.school_id = ${schoolId}
-    JOIN role_permissions rp ON rp.role_id = ur.role_id
+    JOIN role_permissions rp ON rp.role_id = ur.role_id AND rp.school_id=ur.school_id
     JOIN permissions p ON p.id = rp.permission_id
     WHERE u.school_id = ${schoolId}
       AND u.account_status = 'active'
-      AND u.deleted_at IS NULL
+      AND u.deleted_at IS NULL AND ur.deleted_at IS NULL
       AND p.code IN ('transport.manage', 'school.manage')
   `;
   return rows.map(r => r.user_id);
@@ -103,7 +104,10 @@ export async function resolveTransportManagerUserIds(schoolId, db = sql) {
  * Non-blocking: called inside setImmediate from GPS batch ingest.
  */
 export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
-  if (!schoolId || !busId || !newestFix || newestFix.is_mocked) {
+  return withTransportTransaction(db, tx => evaluateOverspeedInTransaction(schoolId,busId,newestFix,tx));
+}
+async function evaluateOverspeedInTransaction(schoolId, busId, newestFix, db) {
+  if (!schoolId || !busId || !newestFix || newestFix.is_mocked || !newestFix.trip_id || newestFix.accuracy == null || newestFix.accuracy > 50) {
     return { checked: false };
   }
 
@@ -114,7 +118,7 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
   }
 
   try {
-    const rule = await getSchoolAutomationRule(schoolId, RULE_KEYS.TRANSPORT_OVERSPEED_ALERT);
+    const rule = await getSchoolAutomationRule(schoolId, RULE_KEYS.TRANSPORT_OVERSPEED_ALERT, db);
     if (!rule.is_enabled) {
       return { checked: false, reason: 'RULE_DISABLED' };
     }
@@ -129,8 +133,8 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
         r.name AS route_name,
         r.speed_limit_override AS route_speed_limit
       FROM buses b
-      LEFT JOIN bus_routes br ON br.bus_id = b.id AND br.school_id = ${schoolId}
-      LEFT JOIN transport_routes r ON r.id = br.route_id AND r.school_id = ${schoolId}
+      JOIN trips t ON t.id=${newestFix.trip_id} AND t.bus_id=b.id AND t.school_id=b.school_id
+      JOIN transport_routes r ON r.id=t.route_id AND r.school_id=t.school_id
       WHERE b.id = ${busId} AND b.school_id = ${schoolId}
       LIMIT 1
     `;
@@ -156,7 +160,9 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
       FROM bus_trip_history
       WHERE bus_id = ${busId}
         AND school_id = ${schoolId}
-        AND recorded_at >= now() - INTERVAL '2 minutes'
+        AND trip_id=${newestFix.trip_id}
+        AND recorded_at >= ${newestFix.recorded_at}::timestamptz - INTERVAL '2 minutes'
+        AND recorded_at<=${newestFix.recorded_at}::timestamptz AND accuracy BETWEEN 0 AND 50
         AND is_mocked = false
       ORDER BY recorded_at ASC
     `;
@@ -209,12 +215,12 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
     const startedAt = newestFix.recorded_at ? new Date(newestFix.recorded_at) : new Date();
     const [incident] = await db`
       INSERT INTO transport_safety_incidents (
-        school_id, vehicle_id, route_id, incident_type,
+        school_id, vehicle_id, route_id, trip_id, incident_type,
         start_latitude, start_longitude, max_value, threshold_value, avg_value,
         started_at, duration_seconds, status,
         metadata
       ) VALUES (
-        ${schoolId}, ${busId}, ${busInfo.route_id || null},
+        ${schoolId}, ${busId}, ${busInfo.route_id || null}, ${newestFix.trip_id},
         ${INCIDENT_TYPES.OVERSPEED},
         ${newestFix.latitude}, ${newestFix.longitude},
         ${assessment.peakSpeed}, ${speedLimit}, ${assessment.avgSpeed},
@@ -239,44 +245,9 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
       return { isOverspeed: true, incidentId: winner?.id || null, cooldownSuppressed: true };
     }
 
-    // Publish event
-    try {
-      await publishAutomationEvent(AUTOMATION_EVENTS.TRANSPORT_OVERSPEED, {
-        schoolId,
-        incidentId: incident.id,
-        busId,
-        busNo: busInfo.registration_no,
-        routeName: busInfo.route_name,
-        speed: currentSpeed,
-        speedLimit,
-        location: { lat: newestFix.latitude, lng: newestFix.longitude },
-      });
-    } catch (evtErr) {
-      logger.error({ err: evtErr.message, incidentId: incident.id }, 'Failed to publish overspeed event');
-    }
-
-    // Notify transport managers (resilient, non-blocking)
-    try {
-      const managers = await resolveTransportManagerUserIds(schoolId, db);
-      if (managers.length > 0) {
-        await sendNotificationToUsers(
-          managers,
-          'TRANSPORT_OVERSPEED_ALERT',
-          {
-            busNo: busInfo.registration_no,
-            speed: String(Math.round(currentSpeed)),
-            limit: String(speedLimit),
-            location: `${newestFix.latitude.toFixed(4)}, ${newestFix.longitude.toFixed(4)}`,
-          },
-          {
-            schoolId,
-            deepLink: '/admin/transport',
-          }
-        );
-      }
-    } catch (notifyErr) {
-      logger.error({ err: notifyErr.message, incidentId: incident.id }, 'Failed to send overspeed notification');
-    }
+    const managers = await resolveTransportManagerUserIds(schoolId,db);
+    await enqueueTransportUsers({schoolId,tripId:newestFix.trip_id,key:`overspeed:${incident.id}`,type:'TRANSPORT_OVERSPEED_ALERT',userIds:managers,
+      vars:{busNo:busInfo.registration_no||'Bus',speed:String(Math.round(currentSpeed)),limit:String(speedLimit),location:`${newestFix.latitude.toFixed(4)}, ${newestFix.longitude.toFixed(4)}`}},db);
 
     return {
       isOverspeed: true,
@@ -286,14 +257,17 @@ export async function evaluateOverspeed(schoolId, busId, newestFix, db = sql) {
     };
   } catch (error) {
     logger.error({ err: error.message, schoolId, busId }, 'evaluateOverspeed execution failed');
-    return { checked: false, error: error.message };
+    throw error;
   }
 }
 
 /**
  * Driver emergency SOS trigger.
  */
-export async function triggerDriverSOS({
+export async function triggerDriverSOS(input) {
+  return withTransportTransaction(input.db || sql, db => triggerDriverSOSInTransaction({...input,db}));
+}
+async function triggerDriverSOSInTransaction({
   schoolId,
   busId,
   driverId,
@@ -310,36 +284,6 @@ export async function triggerDriverSOS({
   if (lng != null && (!Number.isFinite(Number(lng)) || Number(lng) < -180 || Number(lng) > 180)) {
     const error = new Error('Invalid longitude'); error.status = 400; throw error;
   }
-  // Rapid double-tap debounce: check if active SOS logged within 60s for this vehicle
-  const [recentSos] = await db`
-    SELECT id, created_at
-    FROM transport_safety_incidents
-    WHERE school_id = ${schoolId}
-      AND vehicle_id = ${busId}
-      AND incident_type = ${INCIDENT_TYPES.SOS}
-      AND status IN ('active', 'acknowledged')
-      AND created_at >= NOW() - INTERVAL '60 seconds'
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
-
-  if (recentSos) {
-    logger.warn({ schoolId, busId, incidentId: recentSos.id }, 'SOS debounced: active SOS already triggered within 60 seconds');
-    const [school] = await db`
-      SELECT name, contact_phone, emergency_phone FROM schools WHERE id = ${schoolId}
-    `;
-    return {
-      success: true,
-      incidentId: recentSos.id,
-      debounced: true,
-      emergencyContacts: [
-        { role: 'School Office', phone: school?.contact_phone || '112' },
-        { role: 'Emergency Helpline', phone: school?.emergency_phone || '108' },
-        { role: 'Police', phone: '100' },
-      ],
-    };
-  }
-
   const [bus] = await db`
     SELECT
       b.registration_no,
@@ -347,11 +291,11 @@ export async function triggerDriverSOS({
       r.name AS route_name,
       p.display_name AS driver_name
     FROM buses b
-    LEFT JOIN bus_routes br ON br.bus_id = b.id AND br.school_id = ${schoolId}
-    LEFT JOIN transport_routes r ON r.id = br.route_id AND r.school_id = ${schoolId}
+    LEFT JOIN transport_routes r ON r.bus_id=b.id AND r.school_id=${schoolId} AND r.deleted_at IS NULL AND r.is_active=true
     LEFT JOIN staff st ON st.id = ${driverId} AND st.school_id = ${schoolId}
     LEFT JOIN persons p ON p.id = st.person_id
-    WHERE b.id = ${busId} AND b.school_id = ${schoolId}
+    WHERE b.id = ${busId} AND b.school_id = ${schoolId} AND b.deleted_at IS NULL AND b.is_active=true
+      ${driverId ? db`AND b.driver_id=${driverId}` : db``}
     LIMIT 1
   `;
   if (!bus) {
@@ -403,48 +347,13 @@ export async function triggerDriverSOS({
     return { success: true, incidentId: winner?.id || null, debounced: true, emergencyContacts: [] };
   }
 
-  // Publish event (resilient)
-  try {
-    await publishAutomationEvent(AUTOMATION_EVENTS.DRIVER_EMERGENCY_SOS, {
-      schoolId,
-      incidentId: incident.id,
-      busId,
-      driverId,
-      driverName,
-      busNo,
-      routeName,
-      reason,
-      location: { lat, lng },
-    });
-  } catch (evtErr) {
-    logger.error({ err: evtErr.message, incidentId: incident.id }, 'Failed to publish SOS event');
-  }
-
-  // Emergency push to managers & admins (resilient: database incident persists even if FCM fails)
-  try {
-    const managers = await resolveTransportManagerUserIds(schoolId, db);
-    if (managers.length > 0) {
-      await sendNotificationToUsers(
-        managers,
-        'TRANSPORT_SOS_ALERT',
-        {
-          driverName,
-          busNo,
-          routeName,
-        },
-        {
-          schoolId,
-          deepLink: '/admin/transport',
-        }
-      );
-    }
-  } catch (notifyErr) {
-    logger.error({ err: notifyErr.message, incidentId: incident.id }, 'Failed to deliver SOS push notifications');
-  }
+  const managers = await resolveTransportManagerUserIds(schoolId,db);
+  await enqueueTransportUsers({schoolId,tripId,key:`sos:${incident.id}`,type:'TRANSPORT_SOS_ALERT',userIds:managers,
+    vars:{driverName,busNo,routeName}},db);
 
   // Emergency contacts
   const [school] = await db`
-    SELECT name, contact_phone, emergency_phone FROM schools WHERE id = ${schoolId}
+    SELECT name, NULL::text AS contact_phone, NULL::text AS emergency_phone FROM schools WHERE id = ${schoolId}
   `;
 
   return {
@@ -452,7 +361,7 @@ export async function triggerDriverSOS({
     incidentId: incident.id,
     debounced: false,
     emergencyContacts: [
-      { role: 'School Office', phone: school?.contact_phone || '112' },
+      ...(school?.contact_phone ? [{ role: 'School Office', phone: school.contact_phone }] : []),
       { role: 'Emergency Helpline', phone: school?.emergency_phone || '108' },
       { role: 'Police', phone: '100' },
     ],

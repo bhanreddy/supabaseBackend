@@ -384,8 +384,8 @@ export const NotificationEventConfig = Object.freeze({
         sound: 'voice_alert.wav',
         titleTemplate: '🚌 Bus Started',
         titleTemplate_te: '🚌 బస్ ప్రారంభమైంది',
-        bodyTemplate: '🚌 Your child\'s school bus has started its journey. Bus will arrive at {{stopName}} shortly.',
-        bodyTemplate_te: '🚌 మీ పిల్లల పాఠశాల బస్ ప్రయాణం ప్రారంభమైంది. బస్ {{stopName}} వద్ద త్వరలో చేరుకుంటుంది.',
+        bodyTemplate: '🚌 Your child\'s school bus has started its journey. Track its progress to {{stopName}} in the app.',
+        bodyTemplate_te: '🚌 మీ పిల్లల పాఠశాల బస్ ప్రయాణం ప్రారంభమైంది. {{stopName}} వద్దకు వచ్చే వివరాలను యాప్‌లో చూడండి.',
         deepLink: '/Screen/busTracker',
         requiredParams: ['stopName']
     },
@@ -395,10 +395,10 @@ export const NotificationEventConfig = Object.freeze({
         // The same full filename is used by APNs on iOS.
         channelId: 'bus_confirmation',
         sound: 'busconfirmation.wav',
-        titleTemplate: '🚌 Bus One Stop Away',
-        titleTemplate_te: '🚌 బస్ ఒక స్టాప్ దూరంలో ఉంది',
-        bodyTemplate: '🚌 School bus is one stop away from {{stopName}}. Please be ready.',
-        bodyTemplate_te: '🚌 పాఠశాల బస్ {{stopName}}కు ముందు స్టాప్ వద్ద ఉంది. దయచేసి సిద్ధంగా ఉండండి.',
+        titleTemplate: '🚌 Bus Approaching',
+        titleTemplate_te: '🚌 బస్ సమీపిస్తోంది',
+        bodyTemplate: '🚌 School bus is approaching {{stopName}}. Please check live tracking and be ready.',
+        bodyTemplate_te: '🚌 పాఠశాల బస్ {{stopName}} వైపు వస్తోంది. దయచేసి సిద్ధంగా ఉండండి.',
         deepLink: '/Screen/busTracker',
         requiredParams: ['stopName']
     },

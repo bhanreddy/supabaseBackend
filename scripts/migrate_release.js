@@ -37,6 +37,8 @@ const omrEngineHardeningMigrationName = '20260913_v437_omr_engine_hardening.sql'
 const contentEngineMigrationName = '20260914_v438_content_engine.sql';
 const contentEngineHardeningMigrationName = '20260914_v439_content_engine_hardening.sql';
 const databaseBackupMigrationName = '20260914_v445_database_backup_subsystem.sql';
+const transportReliabilityMigrationName = '20260921_transport_reliability.sql';
+const examPerSectionTimetableMigrationName = '20260923_exam_per_section_timetable.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -221,6 +223,8 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, celebrationSettingsMigrationName, 4240912);
   await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
   await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
+  await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
+  await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -232,6 +236,17 @@ export async function verifyReleaseDatabase(db) {
   const [column] = await db`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='automation_execution_logs' AND column_name='student_id'`;
   if (!column) throw new Error('Fee recovery forward migration is missing');
   for (const name of ['idx_auto_exec_student_created','idx_auto_exec_completed_date','idx_student_fees_recovery_due']) {
+    const [index] = await db`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=${name}`;
+    if (!index?.indisvalid) throw new Error(`Missing or invalid release index ${name}`);
+  }
+  const [examSectionColumn] = await db`SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='exam_subjects' AND column_name='class_section_id'`;
+  if (!examSectionColumn) throw new Error('Exam per-section timetable migration is missing');
+  const [examSectionMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${examPerSectionTimetableMigrationName}`;
+  if (!examSectionMigration) throw new Error('Exam per-section timetable migration is not recorded');
+  for (const name of ['idx_exam_subjects_active_class','idx_exam_subjects_active_section']) {
     const [index] = await db`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=${name}`;
     if (!index?.indisvalid) throw new Error(`Missing or invalid release index ${name}`);
@@ -435,6 +450,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, contentEngineHardeningMigrationName, 4390914);
       await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
       await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
+      await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
+      await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

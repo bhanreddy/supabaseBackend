@@ -47,6 +47,8 @@ export function summarizeResultReadiness(rows = [], teacherRows = [], unassigned
     return {
       exam_subject_id: row.exam_subject_id,
       class_id: row.class_id,
+      class_section_id: row.class_section_id || null,
+      section_name: row.section_name || null,
       subject_id: row.subject_id,
       class_name: row.class_name,
       subject_name: row.subject_name,
@@ -80,8 +82,10 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
     SELECT
       es.id AS exam_subject_id,
       es.class_id,
+      es.class_section_id,
       es.subject_id,
       c.name AS class_name,
+      MAX(sec.name) FILTER (WHERE es.class_section_id IS NOT NULL) AS section_name,
       sub.name AS subject_name,
       COUNT(DISTINCT st.id)::int AS expected_entries,
       COUNT(DISTINCT m.student_enrollment_id)::int AS entered_entries
@@ -94,9 +98,25 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
     JOIN subjects sub ON sub.id = es.subject_id AND sub.school_id = ${schoolId}
     LEFT JOIN class_sections cs
       ON cs.class_id = es.class_id
+     AND (
+       cs.id = es.class_section_id
+       OR (
+         es.class_section_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM exam_subjects section_paper
+           WHERE section_paper.exam_id = es.exam_id
+             AND section_paper.class_section_id = cs.id
+             AND section_paper.subject_id = es.subject_id
+             AND section_paper.school_id = ${schoolId}
+             AND section_paper.deleted_at IS NULL
+         )
+       )
+     )
      AND cs.academic_year_id = e.academic_year_id
      AND cs.school_id = ${schoolId}
      AND cs.deleted_at IS NULL
+    LEFT JOIN sections sec ON sec.id = cs.section_id
     LEFT JOIN student_enrollments se
       ON se.class_section_id = cs.id
      AND se.academic_year_id = e.academic_year_id
@@ -116,8 +136,8 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
     WHERE es.exam_id = ${examId}
       AND es.school_id = ${schoolId}
       AND es.deleted_at IS NULL
-    GROUP BY es.id, es.class_id, es.subject_id, c.name, sub.name
-    ORDER BY c.name, sub.name
+    GROUP BY es.id, es.class_id, es.class_section_id, es.subject_id, c.name, sub.name
+    ORDER BY c.name, section_name NULLS FIRST, sub.name
   `;
 
   // Attribute incomplete marks to the teachers assigned to each section. Some
@@ -136,6 +156,21 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
        AND e.deleted_at IS NULL
       JOIN class_sections cs
         ON cs.class_id = es.class_id
+       AND (
+         cs.id = es.class_section_id
+         OR (
+           es.class_section_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM exam_subjects section_paper
+             WHERE section_paper.exam_id = es.exam_id
+               AND section_paper.class_section_id = cs.id
+               AND section_paper.subject_id = es.subject_id
+               AND section_paper.school_id = ${schoolId}
+               AND section_paper.deleted_at IS NULL
+           )
+         )
+       )
        AND cs.academic_year_id = e.academic_year_id
        AND cs.school_id = ${schoolId}
        AND cs.deleted_at IS NULL
@@ -162,6 +197,21 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
        AND e.deleted_at IS NULL
       JOIN class_sections cs
         ON cs.class_id = es.class_id
+       AND (
+         cs.id = es.class_section_id
+         OR (
+           es.class_section_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM exam_subjects section_paper
+             WHERE section_paper.exam_id = es.exam_id
+               AND section_paper.class_section_id = cs.id
+               AND section_paper.subject_id = es.subject_id
+               AND section_paper.school_id = ${schoolId}
+               AND section_paper.deleted_at IS NULL
+           )
+         )
+       )
        AND cs.academic_year_id = e.academic_year_id
        AND cs.school_id = ${schoolId}
        AND cs.deleted_at IS NULL
@@ -231,6 +281,21 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
      AND exam.deleted_at IS NULL
     JOIN class_sections class_section
       ON class_section.class_id = es.class_id
+     AND (
+       class_section.id = es.class_section_id
+       OR (
+         es.class_section_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM exam_subjects section_paper
+           WHERE section_paper.exam_id = es.exam_id
+             AND section_paper.class_section_id = class_section.id
+             AND section_paper.subject_id = es.subject_id
+             AND section_paper.school_id = ${schoolId}
+             AND section_paper.deleted_at IS NULL
+         )
+       )
+     )
      AND class_section.academic_year_id = exam.academic_year_id
      AND class_section.school_id = ${schoolId}
      AND class_section.deleted_at IS NULL
@@ -264,6 +329,7 @@ export async function getExamResultReadiness({ schoolId, examId, db = sql }) {
 
   return summarizeResultReadiness(rows, teacherRows, unassignedSectionRows);
 }
+
 
 export async function setExamResultsPublished({
   schoolId,

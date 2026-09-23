@@ -1,4 +1,5 @@
 import PgBoss from 'pg-boss';
+import { drainTransportOutbox } from './transportOutboxService.js';
 import sql from '../db.js';
 import config from '../config/env.js';
 import logger from '../utils/logger.js';
@@ -46,6 +47,10 @@ export async function startTransportJobs() {
   await boss.start();
 
   if (config.transportJobs.enabled) {
+    await boss.work('transport-outbox-drain', async () => {
+      for (let batch=0; batch<20; batch++) { if (await drainTransportOutbox() < 30) break; }
+    });
+    await boss.schedule('transport-outbox-drain', '* * * * *', {}, { singletonKey: 'transport-outbox', retryLimit: 3, retryDelay: 5 });
     await boss.work(TRANSPORT_MAINTENANCE_JOB, async () => {
       // This is the trusted system-level dispatcher. Each maintenance operation
       // below receives one school id and scopes every read/write to that tenant.

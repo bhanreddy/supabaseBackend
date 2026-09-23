@@ -1,3 +1,4 @@
+import { wakeTransportOutbox } from '../services/transportOutboxService.js';
 import express from 'express';
 import sql from '../db.js';
 import { requirePermission, requireAuth } from '../middleware/auth.js';
@@ -55,7 +56,7 @@ const handleDriverSos = asyncHandler(async (req, res) => {
     const [driverStaff] = await sql`
       SELECT st.id
       FROM staff st
-      JOIN users u ON u.person_id = st.person_id
+      JOIN users u ON u.person_id = st.person_id AND u.school_id=st.school_id
       WHERE u.id = ${req.user.internal_id} AND u.school_id = ${schoolId}
       LIMIT 1
     `;
@@ -66,10 +67,10 @@ const handleDriverSos = asyncHandler(async (req, res) => {
       const [assignedBus] = await sql`
         SELECT b.id
         FROM buses b
-        LEFT JOIN driver_route_assignments dra ON dra.bus_id = b.id OR dra.route_id = b.route_id
+
         WHERE b.id = ${bus_id}
           AND b.school_id = ${schoolId}
-          AND (b.driver_id = ${driverStaffId} OR dra.driver_id = ${driverStaffId})
+          AND b.driver_id = ${driverStaffId} AND b.deleted_at IS NULL AND b.is_active=true
         LIMIT 1
       `;
       if (!assignedBus) {
@@ -83,14 +84,15 @@ const handleDriverSos = asyncHandler(async (req, res) => {
     busId: bus_id,
     driverId: driverStaffId,
     tripId: trip_id || null,
-    lat: lat ? Number(lat) : null,
-    lng: lng ? Number(lng) : null,
+    lat: lat == null ? null : Number(lat),
+    lng: lng == null ? null : Number(lng),
     reason: reason || 'EMERGENCY',
     notes: notes || null,
     db: sql,
   });
 
-  return sendSuccess(res, schoolId, result, 201);
+  wakeTransportOutbox();
+  return sendSuccess(res, schoolId, { ...result, delivery_status: 'queued' }, 201);
 });
 
 router.post('/sos', requireAuth, handleDriverSos);

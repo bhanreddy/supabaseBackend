@@ -2728,6 +2728,14 @@ router.get('/:id/results', requireAuth, async (req, res) => {
       FROM exams e
       LEFT JOIN exam_subjects es ON es.exam_id = e.id
         AND es.class_id = ${enrollment.class_id}
+        AND (es.class_section_id = ${enrollment.class_section_id} OR (es.class_section_id IS NULL AND NOT EXISTS (
+          SELECT 1 FROM exam_subjects es2
+          WHERE es2.exam_id = e.id
+            AND es2.class_section_id = ${enrollment.class_section_id}
+            AND es2.subject_id = es.subject_id
+            AND es2.school_id = ${req.schoolId}
+            AND es2.deleted_at IS NULL
+        )))
         AND es.school_id = ${req.schoolId}
         AND es.deleted_at IS NULL
       LEFT JOIN subjects sub ON es.subject_id = sub.id

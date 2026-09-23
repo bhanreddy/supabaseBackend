@@ -4,6 +4,7 @@
  * rollback-transaction tests. HTTP permission enforcement stays in the route.
  */
 import sql from '../db.js';
+import { withTransportTransaction } from './transportAccessService.js';
 
 export const CALIBRATION_LEGS = Object.freeze(['morning', 'evening']);
 
@@ -99,6 +100,7 @@ export async function resetRouteCalibration(schoolId, routeId, leg, db = sql) {
   `;
   if (!route) return null;
 
+  await db`UPDATE transport_routes SET revision=revision+1 WHERE id=${routeId} AND school_id=${schoolId}`;
   const deletedGeo = await db`
     DELETE FROM route_stop_geo
     WHERE school_id = ${schoolId} AND route_id = ${routeId} AND trip_direction = ${leg}
@@ -123,7 +125,7 @@ export async function resetRouteCalibration(schoolId, routeId, leg, db = sql) {
   };
 }
 
-export async function updateStopGeoOverride(
+async function updateStopGeoOverrideInTransaction(
   schoolId,
   stopId,
   leg,
@@ -152,4 +154,12 @@ export async function updateStopGeoOverride(
               g.radius_m, g.sample_count, g.last_accuracy_m, g.locked, g.updated_at
   `;
   return row || null;
+}
+
+export async function updateStopGeoOverride(schoolId,stopId,leg,changes,db=sql) {
+  return withTransportTransaction(db,async tx=>{
+    const result=await updateStopGeoOverrideInTransaction(schoolId,stopId,leg,changes,tx);
+    if(result) await tx`UPDATE transport_routes SET revision=revision+1 WHERE id=${result.route_id} AND school_id=${schoolId}`;
+    return result;
+  });
 }

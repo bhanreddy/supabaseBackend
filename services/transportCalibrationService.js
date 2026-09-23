@@ -83,11 +83,12 @@ export const ewmaUpdate = (prev, x, alpha = CALIBRATION.EWMA_ALPHA) => {
 };
 
 /** True when a fix is usable for geo calibration. */
-export const isUsableFix = ({ latitude, longitude, accuracy, isMocked }) =>
-  latitude != null &&
-  longitude != null &&
-  !isMocked &&
-  (accuracy == null || Number(accuracy) <= CALIBRATION.MAX_ACCURACY_M);
+export const isUsableFix = ({ latitude, longitude, accuracy, isMocked, recorded_at }, now = Date.now()) =>
+  typeof latitude === 'number' && Number.isFinite(latitude) && Math.abs(latitude) <= 90 &&
+  typeof longitude === 'number' && Number.isFinite(longitude) && Math.abs(longitude) <= 180 &&
+  !isMocked && typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy >= 0 &&
+  accuracy <= CALIBRATION.MAX_ACCURACY_M && Number.isFinite(Date.parse(recorded_at)) &&
+  now - Date.parse(recorded_at) >= -5000 && now - Date.parse(recorded_at) <= 30000;
 
 /**
  * Fold one manual arrival into the learning tables. Fire-and-forget from the
@@ -107,6 +108,13 @@ export const isUsableFix = ({ latitude, longitude, accuracy, isMocked }) =>
 export async function recordArrivalCalibration(p, db = sql) {
   try {
     const leg = normalizeLeg(p.tripDirection);
+    const [eligible] = await db`SELECT t.id FROM trips t JOIN transport_routes r ON r.id=t.route_id AND r.school_id=t.school_id
+      WHERE t.id=${p.tripId} AND t.school_id=${p.schoolId} AND t.route_revision=r.revision`;
+    if (!eligible) return;
+    const [claimed] = await db`UPDATE trip_stop_status SET calibration_captured_at=now()
+      WHERE trip_id=${p.tripId} AND school_id=${p.schoolId} AND stop_id=${p.stopId}
+      AND calibration_captured_at IS NULL RETURNING id`;
+    if (!claimed) return;
 
     // 1. Geo centroid — manual marks only (see invariants above).
     if (p.source === 'manual' && isUsableFix(p)) {
@@ -159,9 +167,9 @@ export async function recordArrivalCalibration(p, db = sql) {
                ${seconds}, 0, 1, ${seconds})
             ON CONFLICT (school_id, route_id, trip_direction, from_stop_id, to_stop_id) DO UPDATE SET
               ewma_seconds = route_segment_time.ewma_seconds
-                             + ${a} * (${seconds} - route_segment_time.ewma_seconds),
-              ewvar_seconds = (1 - ${a}) * (route_segment_time.ewvar_seconds
-                              + ${a} * power(${seconds} - route_segment_time.ewma_seconds, 2)),
+                             + ${a}::numeric * (${seconds} - route_segment_time.ewma_seconds),
+              ewvar_seconds = (1 - ${a}::numeric) * (route_segment_time.ewvar_seconds
+                              + ${a}::numeric * power(${seconds} - route_segment_time.ewma_seconds, 2)),
               sample_count = route_segment_time.sample_count + 1,
               last_seconds = ${seconds},
               updated_at = now()
@@ -174,6 +182,7 @@ export async function recordArrivalCalibration(p, db = sql) {
     }
   } catch (err) {
     logger.error({ err, event: 'transport_calibration_capture_failed', schoolId: p?.schoolId, tripId: p?.tripId, stopId: p?.stopId }, 'Transport calibration capture failed');
+    throw err;
   }
 }
 
@@ -187,11 +196,15 @@ export async function recordArrivalCalibration(p, db = sql) {
 export async function finalizeTripCalibration(schoolId, tripId, db = sql) {
   try {
     const [trip] = await db`
-      SELECT id, route_id, trip_direction FROM trips
-      WHERE id = ${tripId} AND school_id = ${schoolId}
+      SELECT t.id,t.route_id,t.trip_direction FROM trips t JOIN transport_routes r ON r.id=t.route_id AND r.school_id=t.school_id
+      WHERE t.id=${tripId} AND t.school_id=${schoolId} AND t.status='completed'
+        AND t.route_revision=r.revision AND t.calibration_finalized_at IS NULL FOR UPDATE OF t
     `;
     if (!trip) return;
     const leg = normalizeLeg(trip.trip_direction);
+    const [claim] = await db`UPDATE trips SET calibration_finalized_at=now()
+      WHERE id=${tripId} AND school_id=${schoolId} AND calibration_finalized_at IS NULL RETURNING id`;
+    if (!claim) return null;
 
     const [[stopAgg], [tripAgg], [geoAgg], [segAgg]] = await Promise.all([
       db`
@@ -210,14 +223,17 @@ export async function finalizeTripCalibration(schoolId, tripId, db = sql) {
         WHERE g.route_id = ${trip.route_id} AND g.school_id = ${schoolId} AND g.trip_direction = ${leg}
       `,
       db`
-        SELECT COUNT(*)::int AS n FROM route_segment_time
-        WHERE route_id = ${trip.route_id} AND school_id = ${schoolId} AND trip_direction = ${leg}
+        SELECT count(*)::int AS n FROM trip_stop_status a JOIN trip_stop_status b
+          ON b.trip_id=a.trip_id AND b.school_id=a.school_id AND b.stop_order=a.stop_order+1
+        JOIN route_segment_time seg ON seg.from_stop_id=a.stop_id AND seg.to_stop_id=b.stop_id
+          AND seg.school_id=a.school_id AND seg.route_id=${trip.route_id} AND seg.trip_direction=${leg}
+        WHERE a.trip_id=${tripId} AND a.school_id=${schoolId}
       `,
     ]);
 
     const stopsTotal = stopAgg.total;
     const segmentsTotal = Math.max(stopsTotal - 1, 0);
-    const isClean = tripAgg.total > 0 && tripAgg.completed === tripAgg.total;
+    const isClean = tripAgg.total > 0 && tripAgg.total === stopsTotal && tripAgg.completed === tripAgg.total;
     const cleanIncrement = isClean ? 1 : 0;
 
     const [calibration] = await db`
@@ -250,7 +266,7 @@ export async function finalizeTripCalibration(schoolId, tripId, db = sql) {
     return calibration || null;
   } catch (err) {
     logger.error({ err, event: 'transport_calibration_finalize_failed', schoolId, tripId }, 'Transport calibration finalization failed');
-    return null;
+    throw err;
   }
 }
 

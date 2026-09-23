@@ -1,40 +1,25 @@
+import { transportTripHealth } from '../services/transportHealthService.js';
+import transportTrackingRoutes from './transportTrackingRoutes.js';
+import { authorizeBusRead,resolveTransportStudent,transportError } from '../services/transportAccessService.js';
+import { tripStops,effectiveRouteStops,transportLeg } from '../services/transportTripService.js';
 import express from 'express';
 import sql from '../db.js';
 import { requirePermission, requireAuth } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { translateFields } from '../services/geminiTranslator.js';
-import {
-  notifyTransportParentsAtStop,
-  sendNotificationToUsers,
-  sendTransportNotification,
-  getTransportStudentIdsAtStop,
-} from '../services/notificationService.js';
 import { resolveStudentId } from '../utils/studentPortal.js';
 import {
-  recordArrivalCalibration,
-  finalizeTripCalibration,
   getLegCalibrationStatus,
 } from '../services/transportCalibrationService.js';
-import { evaluateGeofence } from '../services/transportGeofenceService.js';
 import { normalizeLeg } from '../services/transportCalibrationService.js';
 import { computeLearnedEta, segKey } from '../services/transportEtaService.js';
-import {
-  evaluateRunningLate,
-  notifyBoardingStopDeparted,
-  notifyParentsAtNextStop,
-} from '../services/transportProactiveNotificationService.js';
-import {
-  ingestLocationBatch,
-  runNewestFixEffects,
-} from '../services/transportLocationIngestService.js';
 import {
   getRouteCalibrationReview,
   parseCalibrationLeg,
   resetRouteCalibration,
   updateStopGeoOverride,
 } from '../services/transportCalibrationAdminService.js';
-import logger from '../utils/logger.js';
 import { validateRequest, transportSchemas } from '../middleware/validateRequest.js';
 
 const router = express.Router();
@@ -53,6 +38,8 @@ router.use((req, _res, next) => {
   next();
 });
 
+router.use(transportTrackingRoutes);
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -60,18 +47,6 @@ router.use((req, _res, next) => {
 /**
  * Haversine distance in km between two lat/lon points
  */
-const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
-  const toRad = (deg) => deg * Math.PI / 180;
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 +
-  Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-};
-
-/** Notify a stop's parents when the bus is within this straight-line distance. */
-const APPROACH_RADIUS_KM = 0.8;
 /** A GPS fix older than this is presented as stale to tracking clients. */
 const LOCATION_FRESH_SECONDS = 120;
 
@@ -91,7 +66,7 @@ const getStaffId = async (user) => {
   const uid = user?.internal_id ?? user?.id;
   const [staff] = await sql`
     SELECT s.id FROM staff s
-    JOIN users u ON s.person_id = u.person_id
+    JOIN users u ON s.person_id = u.person_id AND s.school_id = u.school_id
     WHERE u.id = ${uid}
   `;
   return staff?.id || null;
@@ -130,7 +105,7 @@ const resolveTripDirection = (routeDirection, requestedDirection) => {
 /** Default leg for `both` routes when driver has not chosen yet (time-of-day hint). */
 const inferDefaultTripDirection = (routeDirection) => {
   if (routeDirection !== 'both') return resolveTripDirection(routeDirection);
-  const hour = new Date().getHours();
+  const hour = Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',hour:'2-digit',hourCycle:'h23'}).format(new Date()));
   return hour >= 12 ? 'evening' : 'morning';
 };
 
@@ -154,89 +129,6 @@ const getRouteStopExecutionSequence = async (schoolId, routeId, tripDirection) =
   }));
 };
 
-const seedTripStopStatuses = async (schoolId, tripId, routeId, tripDirection) => {
-  const sequence = await getRouteStopExecutionSequence(schoolId, routeId, tripDirection);
-  if (sequence.length === 0) return sequence;
-
-  await sql`
-    INSERT INTO trip_stop_status (school_id, trip_id, stop_id, stop_order, status)
-    SELECT ${schoolId}, ${tripId}, s.id, s.exec_order, 'pending'
-    FROM unnest(
-      ${sql.array(sequence.map((s) => s.id))}::uuid[],
-      ${sql.array(sequence.map((s) => s.exec_order))}::int[]
-    ) AS s(id, exec_order)
-    ON CONFLICT (school_id, trip_id, stop_id) DO NOTHING
-  `;
-
-  return sequence;
-};
-
-/**
- * GPS-proximity "bus approaching" push. Runs off the location-ingest path
- * (fire-and-forget): when the bus is within APPROACH_RADIUS_KM of the next
- * pending stop, notify that stop's parents. approach_notified_at is claimed
- * atomically so the driver-checkpoint notify path can't double-send.
- */
-const notifyApproachingStop = async (schoolId, busId, latitude, longitude, db = sql) => {
-  try {
-    const [trip] = await db`
-      SELECT t.id, t.route_id FROM trips t
-      JOIN route_leg_calibration cal
-        ON cal.school_id = ${schoolId}
-       AND cal.route_id = t.route_id
-       AND cal.trip_direction = CASE
-         WHEN t.trip_direction IN ('afternoon', 'evening') THEN 'evening'
-         ELSE 'morning'
-       END
-       AND cal.is_calibrated = true
-      WHERE t.bus_id = ${busId}
-        AND t.school_id = ${schoolId}
-        AND t.status IN ('active', 'in_progress')
-      ORDER BY t.created_at DESC
-      LIMIT 1
-    `;
-    if (!trip) return;
-
-    const [nextStop] = await db`
-      SELECT tss.id, tss.stop_id, ts.name, ts.latitude, ts.longitude
-      FROM trip_stop_status tss
-      JOIN transport_stops ts ON ts.id = tss.stop_id AND ts.school_id = ${schoolId}
-      WHERE tss.trip_id = ${trip.id}
-        AND tss.school_id = ${schoolId}
-        AND tss.status = 'pending'
-      ORDER BY tss.stop_order ASC
-      LIMIT 1
-    `;
-    if (!nextStop || nextStop.latitude == null || nextStop.longitude == null) return;
-
-    const distKm = calculateDistanceKm(
-      Number(latitude), Number(longitude),
-      Number(nextStop.latitude), Number(nextStop.longitude),
-    );
-    if (distKm > APPROACH_RADIUS_KM) return;
-
-    const [claimed] = await db`
-      UPDATE trip_stop_status SET approach_notified_at = NOW()
-      WHERE id = ${nextStop.id}
-        AND school_id = ${schoolId}
-        AND approach_notified_at IS NULL
-      RETURNING id
-    `;
-    if (!claimed) return;
-
-    const studentIds = await getTransportStudentIdsAtStop(schoolId, trip.route_id, nextStop.stop_id, db);
-    await sendTransportNotification(
-      studentIds,
-      'TRANSPORT_BUS_APPROACHING',
-      { stopName: nextStop.name },
-      schoolId,
-      db,
-    );
-  } catch (err) {
-    logger.error({ err, event: 'transport_approach_notification_failed', schoolId, busId }, 'Transport approach notification failed');
-  }
-};
-
 /** All buses assigned to a driver (same driver may operate multiple buses). */
 const getDriverBuses = async (schoolId, staffId) => sql`
   SELECT id, bus_no, registration_no, capacity
@@ -247,23 +139,6 @@ const getDriverBuses = async (schoolId, staffId) => sql`
     AND school_id = ${schoolId}
   ORDER BY bus_no
 `;
-
-/** GPS writes are driver-only and must target a bus assigned to that driver. */
-const getOwnedDriverBus = async (schoolId, user, busId) => {
-  if (!user?.roles?.includes('driver')) return null;
-  const staffId = await getStaffId(user);
-  if (!staffId) return null;
-  const [bus] = await sql`
-    SELECT id, driver_id
-    FROM buses
-    WHERE id = ${busId}
-      AND school_id = ${schoolId}
-      AND driver_id = ${staffId}
-      AND is_active = true
-      AND deleted_at IS NULL
-  `;
-  return bus || null;
-};
 
 const driverOwnsRoute = async (schoolId, user, routeId) => {
   if (!user?.roles?.includes('driver')) return false;
@@ -283,9 +158,6 @@ const driverOwnsRoute = async (schoolId, user, routeId) => {
   `;
   return Boolean(route);
 };
-
-const validCoordinate = (value, low, high) =>
-  Number.isFinite(Number(value)) && Number(value) >= low && Number(value) <= high;
 
 // ============================================================
 // ROUTES CRUD (Admin)
@@ -1009,27 +881,13 @@ router.get('/driver/route/:routeId/stops', requireAuth, asyncHandler(async (req,
     tripDirectionParam || inferDefaultTripDirection(route.direction),
   );
 
-  const stops = await sql`
-    SELECT
-      ts.id, ts.name, ts.name_te, ts.latitude, ts.longitude, ts.stop_order,
-      ts.pickup_time, ts.drop_time,
-      COUNT(st.id) as student_count
-    FROM transport_stops ts
-    LEFT JOIN student_transport st ON st.stop_id = ts.id AND st.is_active = true
-    WHERE ts.route_id = ${routeId}
-      AND ts.school_id = ${req.schoolId}
-      AND ts.deleted_at IS NULL
-    GROUP BY ts.id
-    ORDER BY ts.stop_order ASC
-  `;
-
-  const ordered = isReverseTripDirection(tripDirection) ? [...stops].reverse() : stops;
-  const payload = ordered.map((stop, index) => ({
-    ...stop,
-    exec_order: index + 1,
-    trip_direction: tripDirection,
-    is_reverse: isReverseTripDirection(tripDirection),
-  }));
+  const stops = await effectiveRouteStops(req.schoolId, routeId, tripDirection);
+  const counts = await sql`SELECT st.stop_id,count(*)::int AS student_count FROM student_transport st
+    JOIN academic_years ay ON ay.id=st.academic_year_id AND ay.school_id=st.school_id
+    WHERE st.school_id=${req.schoolId} AND st.route_id=${routeId} AND st.is_active=true
+    AND (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ay.start_date AND ay.end_date GROUP BY st.stop_id`;
+  const payload = stops.map(stop=>({...stop,student_count:counts.find(c=>c.stop_id===stop.id)?.student_count || 0,
+    trip_direction:tripDirection,is_reverse:isReverseTripDirection(tripDirection)}));
 
   return sendSuccess(res, req.schoolId, payload);
 }));
@@ -1176,137 +1034,13 @@ router.get('/driver/my-students', requireAuth, asyncHandler(async (req, res) => 
  * - No active trip on this bus
  * - Route must belong to bus
  */
-router.post('/trips/start', requireAuth, asyncHandler(async (req, res) => {
-  const { route_id, bus_id: requestedBusId, trip_direction: requestedTripDirection } = req.body;
-  if (!route_id) return res.status(400).json({ error: 'route_id is required' });
 
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
-
-  const driverBuses = await getDriverBuses(req.schoolId, staffId);
-  if (driverBuses.length === 0) return res.status(403).json({ error: 'No bus assigned to you' });
-
-  const bus = requestedBusId
-    ? driverBuses.find((b) => b.id === requestedBusId)
-    : driverBuses[0];
-  if (!bus) return res.status(403).json({ error: 'That bus is not assigned to you' });
-
-  const [route] = await sql`
-    SELECT id, bus_id, direction FROM transport_routes
-    WHERE id = ${route_id}
-      AND is_active = true
-      AND school_id = ${req.schoolId}
-      AND deleted_at IS NULL
-  `;
-  if (!route) return res.status(404).json({ error: 'Route not found' });
-  if (route.bus_id !== bus.id) {
-    return res.status(403).json({ error: 'This route does not belong to the selected bus' });
-  }
-
-  const tripDir = resolveTripDirection(route.direction, requestedTripDirection);
-  if (route.direction === 'both' && !requestedTripDirection) {
-    return res.status(400).json({ error: 'trip_direction is required for both-direction routes (morning or evening)' });
-  }
-
-  const todayStart = kolkataDate();
-
-  const [existingTrip] = await sql`
-    SELECT id FROM trips
-    WHERE bus_id = ${bus.id}
-      AND school_id = ${req.schoolId}
-      AND status IN ('active', 'in_progress')
-  `;
-  if (existingTrip) {
-    return res.status(409).json({ error: 'An active trip already exists for this bus', tripId: existingTrip.id });
-  }
-
-  const sequence = await getRouteStopExecutionSequence(req.schoolId, route_id, tripDir);
-  if (sequence.length === 0) {
-    return res.status(400).json({ error: 'Route has no stops — add stops first' });
-  }
-
-  const [trip] = await sql`
-    INSERT INTO trips (school_id, bus_id, route_id, driver_id, status, started_at, trip_date, trip_direction)
-    VALUES (${req.schoolId}, ${bus.id}, ${route_id}, ${staffId}, 'in_progress', now(), ${todayStart}, ${tripDir})
-    RETURNING id, school_id, bus_id, route_id, driver_id, status, started_at, ended_at, created_at, trip_direction
-  `;
-
-  await sql`
-    INSERT INTO trip_stop_status (school_id, trip_id, stop_id, stop_order, status)
-    SELECT ${req.schoolId}, ${trip.id}, s.id, s.exec_order, 'pending'
-    FROM unnest(
-      ${sql.array(sequence.map((s) => s.id))}::uuid[],
-      ${sql.array(sequence.map((s) => s.exec_order))}::int[]
-    ) AS s(id, exec_order)
-  `;
-
-  const firstStop = sequence[0];
-  const notifySchoolId = req.schoolId;
-  notifyTransportParentsAtStop(
-    notifySchoolId,
-    route_id,
-    firstStop.id,
-    'TRANSPORT_TRIP_STARTED',
-    firstStop.name,
-  ).catch((err) => console.error('[Transport Notify] trip start error:', err));
-
-  return sendSuccess(res, req.schoolId, {
-    message: 'Trip started',
-    trip,
-    totalStops: sequence.length,
-    trip_direction: tripDir,
-    is_reverse: isReverseTripDirection(tripDir),
-  }, 201);
-}));
 
 /**
  * GET /transport/trips/:tripId/status
  * Get full trip status with all stops
  */
-router.get('/trips/:tripId/status', requireAuth, asyncHandler(async (req, res) => {
-  const { tripId } = req.params;
 
-  const [trip] = await sql`
-    SELECT t.*, r.name as route_name, r.direction, b.bus_no
-    FROM trips t
-    JOIN transport_routes r ON t.route_id = r.id AND r.school_id = ${req.schoolId}
-    JOIN buses b ON t.bus_id = b.id AND b.school_id = ${req.schoolId}
-    WHERE t.id = ${tripId} AND t.school_id = ${req.schoolId}
-  `;
-  if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  const isManager = req.user.roles?.includes('admin') || req.user.permissions?.includes('transport.view');
-  if (!isManager && trip.driver_id !== await getStaffId(req.user)) {
-    return res.status(403).json({ error: 'This is not your trip' });
-  }
-
-  const stops = await sql`
-    SELECT
-      tss.id, tss.stop_id, tss.stop_order, tss.status,
-      tss.arrival_time, tss.departure_time,
-      ts.name as stop_name, ts.latitude, ts.longitude,
-      COUNT(st.id) as student_count
-    FROM trip_stop_status tss
-    JOIN transport_stops ts ON tss.stop_id = ts.id
-    LEFT JOIN student_transport st ON st.stop_id = ts.id AND st.is_active = true
-    WHERE tss.trip_id = ${tripId}
-      AND tss.school_id = ${req.schoolId}
-    GROUP BY tss.id, ts.name, ts.latitude, ts.longitude
-    ORDER BY tss.stop_order ASC
-  `;
-
-  // Determine current stop (first non-completed/skipped)
-  const currentStop = stops.find((s) => s.status === 'pending' || s.status === 'arrived');
-  const completedCount = stops.filter((s) => s.status === 'completed' || s.status === 'skipped').length;
-
-  return sendSuccess(res, req.schoolId, {
-    trip,
-    stops,
-    currentStop: currentStop || null,
-    progress: { completed: completedCount, total: stops.length },
-    trip_direction: trip.trip_direction,
-    is_reverse: isReverseTripDirection(trip.trip_direction),
-  });
-}));
 
 /**
  * POST /transport/trips/:tripId/stops/:stopId/arrive
@@ -1314,79 +1048,7 @@ router.get('/trips/:tripId/status', requireAuth, asyncHandler(async (req, res) =
  *
  * HARD VALIDATION: All previous stops must be completed or skipped
  */
-router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(async (req, res) => {
-  const { tripId, stopId } = req.params;
-  // Optional GPS fix from the driver app (Phase A calibration capture).
-  const { latitude, longitude, accuracy, is_mocked } = req.body || {};
-  const arrivalSource = req.body?.source === 'geofence' ? 'geofence' : 'manual';
 
-  // Validate trip is active and belongs to this driver (B2: school_id scoped)
-  const staffId = await getStaffId(req.user);
-  const [trip] = await sql`
-    SELECT id, driver_id, status, route_id, trip_direction
-    FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}
-  `;
-  if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  if (!tripStatusIsLive(trip.status)) return res.status(400).json({ error: 'Trip is not active' });
-  if (trip.driver_id !== staffId) return res.status(403).json({ error: 'This is not your trip' });
-
-  // Get the target stop status
-  const [targetStop] = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
-  `;
-  if (!targetStop) return res.status(404).json({ error: 'Stop not found in this trip' });
-  if (targetStop.status !== 'pending') {
-    return res.status(400).json({ error: `Stop is already ${targetStop.status}` });
-  }
-
-  // ORDER ENFORCEMENT: Check all previous stops are completed/skipped
-  const incomplete = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND school_id = ${req.schoolId}
-      AND stop_order < ${targetStop.stop_order}
-      AND status NOT IN ('completed', 'skipped')
-  `;
-  if (incomplete.length > 0) {
-    return res.status(400).json({
-      error: `Cannot arrive at stop ${targetStop.stop_order} — previous stops are incomplete`,
-      incompleteStops: incomplete.map((s) => ({ stop_order: s.stop_order, status: s.status }))
-    });
-  }
-
-  // Mark as arrived
-  const [updated] = await sql`
-    UPDATE trip_stop_status SET status = 'arrived', arrival_time = now(), arrival_source = ${arrivalSource}
-    WHERE id = ${targetStop.id}
-      AND school_id = ${req.schoolId}
-    RETURNING *
-  `;
-
-  // Persist the learning sample before acknowledging a manual mark. In
-  // particular, the last stop can be marked and the trip ended immediately;
-  // deferring this write lets finalization evaluate that trip before its GPS
-  // sample is present, leaving a four-trip route stuck in manual mode.
-  // recordArrivalCalibration contains its own error handling, so a failed
-  // optional GPS sample never prevents the driver from marking the stop.
-  await recordArrivalCalibration({
-    schoolId: req.schoolId,
-    tripId,
-    routeId: trip.route_id,
-    tripDirection: trip.trip_direction,
-    stopId,
-    stopOrder: targetStop.stop_order,
-    arrivalTime: updated?.arrival_time || new Date(),
-    source: arrivalSource,
-    latitude,
-    longitude,
-    accuracy,
-    isMocked: !!is_mocked,
-  });
-
-  setImmediate(() => notifyParentsAtNextStop(req.schoolId, tripId, stopId));
-
-  return sendSuccess(res, req.schoolId, { message: 'Arrived at stop', stop: updated });
-}));
 
 /**
  * POST /transport/trips/:tripId/stops/:stopId/complete
@@ -1394,40 +1056,7 @@ router.post('/trips/:tripId/stops/:stopId/arrive', requireAuth, asyncHandler(asy
  *
  * HARD VALIDATION: Stop must be in 'arrived' status
  */
-router.post('/trips/:tripId/stops/:stopId/complete', requireAuth, asyncHandler(async (req, res) => {
-  const { tripId, stopId } = req.params;
 
-  const staffId = await getStaffId(req.user);
-  const [trip] = await sql`SELECT id, driver_id, status FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}`;
-  if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  if (!tripStatusIsLive(trip.status)) return res.status(400).json({ error: 'Trip is not active' });
-  if (trip.driver_id !== staffId) return res.status(403).json({ error: 'This is not your trip' });
-
-  const [targetStop] = await sql`
-    SELECT id, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
-  `;
-  if (!targetStop) return res.status(404).json({ error: 'Stop not found in this trip' });
-  if (targetStop.status !== 'arrived') {
-    return res.status(400).json({ error: `Stop must be in 'arrived' status to complete. Current: ${targetStop.status}` });
-  }
-
-  const [updated] = await sql`
-    UPDATE trip_stop_status SET status = 'completed', departure_time = now()
-    WHERE id = ${targetStop.id}
-      AND school_id = ${req.schoolId}
-      AND status = 'arrived'
-    RETURNING *
-  `;
-  if (!updated) return res.status(409).json({ error: 'Stop was already completed' });
-
-  setImmediate(() => Promise.allSettled([
-    notifyBoardingStopDeparted(req.schoolId, tripId, stopId),
-    notifyParentsAtNextStop(req.schoolId, tripId, stopId),
-  ]));
-
-  return sendSuccess(res, req.schoolId, { message: 'Stop completed', stop: updated });
-}));
 
 /**
  * POST /transport/trips/:tripId/stops/:stopId/skip
@@ -1435,83 +1064,13 @@ router.post('/trips/:tripId/stops/:stopId/complete', requireAuth, asyncHandler(a
  *
  * HARD VALIDATION: All previous stops must be completed/skipped
  */
-router.post('/trips/:tripId/stops/:stopId/skip', requireAuth, asyncHandler(async (req, res) => {
-  const { tripId, stopId } = req.params;
 
-  const staffId = await getStaffId(req.user);
-  const [trip] = await sql`SELECT id, driver_id, status FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}`;
-  if (!trip || !tripStatusIsLive(trip.status) || trip.driver_id !== staffId) {
-    return res.status(403).json({ error: 'Invalid or unauthorized trip' });
-  }
-
-  const [targetStop] = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
-  `;
-  if (!targetStop) return res.status(404).json({ error: 'Stop not found' });
-  if (targetStop.status === 'completed') return res.status(400).json({ error: 'Cannot skip a completed stop' });
-
-  // ORDER ENFORCEMENT
-  const incomplete = await sql`
-    SELECT id FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND school_id = ${req.schoolId} AND stop_order < ${targetStop.stop_order}
-      AND status NOT IN ('completed', 'skipped')
-  `;
-  if (incomplete.length > 0) {
-    return res.status(400).json({ error: 'Cannot skip — previous stops are incomplete' });
-  }
-
-  const [updated] = await sql`
-    UPDATE trip_stop_status SET status = 'skipped', departure_time = now()
-    WHERE id = ${targetStop.id}
-      AND school_id = ${req.schoolId}
-    RETURNING *
-  `;
-
-  return sendSuccess(res, req.schoolId, { message: 'Stop skipped', stop: updated });
-}));
 
 /**
  * POST /transport/trips/:tripId/end
  * End a trip — marks remaining pending stops as skipped
  */
-router.post('/trips/:tripId/end', requireAuth, asyncHandler(async (req, res) => {
-  const { tripId } = req.params;
 
-  const staffId = await getStaffId(req.user);
-  const [trip] = await sql`SELECT id, driver_id, status FROM trips WHERE id = ${tripId} AND school_id = ${req.schoolId}`;
-  if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  if (!tripStatusIsLive(trip.status)) return res.status(400).json({ error: 'Trip is not active' });
-  if (trip.driver_id !== staffId) return res.status(403).json({ error: 'This is not your trip' });
-
-  // Reached-but-not-departed stops (e.g. the final stop, where the bus parks
-  // and never crosses the exit radius) were genuinely serviced → complete them.
-  // Stops never reached stay skipped.
-  await sql`
-    UPDATE trip_stop_status SET status = 'completed', departure_time = now()
-    WHERE trip_id = ${tripId}
-      AND school_id = ${req.schoolId} AND status = 'arrived'
-  `;
-  await sql`
-    UPDATE trip_stop_status SET status = 'skipped', departure_time = now()
-    WHERE trip_id = ${tripId}
-      AND school_id = ${req.schoolId} AND status = 'pending'
-  `;
-
-  // End trip
-  const [ended] = await sql`
-    UPDATE trips SET status = 'completed', ended_at = now()
-    WHERE id = ${tripId}
-      AND school_id = ${req.schoolId}
-    RETURNING *
-  `;
-
-  // Refresh before acknowledging completion so the driver's next render sees
-  // this clean trip instead of remaining one trip behind.
-  const calibration = await finalizeTripCalibration(req.schoolId, tripId);
-
-  return sendSuccess(res, req.schoolId, { message: 'Trip ended', trip: ended, calibration });
-}));
 
 /**
  * GET /transport/trips/history
@@ -1522,7 +1081,7 @@ router.get('/trips/history', requireAuth, asyncHandler(async (req, res) => {
   if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
 
   const trips = await sql`
-    SELECT t.id, t.status, t.started_at, t.ended_at,
+    SELECT t.id, t.school_id, t.status, t.started_at, t.ended_at,
       r.name as route_name, r.direction,
       b.bus_no,
       (SELECT COUNT(*) FROM trip_stop_status WHERE trip_id = t.id AND status = 'completed') as completed_stops,
@@ -1530,7 +1089,7 @@ router.get('/trips/history', requireAuth, asyncHandler(async (req, res) => {
     FROM trips t
     JOIN transport_routes r ON t.route_id = r.id AND r.school_id = ${req.schoolId}
     JOIN buses b ON t.bus_id = b.id AND b.school_id = ${req.schoolId}
-    WHERE t.driver_id = ${staffId}
+    WHERE t.driver_id = ${staffId} AND t.school_id = ${req.schoolId}
     ORDER BY t.started_at DESC
     LIMIT 20
   `;
@@ -1546,40 +1105,7 @@ router.get('/trips/history', requireAuth, asyncHandler(async (req, res) => {
  * POST /transport/buses/:id/location
  * Update bus location (Phase 5 Hardened)
  */
-router.post('/buses/:id/location', requireAuth,
-  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.location }),
-  asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { latitude, longitude, speed, heading, is_mocked = false } = req.body;
 
-  if (!validCoordinate(latitude, -90, 90) || !validCoordinate(longitude, -180, 180)
-      || (speed != null && (!Number.isFinite(Number(speed)) || Number(speed) < 0 || Number(speed) > 250))
-      || (heading != null && (!Number.isFinite(Number(heading)) || Number(heading) < 0 || Number(heading) >= 360))
-      || typeof is_mocked !== 'boolean') {
-    return res.status(400).json({ error: 'Invalid location payload' });
-  }
-
-  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
-    return res.status(403).json({ error: 'This bus is not assigned to you' });
-  }
-
-  const result = await ingestLocationBatch({
-    schoolId: req.schoolId,
-    busId: id,
-    fixes: [{ latitude: Number(latitude), longitude: Number(longitude), speed, heading, is_mocked, recorded_at: new Date().toISOString() }],
-  });
-  if (is_mocked) {
-    logger.warn({ event: 'transport_mocked_fix', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Mocked transport location stored only in audit history');
-  }
-  if (result.newestForEvaluation) {
-    const context = { schoolId: req.schoolId, busId: id, fix: result.newestForEvaluation };
-    setImmediate(() => runNewestFixEffects(context, {
-      db: sql, evaluateGeofence, notifyApproachingStop, evaluateRunningLate,
-    }).catch((error) => logger.error({ err: error, event: 'transport_side_effect_failed', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Transport side effect failed')));
-  }
-
-  return sendSuccess(res, req.schoolId, { status: result.realtimeUpdated ? 'accepted' : 'rate_limited_ignored', location: result.location }, 201);
-}));
 
 /** GET /transport/routes/:routeId/calibration — compact two-leg admin review. */
 router.get(
@@ -1660,88 +1186,18 @@ router.patch(
  * client-time order; only the newest eligible fix may advance live state and
  * schedule geofence/notification work.
  */
-router.post('/buses/:id/locations/batch', requireAuth,
-  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.locationBatch }),
-  asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
-    return res.status(403).json({ error: 'This bus is not assigned to you' });
-  }
 
-  let result;
-  try {
-    result = await ingestLocationBatch({
-      schoolId: req.schoolId,
-      busId: id,
-      fixes: Array.isArray(req.body) ? req.body : req.body?.fixes,
-    });
-  } catch (error) {
-    if (error instanceof TypeError || error instanceof RangeError) {
-      return res.status(400).json({ error: error.message });
-    }
-    throw error;
-  }
-
-  if (result.newestForEvaluation) {
-    const context = {
-      schoolId: req.schoolId,
-      busId: id,
-      fix: result.newestForEvaluation,
-    };
-    setImmediate(() => runNewestFixEffects(context, {
-      db: sql,
-      evaluateGeofence,
-      notifyApproachingStop,
-      evaluateRunningLate,
-    }).catch((error) => logger.error({ err: error, event: 'transport_side_effect_failed', requestId: req.id, schoolId: req.schoolId, busId: id }, 'Transport batch side effect failed')));
-  }
-
-  return sendSuccess(res, req.schoolId, {
-    accepted: result.fixes.length,
-    inserted: result.insertedCount,
-    duplicates: result.duplicateCount,
-    rejected_invalid: result.invalidCount,
-    rejected_stale: result.staleCount,
-    realtime_updated: result.realtimeUpdated,
-    location: result.location,
-  }, 201);
-}));
 
 /**
  * POST /transport/buses/:id/heartbeat
  */
-router.post('/buses/:id/heartbeat', requireAuth,
-  validateRequest({ params: transportSchemas.busParams, body: transportSchemas.emptyBody }),
-  asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  if (!await getOwnedDriverBus(req.schoolId, req.user, id)) {
-    return res.status(403).json({ error: 'This bus is not assigned to you' });
-  }
-  const staffId = await getStaffId(req.user);
-  await sql`
-    INSERT INTO driver_heartbeat (school_id, driver_id, last_ping, status)
-    VALUES (${req.schoolId}, ${staffId}, NOW(), 'online')
-    ON CONFLICT (driver_id) DO UPDATE SET last_ping = NOW(), status = 'online'
-  `;
-  return sendSuccess(res, req.schoolId, { status: 'heartbeat_acknowledged' });
-}));
+
 
 /**
  * GET /transport/buses/:id/location
  * Get current bus location
  */
-router.get('/buses/:id/location', requireAuth, asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const [busCheck] = await sql`SELECT id FROM buses WHERE id = ${id} AND school_id = ${req.schoolId}`;
-  if (!busCheck) return res.status(404).json({ error: 'Bus not found' });
-  const [location] = await sql`
-    SELECT latitude, longitude, speed, heading, recorded_at
-    FROM bus_locations WHERE bus_id = ${id}
-    ORDER BY recorded_at DESC LIMIT 1
-  `;
-  if (!location) return res.status(404).json({ error: 'No location data' });
-  return sendSuccess(res, req.schoolId, location);
-}));
+
 
 // ============================================================
 // STUDENT ASSIGNMENTS (Admin)
@@ -1846,6 +1302,7 @@ router.post('/students', requirePermission('transport.manage'), asyncHandler(asy
 router.get('/parent/bus-status/:busId', requireAuth, asyncHandler(async (req, res) => {
   const { busId } = req.params;
 
+  await authorizeBusRead(req, busId);
   // T10 FIX: Add school_id filter to bus lookup
   const [busCheck] = await sql`SELECT id FROM buses WHERE id = ${busId} AND school_id = ${req.schoolId}`;
   if (!busCheck) return res.status(404).json({ error: 'Bus not found' });
@@ -1853,7 +1310,8 @@ router.get('/parent/bus-status/:busId', requireAuth, asyncHandler(async (req, re
   // Live location
   const [location] = await sql`
     SELECT latitude, longitude, speed, heading, recorded_at
-    FROM bus_locations WHERE bus_id = ${busId}
+    FROM bus_locations WHERE bus_id = ${busId} AND school_id = ${req.schoolId}
+      AND trip_id IN (SELECT id FROM trips WHERE school_id=${req.schoolId} AND bus_id=${busId} AND status IN ('active','in_progress'))
     ORDER BY recorded_at DESC LIMIT 1
   `;
 
@@ -1862,7 +1320,7 @@ router.get('/parent/bus-status/:busId', requireAuth, asyncHandler(async (req, re
     SELECT t.id, t.started_at, r.name as route_name
     FROM trips t
     JOIN transport_routes r ON t.route_id = r.id
-    WHERE t.bus_id = ${busId} AND t.status IN ('active', 'in_progress')
+    WHERE t.bus_id = ${busId} AND t.school_id=${req.schoolId} AND t.status IN ('active', 'in_progress')
     LIMIT 1
   `;
 
@@ -1870,14 +1328,7 @@ router.get('/parent/bus-status/:busId', requireAuth, asyncHandler(async (req, re
   let nextStop = null;
 
   if (activeTrip) {
-    stops = await sql`
-      SELECT tss.stop_order, tss.status, tss.arrival_time, tss.departure_time,
-        ts.name as stop_name, ts.latitude, ts.longitude
-      FROM trip_stop_status tss
-      JOIN transport_stops ts ON tss.stop_id = ts.id
-      WHERE tss.trip_id = ${activeTrip.id}
-      ORDER BY tss.stop_order ASC
-    `;
+    stops = await tripStops({ ...activeTrip, school_id: req.schoolId });
     nextStop = stops.find((s) => s.status === 'pending' || s.status === 'arrived') || null;
   }
 
@@ -1999,7 +1450,7 @@ router.post('/routes/:routeId/stops/reorder', requirePermission('transport.manag
     WHERE route_id = ${routeId} AND school_id = ${req.schoolId} AND deleted_at IS NULL
   `;
   const existingIds = new Set(existing.map((s) => s.id));
-  const allValid = orderedStopIds.every((id) => existingIds.has(id));
+  const allValid = orderedStopIds.length === existingIds.size && new Set(orderedStopIds).size === existingIds.size && orderedStopIds.every((id) => existingIds.has(id));
   if (!allValid) return res.status(400).json({ error: 'One or more stop IDs are invalid for this route' });
 
   const orders = orderedStopIds.map((_, i) => i + 1);
@@ -2008,6 +1459,9 @@ router.post('/routes/:routeId/stops/reorder', requirePermission('transport.manag
   // Two-phase update avoids UNIQUE (school_id, route_id, stop_order) violations
   // when swapping adjacent stops in a single UPDATE.
   await sql.begin(async (tx) => {
+    await tx`SELECT id FROM transport_routes WHERE id=${routeId} AND school_id=${req.schoolId} FOR UPDATE`;
+    const current = await tx`SELECT id FROM transport_stops WHERE route_id=${routeId} AND school_id=${req.schoolId} AND deleted_at IS NULL FOR UPDATE`;
+    if(current.length!==orderedStopIds.length || current.some(s=>!orderedStopIds.includes(s.id))) throw transportError(409,'ROUTE_CHANGED','Route stops changed. Refresh and reorder again.');
     await tx`
       UPDATE transport_stops
       SET stop_order = stop_order + ${orderOffset}
@@ -2206,219 +1660,9 @@ router.post('/routes/:routeId/assign-driver', requirePermission('transport.manag
   return sendSuccess(res, req.schoolId, assignment, 201);
 }));
 
-router.get('/driver/my-trip', requireAuth, asyncHandler(async (req, res) => {
-  if (!req.user?.roles?.includes('driver')) {
-    return res.status(403).json({ error: 'Driver role required' });
-  }
 
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(404).json({ error: 'Driver profile not found' });
 
-  const { route_id: routeIdParam, trip_direction: tripDirectionParam } = req.query;
 
-  const routeAssignments = await sql`
-    SELECT dra.route_id, r.name as route_name, r.direction, r.bus_id
-    FROM driver_route_assignments dra
-    JOIN transport_routes r ON dra.route_id = r.id AND r.school_id = ${req.schoolId}
-    WHERE dra.driver_id = ${staffId}
-      AND dra.school_id = ${req.schoolId}
-      AND dra.is_active = true
-      AND dra.deleted_at IS NULL
-    ORDER BY r.name
-  `;
-
-  const driverBuses = await getDriverBuses(req.schoolId, staffId);
-  const busRouteRows = driverBuses.length > 0 ? await sql`
-    SELECT r.id as route_id, r.name as route_name, r.direction, r.bus_id
-    FROM transport_routes r
-    WHERE r.bus_id = ANY(${driverBuses.map((b) => b.id)})
-      AND r.is_active = true
-      AND r.school_id = ${req.schoolId}
-      AND r.deleted_at IS NULL
-    ORDER BY r.name
-  ` : [];
-
-  const assignmentPool = routeAssignments.length > 0 ? routeAssignments : busRouteRows;
-  if (assignmentPool.length === 0) {
-    return res.status(404).json({ success: false, error: 'No route assigned to you' });
-  }
-
-  const routeAssignment = routeIdParam
-    ? assignmentPool.find((r) => r.route_id === routeIdParam)
-    : assignmentPool[0];
-  if (!routeAssignment) {
-    return res.status(404).json({ error: 'Route not found for this driver' });
-  }
-
-  if (!routeAssignment.bus_id) {
-    return res.status(400).json({ error: 'Route has no bus assigned — admin must link a bus to this route' });
-  }
-
-  const today = kolkataDate();
-  const tripDir = resolveTripDirection(
-    routeAssignment.direction,
-    tripDirectionParam || inferDefaultTripDirection(routeAssignment.direction),
-  );
-
-  let [trip] = await sql`
-    SELECT id, route_id, status, started_at, ended_at, trip_date, trip_direction
-    FROM trips
-    WHERE route_id = ${routeAssignment.route_id}
-      AND driver_id = ${staffId}
-      AND school_id = ${req.schoolId}
-      AND trip_direction = ${tripDir}
-      AND (
-        trip_date = ${today}
-        OR (
-          trip_date IS NULL
-          AND COALESCE(started_at, created_at)::date = ${today}::date
-        )
-      )
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
-
-  if (!trip) {
-    try {
-      [trip] = await sql`
-        INSERT INTO trips (
-          school_id, bus_id, route_id, driver_id, status, trip_date, trip_direction, started_at
-        )
-        VALUES (
-          ${req.schoolId},
-          ${routeAssignment.bus_id},
-          ${routeAssignment.route_id},
-          ${staffId},
-          'scheduled',
-          ${today},
-          ${tripDir},
-          NULL
-        )
-        RETURNING id, route_id, status, started_at, ended_at, trip_date, trip_direction
-      `;
-    } catch (e) {
-      [trip] = await sql`
-        SELECT id, route_id, status, started_at, ended_at, trip_date, trip_direction FROM trips
-        WHERE route_id = ${routeAssignment.route_id}
-          AND driver_id = ${staffId}
-          AND school_id = ${req.schoolId}
-          AND trip_direction = ${tripDir}
-          AND (
-            trip_date = ${today}
-            OR (
-              trip_date IS NULL
-              AND COALESCE(started_at, created_at)::date = ${today}::date
-            )
-          )
-        ORDER BY created_at DESC
-        LIMIT 1
-      `;
-      if (!trip) throw e;
-    }
-
-    await seedTripStopStatuses(
-      req.schoolId,
-      trip.id,
-      routeAssignment.route_id,
-      trip.trip_direction || tripDir,
-    );
-  }
-
-  const stops = await sql`
-    SELECT
-      ts.id as stop_id,
-      ts.name as stop_name,
-      ts.stop_order,
-      COALESCE(tss.stop_order, ts.stop_order) as exec_order,
-      ts.latitude,
-      ts.longitude,
-      tss.id as status_id,
-      tss.status,
-      tss.arrival_time as reached_at,
-      COUNT(stx.id)::int as assigned_students
-    FROM transport_stops ts
-    LEFT JOIN trip_stop_status tss ON tss.stop_id = ts.id AND tss.trip_id = ${trip.id} AND tss.school_id = ${req.schoolId}
-    LEFT JOIN student_transport stx ON stx.stop_id = ts.id
-      AND stx.school_id = ${req.schoolId}
-      AND stx.is_active = true
-    WHERE ts.route_id = ${routeAssignment.route_id}
-      AND ts.school_id = ${req.schoolId}
-      AND ts.deleted_at IS NULL
-    GROUP BY ts.id, ts.name, ts.stop_order, ts.latitude, ts.longitude, tss.id, tss.status, tss.arrival_time, tss.stop_order
-    ORDER BY COALESCE(tss.stop_order, ts.stop_order) ASC
-  `;
-
-  const uiStatus = mapTripUiStatus(trip.status);
-
-  return sendSuccess(res, req.schoolId, {
-    trip: {
-      id: trip.id,
-      route_id: trip.route_id,
-      status: uiStatus,
-      raw_status: trip.status,
-      started_at: trip.started_at,
-      completed_at: trip.ended_at,
-      route_name: routeAssignment.route_name,
-      direction: routeAssignment.direction,
-      trip_direction: trip.trip_direction || tripDir,
-      date: today,
-      bus_id: routeAssignment.bus_id,
-    },
-    stops,
-    available_routes: assignmentPool,
-    is_reverse: isReverseTripDirection(trip.trip_direction || tripDir),
-  });
-}));
-
-router.post('/driver/trip/:tripId/start', requireAuth, asyncHandler(async (req, res) => {
-  if (!req.user?.roles?.includes('driver')) {
-    return res.status(403).json({ error: 'Driver role required' });
-  }
-
-  const { tripId } = req.params;
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
-
-  const [trip] = await sql`
-    SELECT t.id, t.status, t.route_id, t.trip_direction
-    FROM trips t
-    WHERE t.id = ${tripId}
-      AND t.school_id = ${req.schoolId}
-      AND t.driver_id = ${staffId}
-      AND t.status = 'scheduled'
-    LIMIT 1
-  `;
-  if (!trip) return res.status(404).json({ error: 'Trip not found or already started' });
-
-  const [updated] = await sql`
-    UPDATE trips
-    SET status = 'in_progress', started_at = NOW(), updated_at = NOW()
-    WHERE id = ${tripId} AND school_id = ${req.schoolId}
-    RETURNING id, status, started_at, trip_direction
-  `;
-
-  const sequence = await getRouteStopExecutionSequence(
-    req.schoolId,
-    trip.route_id,
-    trip.trip_direction || 'morning',
-  );
-  const firstStop = sequence[0];
-  if (firstStop) {
-    notifyTransportParentsAtStop(
-      req.schoolId,
-      trip.route_id,
-      firstStop.id,
-      'TRANSPORT_TRIP_STARTED',
-      firstStop.name,
-    ).catch((err) => console.error('[Transport Notify] trip start error:', err));
-  }
-
-  return sendSuccess(res, req.schoolId, {
-    ...updated,
-    status: mapTripUiStatus(updated.status),
-    raw_status: updated.status,
-  });
-}));
 
 /**
  * POST .../reach — one-tap checkpoint for new driver UI.
@@ -2426,185 +1670,14 @@ router.post('/driver/trip/:tripId/start', requireAuth, asyncHandler(async (req, 
  * This endpoint writes 'completed' for a reached stop (same as legacy two-step arrive+complete).
  * Do not use a separate 'reached' status — it is not in the DB constraint.
  */
-router.post('/driver/trip/:tripId/stop/:stopId/reach', requireAuth, asyncHandler(async (req, res) => {
-  if (!req.user?.roles?.includes('driver')) {
-    return res.status(403).json({ error: 'Driver role required' });
-  }
 
-  const { tripId, stopId } = req.params;
-  // Optional GPS fix from the driver app (Phase A calibration capture).
-  const { latitude, longitude, accuracy, is_mocked } = req.body || {};
-  const arrivalSource = req.body?.source === 'geofence' ? 'geofence' : 'manual';
 
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
 
-  const [trip] = await sql`
-    SELECT t.id, t.route_id, t.trip_direction
-    FROM trips t
-    WHERE t.id = ${tripId}
-      AND t.school_id = ${req.schoolId}
-      AND t.driver_id = ${staffId}
-      AND t.status IN ('active', 'in_progress')
-    LIMIT 1
-  `;
-  if (!trip) return res.status(404).json({ error: 'Active trip not found' });
-
-  const [targetStop] = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId} AND stop_id = ${stopId} AND school_id = ${req.schoolId}
-  `;
-  if (!targetStop) return res.status(404).json({ error: 'Stop not found in this trip' });
-  if (targetStop.status !== 'pending') {
-    return res.status(409).json({ error: 'Stop already reached or skipped' });
-  }
-
-  const incomplete = await sql`
-    SELECT id, stop_order, status FROM trip_stop_status
-    WHERE trip_id = ${tripId}
-      AND school_id = ${req.schoolId}
-      AND stop_order < ${targetStop.stop_order}
-      AND status NOT IN ('completed', 'skipped')
-  `;
-  if (incomplete.length > 0) {
-    return res.status(400).json({
-      error: 'Complete earlier stops first',
-      incompleteStops: incomplete.map((s) => ({ stop_order: s.stop_order, status: s.status })),
-    });
-  }
-
-  const [stopStatus] = await sql`
-    UPDATE trip_stop_status
-    SET status = 'completed', arrival_time = NOW(), departure_time = NOW(), arrival_source = ${arrivalSource}
-    WHERE trip_id = ${tripId}
-      AND stop_id = ${stopId}
-      AND school_id = ${req.schoolId}
-      AND status = 'pending'
-    RETURNING id, stop_id, status, arrival_time
-  `;
-  if (!stopStatus) return res.status(409).json({ error: 'Stop already reached or not found' });
-
-  // See the legacy arrive endpoint above: await this optional, internally
-  // guarded write so completing the trip right after the final stop includes
-  // the final calibration sample in the graduation calculation.
-  await recordArrivalCalibration({
-    schoolId: req.schoolId,
-    tripId,
-    routeId: trip.route_id,
-    tripDirection: trip.trip_direction,
-    stopId,
-    stopOrder: targetStop.stop_order,
-    arrivalTime: stopStatus.arrival_time || new Date(),
-    source: arrivalSource,
-    latitude,
-    longitude,
-    accuracy,
-    isMocked: !!is_mocked,
-  });
-
-  setImmediate(() => Promise.allSettled([
-    notifyBoardingStopDeparted(req.schoolId, tripId, stopId),
-    notifyParentsAtNextStop(req.schoolId, tripId, stopId),
-  ]));
-
-  return sendSuccess(res, req.schoolId, {
-    ...stopStatus,
-    reached_at: stopStatus.arrival_time,
-    status: 'reached',
-  });
-}));
-
-router.post('/driver/trip/:tripId/complete', requireAuth, asyncHandler(async (req, res) => {
-  if (!req.user?.roles?.includes('driver')) {
-    return res.status(403).json({ error: 'Driver role required' });
-  }
-
-  const { tripId } = req.params;
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
-
-  // TODO: Remove legacy 'active' from this IN list once all driver clients use POST /driver/trip/:id/start
-  // and legacy POST /trips/start only emits in_progress (tracked: transport reconciliation v2).
-  const [trip] = await sql`
-    SELECT t.id, t.route_id
-    FROM trips t
-    WHERE t.id = ${tripId}
-      AND t.school_id = ${req.schoolId}
-      AND t.driver_id = ${staffId}
-      AND t.status IN ('active', 'in_progress')
-    LIMIT 1
-  `;
-  if (!trip) return res.status(404).json({ error: 'Active trip not found' });
-
-  const [completed] = await sql`
-    UPDATE trips
-    SET status = 'completed', ended_at = NOW(), updated_at = NOW()
-    WHERE id = ${tripId} AND school_id = ${req.schoolId}
-    RETURNING id, status, ended_at
-  `;
-
-  // Keep the completed trip and calibration progress synchronized.
-  const calibration = await finalizeTripCalibration(req.schoolId, tripId);
-
-  setImmediate(async () => {
-    try {
-      const [routeInfo] = await sql`
-        SELECT name FROM transport_routes WHERE id = ${trip.route_id} AND school_id = ${req.schoolId}
-      `;
-
-      const parents = await sql`
-        SELECT DISTINCT u.id AS user_id
-        FROM student_transport sra
-        JOIN student_parents sp ON sp.student_id = sra.student_id AND sp.school_id = ${req.schoolId} AND sp.deleted_at IS NULL
-        JOIN parents par ON par.id = sp.parent_id AND par.school_id = ${req.schoolId}
-        JOIN users u ON u.person_id = par.person_id AND u.school_id = ${req.schoolId}
-        WHERE sra.route_id = ${trip.route_id}
-          AND sra.school_id = ${req.schoolId}
-          AND sra.is_active = true
-          AND u.account_status = 'active'
-      `;
-
-      const admins = await sql`
-        SELECT DISTINCT u.id AS user_id
-        FROM user_roles ur
-        JOIN roles r ON ur.role_id = r.id AND r.school_id = ${req.schoolId}
-        JOIN users u ON ur.user_id = u.id AND u.school_id = ${req.schoolId}
-        WHERE r.code = 'admin'
-          AND u.account_status = 'active'
-          AND ur.school_id = ${req.schoolId}
-          AND ur.deleted_at IS NULL
-      `;
-
-      const allUserIds = [...new Set([
-        ...parents.map((p) => p.user_id),
-        ...admins.map((a) => a.user_id),
-      ])];
-
-      if (allUserIds.length > 0) {
-        await sendNotificationToUsers(
-          allUserIds,
-          'BUS_TRIP_COMPLETED',
-          { routeName: routeInfo?.name || 'route' },
-        );
-      }
-    } catch (err) {
-      /* non-blocking */
-    }
-  });
-
-  return sendSuccess(res, req.schoolId, {
-    ...completed,
-    calibration,
-    status: mapTripUiStatus(completed.status),
-    raw_status: completed.status,
-    completed_at: completed.ended_at,
-  });
-}));
 
 router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
   const schoolId = req.schoolId;
 
-  const studentId = await resolveStudentId(req);
+  const studentId = await resolveTransportStudent(req);
 
   if (!studentId) return res.status(404).json({ error: 'No student profile found' });
 
@@ -2619,11 +1692,11 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
            r.name AS route_name, r.direction
     FROM student_transport st
     JOIN transport_routes r ON st.route_id = r.id AND r.school_id = ${schoolId}
-    JOIN transport_stops tsp ON st.stop_id = tsp.id AND tsp.school_id = ${schoolId}
+    JOIN transport_stops tsp ON st.stop_id = tsp.id AND tsp.school_id = ${schoolId} AND tsp.route_id=r.id AND tsp.deleted_at IS NULL
     WHERE st.student_id = ${studentId}
       AND st.school_id = ${schoolId}
-      AND st.academic_year_id = ${ay?.id}
-      AND st.is_active = true
+      AND st.academic_year_id = ${ay?.id ?? null}
+      AND st.is_active = true AND r.deleted_at IS NULL AND r.is_active=true
     LIMIT 1
   `;
 
@@ -2633,7 +1706,7 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
 
   const today = kolkataDate();
   const [trip] = await sql`
-    SELECT t.id, t.status, t.started_at, t.ended_at,
+    SELECT t.id, t.school_id, t.status, t.started_at, t.ended_at,
            p.display_name AS driver_name
     FROM trips t
     JOIN staff st ON t.driver_id = st.id AND st.school_id = ${schoolId}
@@ -2641,13 +1714,13 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
     WHERE t.route_id = ${assignment.route_id}
       AND t.school_id = ${schoolId}
       AND (
-        t.trip_date = ${today}
+        t.status IN ('active','in_progress') OR t.trip_date = ${today}
         OR (
           t.trip_date IS NULL
           AND COALESCE(t.started_at, t.created_at)::date = ${today}::date
         )
       )
-    ORDER BY t.created_at DESC
+    ORDER BY (t.status IN ('active','in_progress')) DESC, t.created_at DESC
     LIMIT 1
   `;
 
@@ -2656,30 +1729,18 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
   let stopsUntilBoarding = null;
 
   if (trip) {
-    stops = await sql`
-      SELECT ts.id, ts.name, ts.stop_order, tss.stop_order AS exec_order,
-             ts.latitude, ts.longitude, tss.status, tss.arrival_time AS reached_at
-      FROM trip_stop_status tss
-      JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${schoolId}
-      WHERE tss.trip_id = ${trip.id}
-        AND tss.school_id = ${schoolId}
-        AND ts.route_id = ${assignment.route_id}
-        AND ts.deleted_at IS NULL
-      ORDER BY tss.stop_order ASC
-    `;
+    stops = await tripStops({ ...trip, school_id: req.schoolId });
 
     // An arrived stop is where the bus is now. Once it departs, retain the
     // last completed stop so the timeline still reflects real trip progress.
     const arrivedStop = stops.find((s) => s.status === 'arrived');
     const reachedStops = stops.filter((s) => s.status === 'completed');
-    currentStop = arrivedStop || (reachedStops.length > 0 ? reachedStops[reachedStops.length - 1] : null);
+    currentStop = arrivedStop || null;
 
-    if (currentStop && assignment.boarding_stop_order != null) {
-      const boardingExec = stops.find((s) => s.stop_order === assignment.boarding_stop_order)?.exec_order
-        ?? assignment.boarding_stop_order;
-      const currentExec = currentStop.exec_order ?? currentStop.stop_order;
-      stopsUntilBoarding = Math.max(0, boardingExec - currentExec);
-    }
+    const boardingStop = stops.find(s=>s.id===assignment.stop_id);
+    const nextStop = stops.find(s=>['pending','arrived'].includes(s.status));
+    stopsUntilBoarding = boardingStop && nextStop && boardingStop.status==='pending'
+      ? Math.max(0,boardingStop.exec_order-nextStop.exec_order) : boardingStop?.status==='arrived' ? 0 : null;
   }
 
   const tripUi = trip ? {
@@ -2710,7 +1771,7 @@ router.get('/my-bus', requireAuth, asyncHandler(async (req, res) => {
 router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
   const schoolId = req.schoolId;
 
-  const studentId = await resolveStudentId(req);
+  const studentId = await resolveTransportStudent(req);
   if (!studentId) return res.status(404).json({ error: 'No student profile found' });
 
   const [ay] = await sql`
@@ -2725,8 +1786,8 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
     JOIN transport_routes r ON st.route_id = r.id AND r.school_id = ${schoolId}
     WHERE st.student_id = ${studentId}
       AND st.school_id = ${schoolId}
-      AND st.academic_year_id = ${ay?.id}
-      AND st.is_active = true
+      AND st.academic_year_id = ${ay?.id ?? null}
+      AND st.is_active = true AND r.deleted_at IS NULL AND r.is_active=true
     LIMIT 1
   `;
   if (!assignment) {
@@ -2741,13 +1802,13 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
       AND t.school_id = ${schoolId}
       AND t.status IN ('active', 'in_progress')
       AND (
-        t.trip_date = ${today}
+        t.status IN ('active','in_progress') OR t.trip_date = ${today}
         OR (
           t.trip_date IS NULL
           AND COALESCE(t.started_at, t.created_at)::date = ${today}::date
         )
       )
-    ORDER BY t.created_at DESC
+    ORDER BY (t.status IN ('active','in_progress')) DESC, t.created_at DESC
     LIMIT 1
   `;
   if (!trip || !trip.bus_id) {
@@ -2761,17 +1822,10 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
       FROM bus_locations
       WHERE school_id = ${schoolId}
         AND bus_id = ${trip.bus_id}
-        AND recorded_at >= ${trip.started_at}
+        AND recorded_at >= ${trip.started_at} AND trip_id=${trip.id}
       ORDER BY recorded_at DESC LIMIT 1
     `,
-    sql`
-      SELECT ts.id, ts.name, ts.latitude, ts.longitude, tss.stop_order AS exec_order, tss.status
-      FROM trip_stop_status tss
-      JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${schoolId}
-      WHERE tss.trip_id = ${trip.id}
-        AND tss.school_id = ${schoolId}
-      ORDER BY tss.stop_order ASC
-    `,
+    tripStops({ ...trip, school_id: schoolId }),
     sql`
       SELECT from_stop_id, to_stop_id, ewma_seconds, ewvar_seconds, sample_count
       FROM route_segment_time
@@ -2834,14 +1888,14 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
   const { routeId } = req.params;
 
   const [route] = await sql`
-    SELECT id, name FROM transport_routes
+    SELECT id, name, direction FROM transport_routes
     WHERE id = ${routeId} AND school_id = ${req.schoolId}
   `;
   if (!route) return res.status(404).json({ error: 'Route not found' });
 
   const today = kolkataDate();
   const [trip] = await sql`
-    SELECT t.id, t.bus_id, t.status, t.started_at, t.ended_at, t.trip_direction,
+    SELECT t.id, t.school_id, t.driver_id, t.auto_stops_enabled, t.bus_id, t.status, t.started_at, t.ended_at, t.trip_direction,
            p.display_name AS driver_name
     FROM trips t
     JOIN staff st ON t.driver_id = st.id AND st.school_id = ${req.schoolId}
@@ -2849,46 +1903,22 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
     WHERE t.route_id = ${routeId}
       AND t.school_id = ${req.schoolId}
       AND (
-        t.trip_date = ${today}
+        t.status IN ('active','in_progress') OR t.trip_date = ${today}
         OR (
           t.trip_date IS NULL
           AND COALESCE(t.started_at, t.created_at)::date = ${today}::date
         )
       )
-    ORDER BY t.created_at DESC
+    ORDER BY (t.status IN ('active','in_progress')) DESC, t.created_at DESC
     LIMIT 1
   `;
 
   let stops;
   let location = null;
   if (trip) {
-    stops = await sql`
-      SELECT ts.id, ts.name, ts.stop_order, COALESCE(tss.stop_order, ts.stop_order) AS exec_order,
-             ts.latitude, ts.longitude,
-             tss.status, tss.arrival_time AS reached_at,
-             COUNT(stx.id)::int AS assigned_students
-      FROM transport_stops ts
-      LEFT JOIN trip_stop_status tss ON tss.stop_id = ts.id AND tss.trip_id = ${trip.id} AND tss.school_id = ${req.schoolId}
-      LEFT JOIN student_transport stx ON stx.stop_id = ts.id AND stx.school_id = ${req.schoolId} AND stx.is_active = true
-      WHERE ts.route_id = ${routeId}
-        AND ts.school_id = ${req.schoolId}
-        AND ts.deleted_at IS NULL
-      GROUP BY ts.id, ts.name, ts.stop_order, ts.latitude, ts.longitude, tss.status, tss.arrival_time, tss.stop_order
-      ORDER BY COALESCE(tss.stop_order, ts.stop_order) ASC
-    `;
+    stops = await tripStops({ ...trip, school_id: req.schoolId });
   } else {
-    stops = await sql`
-      SELECT ts.id, ts.name, ts.stop_order, ts.latitude, ts.longitude,
-             NULL::varchar AS status, NULL::timestamptz AS reached_at,
-             COUNT(stx.id)::int AS assigned_students
-      FROM transport_stops ts
-      LEFT JOIN student_transport stx ON stx.stop_id = ts.id AND stx.school_id = ${req.schoolId} AND stx.is_active = true
-      WHERE ts.route_id = ${routeId}
-        AND ts.school_id = ${req.schoolId}
-        AND ts.deleted_at IS NULL
-      GROUP BY ts.id, ts.name, ts.stop_order, ts.latitude, ts.longitude
-      ORDER BY ts.stop_order ASC
-    `;
+    stops = await effectiveRouteStops(req.schoolId, routeId, transportLeg(route.direction, req.query.trip_direction));
   }
 
   // Admin tracking uses the exact same tenant-scoped live fix as parent
@@ -2899,7 +1929,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
       FROM bus_locations
       WHERE school_id = ${req.schoolId}
         AND bus_id = ${trip.bus_id}
-        AND recorded_at >= ${trip.started_at}
+        AND recorded_at >= ${trip.started_at} AND trip_id=${trip.id}
       ORDER BY recorded_at DESC
       LIMIT 1
     `;
@@ -2919,6 +1949,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
 
   return sendSuccess(res, req.schoolId, {
     route: route.name,
+    tracking_health: await transportTripHealth(req.schoolId, trip),
     trip: trip ? { ...trip, ui_status: mapTripUiStatus(trip.status) } : null,
     stops,
     location,
@@ -2946,13 +1977,13 @@ router.get('/live-today', requirePermission('transport.view'), asyncHandler(asyn
       WHERE tr.route_id = r.id
         AND tr.school_id = ${req.schoolId}
         AND (
-          tr.trip_date = ${today}
+          tr.status IN ('active','in_progress') OR tr.trip_date = ${today}
           OR (
             tr.trip_date IS NULL
             AND COALESCE(tr.started_at, tr.created_at)::date = ${today}::date
           )
         )
-      ORDER BY tr.created_at DESC
+      ORDER BY (tr.status IN ('active','in_progress')) DESC, tr.created_at DESC
       LIMIT 1
     ) t ON TRUE
     LEFT JOIN staff st ON t.driver_id = st.id AND st.school_id = ${req.schoolId}
@@ -2977,190 +2008,18 @@ router.get('/driver/bus-attendance/settings', requireAuth, asyncHandler(async (r
 }));
 
 // ── Driver Bus Attendance Stop Students ───────────────────────────────────────
-router.get('/driver/bus-attendance/stop/:stopId/students', requireAuth, asyncHandler(async (req, res) => {
-  const { stopId } = req.params;
-  const { trip_id, date } = req.query;
-  const attendanceDate = date || new Date().toISOString().split('T')[0];
 
-  const students = await sql`
-    SELECT
-      stu.id as student_id,
-      stu.admission_no,
-      p.display_name as student_name,
-      p.photo_url,
-      c.name as class_name,
-      sec.name as section_name,
-      ba.id as attendance_id,
-      ba.status as attendance_status,
-      ba.marked_at
-    FROM student_transport st
-    JOIN students stu ON st.student_id = stu.id AND stu.school_id = ${req.schoolId}
-    JOIN persons p ON stu.person_id = p.id
-    LEFT JOIN student_enrollments se ON se.student_id = stu.id AND se.status = 'active' AND se.deleted_at IS NULL
-    LEFT JOIN class_sections csec ON se.class_section_id = csec.id
-    LEFT JOIN classes c ON csec.class_id = c.id
-    LEFT JOIN sections sec ON csec.section_id = sec.id
-    LEFT JOIN bus_stop_attendance ba ON ba.student_id = stu.id 
-      AND ba.stop_id = ${stopId}
-      AND ba.school_id = ${req.schoolId}
-      AND ba.attendance_date = ${attendanceDate}
-      ${trip_id ? sql`AND ba.trip_id = ${trip_id}` : sql``}
-    WHERE st.stop_id = ${stopId}
-      AND st.school_id = ${req.schoolId}
-      AND st.is_active = true
-    ORDER BY p.display_name ASC
-  `;
-
-  return sendSuccess(res, req.schoolId, students);
-}));
 
 // ── Driver Bus Attendance Mark (Bulk) ─────────────────────────────────────────
-router.post('/driver/bus-attendance/mark', requireAuth, asyncHandler(async (req, res) => {
-  const { trip_id, stop_id, route_id, date, attendance } = req.body;
-  const attendanceDate = date || new Date().toISOString().split('T')[0];
 
-  if (!trip_id || !stop_id || !route_id || !attendance || !Array.isArray(attendance)) {
-    return res.status(400).json({ error: 'trip_id, stop_id, route_id, and attendance array are required' });
-  }
-
-  const staffId = await getStaffId(req.user);
-  if (!staffId) return res.status(403).json({ error: 'Staff profile not found' });
-
-  const [trip] = await sql`
-    SELECT id, status FROM trips
-    WHERE id = ${trip_id} AND school_id = ${req.schoolId} AND driver_id = ${staffId}
-    LIMIT 1
-  `;
-  if (!trip) {
-    return res.status(404).json({ error: 'Trip not found or does not belong to you' });
-  }
-
-  const rows = (attendance || []).filter((r) => r?.student_id && r?.status);
-  
-  if (rows.length === 0) {
-    return res.status(400).json({ error: 'No valid attendance records provided' });
-  }
-
-  const studentIds = rows.map(r => String(r.student_id));
-  const statuses = rows.map(r => String(r.status));
-
-  const upserted = await sql`
-    INSERT INTO bus_stop_attendance (
-      school_id, trip_id, stop_id, route_id, driver_id, student_id, attendance_date, status, marked_at
-    )
-    SELECT
-      ${req.schoolId},
-      ${trip_id}::uuid,
-      ${stop_id}::uuid,
-      ${route_id}::uuid,
-      ${staffId}::uuid,
-      u.student_id::uuid,
-      ${attendanceDate}::date,
-      u.status,
-      NOW()
-    FROM unnest(
-      ${sql.array(studentIds)}::uuid[],
-      ${sql.array(statuses)}::text[]
-    ) AS u(student_id, status)
-    ON CONFLICT (school_id, trip_id, stop_id, student_id, attendance_date)
-    DO UPDATE SET
-      status = EXCLUDED.status,
-      marked_at = NOW(),
-      updated_at = NOW()
-    RETURNING id, student_id, status
-  `;
-
-  // Trigger parent notifications in background — present → bus_present sound,
-  // absent → absent-alert sound. Fire-and-forget; never blocks the response.
-  const statusByStudent = new Map(upserted.map(r => [r.student_id, r.status]));
-  const affectedStudentIds = [...statusByStudent.keys()];
-  if (affectedStudentIds.length > 0) {
-    (async () => {
-      try {
-        const [stop] = await sql`
-          SELECT name FROM transport_stops
-          WHERE id = ${stop_id} AND school_id = ${req.schoolId}
-          LIMIT 1
-        `;
-
-        const parentNotifications = await sql`
-          SELECT
-            u.id as user_id,
-            sp.student_id,
-            p_student.display_name as student_name
-          FROM student_parents sp
-          JOIN parents p_parent ON sp.parent_id = p_parent.id AND p_parent.school_id = ${req.schoolId}
-          JOIN users u ON p_parent.person_id = u.person_id AND u.school_id = ${req.schoolId}
-          JOIN students s ON sp.student_id = s.id AND s.school_id = ${req.schoolId}
-          JOIN persons p_student ON s.person_id = p_student.id
-          WHERE sp.student_id = ANY(${sql.array(affectedStudentIds)}::uuid[])
-            AND sp.school_id = ${req.schoolId}
-            AND u.account_status = 'active'
-        `;
-
-        for (const pn of parentNotifications) {
-          const eventKey = statusByStudent.get(pn.student_id) === 'present'
-            ? 'STUDENT_BUS_PRESENT'
-            : 'STUDENT_BUS_ABSENT';
-          try {
-            await sendNotificationToUsers(
-              [pn.user_id],
-              eventKey,
-              {
-                studentName: pn.student_name,
-                stopName: stop?.name || 'stop'
-              }
-            );
-          } catch (err) {
-            console.warn(`Failed to send ${eventKey} notification:`, err);
-          }
-        }
-      } catch (err) {
-        console.error('Error sending bus attendance parent notifications:', err);
-      }
-    })();
-  }
-
-  return sendSuccess(res, req.schoolId, {
-    message: 'Attendance saved successfully',
-    count: upserted.length,
-    records: upserted
-  }, 201);
-}));
 
 // ── Driver Bus Attendance Summary ─────────────────────────────────────────────
-router.get('/driver/bus-attendance/summary', requireAuth, asyncHandler(async (req, res) => {
-  const { trip_id } = req.query;
-  if (!trip_id) {
-    return res.status(400).json({ error: 'trip_id is required' });
-  }
 
-  const summary = await sql`
-    SELECT
-      ts.id as stop_id,
-      ts.name as stop_name,
-      COUNT(ba.id) FILTER (WHERE ba.status = 'present') as present_count,
-      COUNT(ba.id) FILTER (WHERE ba.status = 'absent') as absent_count,
-      (
-        SELECT COUNT(*)
-        FROM student_transport st
-        WHERE st.stop_id = ts.id AND st.school_id = ${req.schoolId} AND st.is_active = true
-      ) as total_assigned
-    FROM trip_stop_status tss
-    JOIN transport_stops ts ON tss.stop_id = ts.id AND ts.school_id = ${req.schoolId}
-    LEFT JOIN bus_stop_attendance ba ON ba.stop_id = ts.id AND ba.trip_id = ${trip_id} AND ba.school_id = ${req.schoolId}
-    WHERE tss.trip_id = ${trip_id} AND tss.school_id = ${req.schoolId}
-    GROUP BY ts.id, ts.name, tss.stop_order
-    ORDER BY tss.stop_order ASC
-  `;
-
-  return sendSuccess(res, req.schoolId, summary);
-}));
 
 // ── Student/Parent Bus Attendance History ─────────────────────────────────────
 router.get('/my-attendance', requireAuth, asyncHandler(async (req, res) => {
   const schoolId = req.schoolId;
-  const studentId = await resolveStudentId(req);
+  const studentId = await resolveTransportStudent(req);
 
   if (!studentId) {
     return res.status(404).json({ error: 'No student profile found' });

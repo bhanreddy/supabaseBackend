@@ -4438,13 +4438,15 @@ CREATE TABLE IF NOT EXISTS exam_subjects (
     passing_marks DECIMAL(5,2) NOT NULL DEFAULT 35,
     deleted_at TIMESTAMPTZ,
     CONSTRAINT chk_marks_valid CHECK (passing_marks <= max_marks AND max_marks > 0),
-    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE
+    school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    class_section_id UUID REFERENCES class_sections(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_exam_subjects_school_id ON exam_subjects(school_id);
+CREATE INDEX IF NOT EXISTS idx_exam_subjects_class_section_id ON exam_subjects(class_section_id) WHERE deleted_at IS NULL;
 
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_exam_subjects_active ON exam_subjects(exam_id, subject_id, class_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exam_subjects_active_class ON exam_subjects(exam_id, class_id, subject_id) WHERE deleted_at IS NULL AND class_section_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exam_subjects_active_section ON exam_subjects(exam_id, class_section_id, subject_id) WHERE deleted_at IS NULL AND class_section_id IS NOT NULL;
 
 
 CREATE TABLE IF NOT EXISTS grading_scales (

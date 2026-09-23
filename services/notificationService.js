@@ -1,6 +1,6 @@
 // services/notificationService.js
 
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import admin from '../config/firebase.js';
 import sql from '../db.js';
 import { NotificationEventConfig } from './notificationEventConfig.js';
@@ -527,13 +527,14 @@ async function createInboxEntries(userIds, type, params, deepLink, context = {})
               school_id, idempotency_key, event_type, actor_id, target_user_id, payload, status
             ) VALUES (
               ${recipient.school_id},
-              ${randomUUID()},
+              ${context.idempotencyKey ? `${context.idempotencyKey}:${recipient.user_id}` : randomUUID()},
               ${type},
               ${null},
               ${recipient.user_id},
               ${JSON.stringify({ type, deepLink })},
               'PROCESSED'
             )
+            ON CONFLICT (school_id, idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
             RETURNING id
           )
           INSERT INTO notifications (
@@ -543,6 +544,7 @@ async function createInboxEntries(userIds, type, params, deepLink, context = {})
             ${recipient.school_id}, event.id, ${recipient.user_id},
             ${rendered.title}, ${rendered.body}, ${deepLink || null}, 'DELIVERED'
           FROM event
+          ON CONFLICT (school_id,event_id,user_id) DO UPDATE SET user_id=EXCLUDED.user_id
           RETURNING id, user_id
         `;
         return row;
@@ -553,6 +555,7 @@ async function createInboxEntries(userIds, type, params, deepLink, context = {})
       });
     }
   } catch (err) {
+    if (context.requireInbox) throw err;
     logger.warn({ err, event: 'notification_inbox_persist_failed', type }, 'Notification inbox persistence failed; continuing push delivery');
   }
 
@@ -749,8 +752,11 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
     context
   );
 
+  if (context.requireInbox && userIds.some(id => !inboxIdsByUser.has(id))) throw new Error('Required notification inbox entry unavailable');
+
   // Tracked broadcasts must not misreport a database outage as "no app installed".
-  const userDevices = await fetchTokensWithUserId(userIds, { throwOnError: true });
+  const excludedTokenHashes = new Set(context.deliveredTokenHashes || []);
+  const userDevices = (await fetchTokensWithUserId(userIds, { throwOnError: true })).filter(device => !excludedTokenHashes.has(createHash('sha256').update(device.fcm_token).digest('hex')));
   const usersWithTokens = new Set(userDevices.map((d) => d.user_id));
   const noTokenUserIds = userIds.filter((id) => !usersWithTokens.has(id));
 

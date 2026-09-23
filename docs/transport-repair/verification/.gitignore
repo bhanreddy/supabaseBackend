@@ -1,0 +1,6 @@
+# Keep reviewable transport evidence even when repository-wide logs/text are ignored.
+!backend-transport-unit.txt
+!backend-transport-integration.txt
+!frontend-transport.txt
+!native-config.txt
+!frontend-typecheck.txt

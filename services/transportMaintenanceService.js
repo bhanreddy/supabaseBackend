@@ -1,5 +1,6 @@
 /** Nightly Phase E maintenance. Every mutating query is explicitly tenant-scoped. */
 import sql from '../db.js';
+import { withTransportTransaction } from './transportAccessService.js';
 import { CALIBRATION } from './transportCalibrationService.js';
 
 export const RADIUS = Object.freeze({ SCALE: 0.4, MIN_METERS: 60, MAX_METERS: 200 });
@@ -93,6 +94,9 @@ export async function refreshLegCalibrationFlags(schoolId, db = sql) {
 
 /** Close prior-local-day trips so a dead phone cannot leave a route live forever. */
 export async function closeOvernightTrips(schoolId, db = sql) {
+  return withTransportTransaction(db,tx=>closeOvernightTripsInTransaction(schoolId,tx));
+}
+async function closeOvernightTripsInTransaction(schoolId,db) {
   const staleTrips = await db`
     SELECT id
     FROM trips
@@ -113,7 +117,7 @@ export async function closeOvernightTrips(schoolId, db = sql) {
   `;
   await db`
     UPDATE trips
-    SET status = 'completed', ended_at = COALESCE(ended_at, now())
+    SET status = 'completed', ended_at = COALESCE(ended_at, now()), close_reason='overnight_timeout'
     WHERE school_id = ${schoolId}
       AND id = ANY(${db.array(ids)}::uuid[])
       AND status IN ('active', 'in_progress')
@@ -137,5 +141,7 @@ export async function runTransportMaintenanceForSchool(schoolId, retentionDays, 
   const calibrationRows = await refreshLegCalibrationFlags(schoolId, db);
   const radiusRows = await refreshAdaptiveStopRadii(schoolId, db);
   const prunedRows = await pruneBusTripHistory(schoolId, retentionDays, db);
+  await db`DELETE FROM transport_outbox WHERE school_id=${schoolId} AND status IN ('sent','inbox_only','expired') AND created_at<now()-interval '60 days'`;
+  await db`DELETE FROM transport_audit_events WHERE school_id=${schoolId} AND created_at<now()-interval '90 days'`;
   return { schoolId, closedOvernightTrips, calibrationRows, radiusRows, prunedRows };
 }

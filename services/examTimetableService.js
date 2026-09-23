@@ -87,12 +87,22 @@ export function normalizeParams(raw = {}) {
     // Zero-based index of the session used by the first paper. Later dates
     // use every session from the beginning of the day as usual.
     starting_session_index: raw.starting_session_index ?? 0,
-    // 'aligned'  : same subject sits on the same date for every class that
-    //              teaches it (the common convention for Indian schools).
-    // 'per_class': each class fills its own consecutive exam days.
-    mode: raw.mode === 'per_class' ? 'per_class' : 'aligned',
+    // 'aligned'    : same subject sits on the same date for every class that
+    //                teaches it (the common convention for Indian schools).
+    // 'per_class'  : each class fills its own consecutive exam days.
+    // 'per_section': each class section gets its own compact exam sequence.
+    mode: raw.mode === 'per_class' || raw.mode === 'per_section' ? raw.mode : 'aligned',
+    class_section_ids: Array.isArray(raw.class_section_ids)
+      ? [...new Set(raw.class_section_ids.map((s) => String(s ?? '').trim()).filter(Boolean))]
+      : [],
   };
 
+  if (raw.class_section_ids !== undefined && raw.class_section_ids !== null && !Array.isArray(raw.class_section_ids)) {
+    throw new ExamTimetableError('class_section_ids must be an array');
+  }
+  if (p.mode === 'per_section' && p.class_section_ids.length === 0) {
+    throw new ExamTimetableError('Select at least one section for per-section scheduling');
+  }
   if (p.class_ids.length === 0) {
     throw new ExamTimetableError('Select at least one class');
   }
@@ -239,6 +249,21 @@ export function normalizeSyllabus(raw) {
 }
 
 /**
+ * Resolve a mixed legacy/per-section paper set for one section. A
+ * section-specific paper overrides only the legacy paper for the same subject;
+ * unrelated legacy subjects remain visible.
+ */
+export function selectEffectiveSectionPapers(rows = [], classSectionId) {
+  const sectionSpecific = rows.filter((row) => row.class_section_id === classSectionId);
+  const sectionSubjectIds = new Set(sectionSpecific.map((row) => String(row.subject_id)));
+  return rows.filter(
+    (row) =>
+      row.class_section_id === classSectionId ||
+      (row.class_section_id == null && !sectionSubjectIds.has(String(row.subject_id)))
+  );
+}
+
+/**
  * Return the exam schedule that belongs to a class section. Exam papers are
  * class-wide, while a student's enrollment points at a class section, so the
  * section's class + academic year is the authoritative bridge between them.
@@ -253,66 +278,64 @@ export async function getSectionExamSchedule({
   db = sql,
 }) {
   const [section] = await db`
-    SELECT cs.class_id, cs.academic_year_id
+    SELECT cs.id, cs.class_id, cs.academic_year_id, s.name AS section_name
     FROM class_sections cs
+    JOIN sections s ON cs.section_id = s.id
     WHERE cs.id = ${classSectionId}
       AND cs.school_id = ${schoolId}
       AND cs.deleted_at IS NULL
   `;
   if (!section) return null;
 
-  const rows = includeUnpublished
-    ? await db`
-        SELECT
-          e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
-          e.exam_type, e.status, e.timetable_published,
-          es.id, es.exam_date::text AS exam_date,
-          es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
-          es.syllabus,
-          subject.name AS subject_name, subject.name_te AS subject_name_te
-        FROM exams e
-        JOIN exam_subjects es
-          ON es.exam_id = e.id
-         AND es.school_id = ${schoolId}
-         AND es.deleted_at IS NULL
-        JOIN subjects subject
-          ON subject.id = es.subject_id
-         AND subject.school_id = ${schoolId}
-         AND subject.deleted_at IS NULL
-        WHERE e.school_id = ${schoolId}
-          AND e.deleted_at IS NULL
-          AND e.status <> 'cancelled'
-          AND e.academic_year_id = ${section.academic_year_id}
-          AND es.class_id = ${section.class_id}
-        ORDER BY es.exam_date, es.start_time NULLS LAST, subject.name
-      `
-    : await db`
-        SELECT
-          e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
-          e.exam_type, e.status, e.timetable_published,
-          es.id, es.exam_date::text AS exam_date,
-          es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
-          es.syllabus,
-          subject.name AS subject_name, subject.name_te AS subject_name_te
-        FROM exams e
-        JOIN exam_subjects es
-          ON es.exam_id = e.id
-         AND es.school_id = ${schoolId}
-         AND es.deleted_at IS NULL
-        JOIN subjects subject
-          ON subject.id = es.subject_id
-         AND subject.school_id = ${schoolId}
-         AND subject.deleted_at IS NULL
-        WHERE e.school_id = ${schoolId}
-          AND e.deleted_at IS NULL
-          AND e.status <> 'cancelled'
-          AND e.timetable_published = TRUE
-          AND e.academic_year_id = ${section.academic_year_id}
-          AND es.class_id = ${section.class_id}
-        ORDER BY es.exam_date, es.start_time NULLS LAST, subject.name
-      `;
+  const rawRows = await db`
+    SELECT
+      e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te,
+      e.exam_type, e.status, e.timetable_published,
+      es.id, es.class_id, es.class_section_id, es.subject_id,
+      es.exam_date::text AS exam_date,
+      es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
+      es.syllabus,
+      ${section.section_name} AS section_name,
+      subject.name AS subject_name, subject.name_te AS subject_name_te
+    FROM exams e
+    JOIN exam_subjects es
+      ON es.exam_id = e.id
+     AND es.school_id = ${schoolId}
+     AND es.deleted_at IS NULL
+    JOIN subjects subject
+      ON subject.id = es.subject_id
+     AND subject.school_id = ${schoolId}
+     AND subject.deleted_at IS NULL
+    WHERE e.school_id = ${schoolId}
+      AND e.deleted_at IS NULL
+      AND e.status <> 'cancelled'
+      ${includeUnpublished ? sql`` : sql`AND e.timetable_published = TRUE`}
+      AND e.academic_year_id = ${section.academic_year_id}
+      AND es.class_id = ${section.class_id}
+      AND (es.class_section_id = ${classSectionId} OR es.class_section_id IS NULL)
+    ORDER BY es.exam_date, es.start_time NULLS LAST, subject.name
+  `;
 
-  return rows;
+  // Prefer active section-specific papers; if none exist for an exam, fall back to class-level papers.
+  // Never combine section-specific and class-level versions of the same subject.
+  const byExam = new Map();
+  for (const row of rawRows) {
+    if (!byExam.has(row.exam_id)) byExam.set(row.exam_id, []);
+    byExam.get(row.exam_id).push(row);
+  }
+
+  const result = [];
+  for (const examRows of byExam.values()) {
+    result.push(...selectEffectiveSectionPapers(examRows, classSectionId));
+  }
+
+  result.sort((a, b) =>
+    (a.exam_date || '9999').localeCompare(b.exam_date || '9999') ||
+    (a.start_time || '99:99').localeCompare(b.start_time || '99:99') ||
+    a.subject_name.localeCompare(b.subject_name)
+  );
+
+  return result;
 }
 
 /**
@@ -329,25 +352,27 @@ export async function getSectionExamSchedule({
 export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
   return db`
     WITH teaching_assignments AS (
-      SELECT cs.class_id, cs.academic_year_id, csub.subject_id
+      SELECT cs.class_id, cs.academic_year_id, csub.subject_id, cs.id AS class_section_id, s.name AS section_name
       FROM class_subjects csub
       JOIN class_sections cs
         ON cs.id = csub.class_section_id
        AND cs.school_id = ${schoolId}
        AND cs.deleted_at IS NULL
+      JOIN sections s ON cs.section_id = s.id
       WHERE csub.school_id = ${schoolId}
         AND csub.teacher_id = ${staffId}
         AND csub.deleted_at IS NULL
 
       UNION
 
-      SELECT cs.class_id, ts.academic_year_id, ts.subject_id
+      SELECT cs.class_id, ts.academic_year_id, ts.subject_id, cs.id AS class_section_id, s.name AS section_name
       FROM timetable_slots ts
       JOIN class_sections cs
         ON cs.id = ts.class_section_id
        AND cs.school_id = ${schoolId}
        AND cs.academic_year_id = ts.academic_year_id
        AND cs.deleted_at IS NULL
+      JOIN sections s ON cs.section_id = s.id
       WHERE ts.school_id = ${schoolId}
         AND ts.teacher_id = ${staffId}
         AND ts.deleted_at IS NULL
@@ -358,10 +383,11 @@ export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
     )
     SELECT
       e.id AS exam_id, e.name AS exam_name, e.name_te AS exam_name_te, e.exam_type,
-      es.id, es.exam_date::text AS exam_date,
+      es.id, es.class_id, es.class_section_id, es.exam_date::text AS exam_date,
       es.start_time::text AS start_time, es.end_time::text AS end_time, es.max_marks,
       es.syllabus,
       class.name AS class_name,
+      sec.name AS section_name,
       subject.name AS subject_name, subject.name_te AS subject_name_te,
       EXISTS (
         SELECT 1
@@ -369,6 +395,7 @@ export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
         WHERE own_assignment.class_id = es.class_id
           AND own_assignment.academic_year_id = e.academic_year_id
           AND own_assignment.subject_id = es.subject_id
+          AND (es.class_section_id IS NULL OR own_assignment.class_section_id = es.class_section_id)
       ) AS is_my_subject
     FROM exams e
     JOIN teacher_classes taught_class
@@ -382,6 +409,12 @@ export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
       ON class.id = es.class_id
      AND class.school_id = ${schoolId}
      AND class.deleted_at IS NULL
+    LEFT JOIN class_sections cs
+      ON cs.id = es.class_section_id
+     AND cs.school_id = ${schoolId}
+     AND cs.deleted_at IS NULL
+    LEFT JOIN sections sec
+      ON sec.id = cs.section_id
     JOIN subjects subject
       ON subject.id = es.subject_id
      AND subject.school_id = ${schoolId}
@@ -390,9 +423,17 @@ export async function getTeacherExamSchedule({ schoolId, staffId, db = sql }) {
       AND e.deleted_at IS NULL
       AND e.status <> 'cancelled'
       AND e.timetable_published = TRUE
-    ORDER BY es.exam_date, es.start_time NULLS LAST, class.name, subject.name
+      AND (
+        es.class_section_id IS NULL
+        OR EXISTS (
+          SELECT 1 FROM teaching_assignments ta
+          WHERE ta.class_section_id = es.class_section_id
+        )
+      )
+    ORDER BY es.exam_date, es.start_time NULLS LAST, class.name, sec.name NULLS FIRST, subject.name
   `;
 }
+
 
 /**
  * Working exam days inside [startDate, endDate]:
@@ -465,6 +506,7 @@ export function buildExamDates({
  */
 export function assignSubjects({
   classSubjects,
+  sectionSubjects,
   subjectOrder,
   dates,
   mode,
@@ -482,7 +524,32 @@ export function assignSubjects({
     paperCount === 0 ? 0 : Math.ceil((paperCount + firstSession) / S);
   const assignments = [];
   let required = 0;
-  if (mode === 'per_class') {
+
+  if (mode === 'per_section') {
+    const targetMap = sectionSubjects || classSubjects || new Map();
+    for (const [sectionId, val] of targetMap) {
+      const subjects =
+        val instanceof Set
+          ? val
+          : val?.subjects || val?.subject_ids || new Set();
+      const classId = val instanceof Set ? null : (val.class_id || null);
+      const ordered = subjectOrder.filter((s) => subjects.has(s));
+      required = Math.max(required, requiredDatesFor(ordered.length));
+      ordered.forEach((subjectId, j) => {
+        const slotIndex = j + firstSession;
+        const date = dates[Math.floor(slotIndex / S)];
+        if (date) {
+          assignments.push({
+            class_id: classId,
+            class_section_id: sectionId,
+            subject_id: subjectId,
+            exam_date: date,
+            session_index: slotIndex % S,
+          });
+        }
+      });
+    }
+  } else if (mode === 'per_class') {
     for (const [classId, subjects] of classSubjects) {
       const ordered = subjectOrder.filter((s) => subjects.has(s));
       required = Math.max(required, requiredDatesFor(ordered.length));
@@ -492,6 +559,7 @@ export function assignSubjects({
         if (date) {
           assignments.push({
             class_id: classId,
+            class_section_id: null,
             subject_id: subjectId,
             exam_date: date,
             session_index: slotIndex % S,
@@ -510,6 +578,7 @@ export function assignSubjects({
         if (subjects.has(subjectId)) {
           assignments.push({
             class_id: classId,
+            class_section_id: null,
             subject_id: subjectId,
             exam_date: date,
             session_index: slotIndex % S,
@@ -587,55 +656,154 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   }
   const classNames = new Map(classes.map((c) => [String(c.id), c.name]));
 
-  // Subjects each class actually teaches. Timetable slots are a valid source
-  // because the timetable editor intentionally allows ad-hoc assignments that
-  // may not have a matching class_subjects row.
-  const subjectRows = await db`
-    WITH taught_subjects AS (
-      SELECT cs.class_id, csub.subject_id
-      FROM class_subjects csub
-      JOIN class_sections cs ON csub.class_section_id = cs.id
-      WHERE cs.class_id = ANY(${params.class_ids})
-        AND cs.academic_year_id = ${exam.academic_year_id}
+  let sections = [];
+  const sectionMap = new Map();
+  if (params.mode === 'per_section') {
+    sections = await db`
+      SELECT cs.id, cs.class_id, cs.section_id, cs.academic_year_id,
+             c.name AS class_name, s.name AS section_name
+      FROM class_sections cs
+      JOIN classes c ON cs.class_id = c.id
+      JOIN sections s ON cs.section_id = s.id
+      WHERE cs.id = ANY(${params.class_section_ids})
         AND cs.school_id = ${schoolId}
-        AND csub.school_id = ${schoolId}
-        AND csub.deleted_at IS NULL
         AND cs.deleted_at IS NULL
-
-      UNION
-
-      SELECT cs.class_id, ts.subject_id
-      FROM timetable_slots ts
-      JOIN class_sections cs ON ts.class_section_id = cs.id
-      WHERE cs.class_id = ANY(${params.class_ids})
-        AND cs.academic_year_id = ${exam.academic_year_id}
-        AND ts.academic_year_id = ${exam.academic_year_id}
-        AND cs.school_id = ${schoolId}
-        AND ts.school_id = ${schoolId}
-        AND ts.deleted_at IS NULL
-        AND cs.deleted_at IS NULL
-    )
-    SELECT DISTINCT taught.class_id, sub.id AS subject_id, sub.name AS subject_name
-    FROM taught_subjects taught
-    JOIN subjects sub ON taught.subject_id = sub.id
-    WHERE sub.school_id = ${schoolId}
-      AND sub.deleted_at IS NULL
-  `;
-
-  const classSubjects = new Map(params.class_ids.map((id) => [id, new Set()]));
-  const subjectNames = new Map();
-  for (const row of subjectRows) {
-    classSubjects.get(String(row.class_id))?.add(String(row.subject_id));
-    subjectNames.set(String(row.subject_id), row.subject_name);
+    `;
+    if (sections.length !== params.class_section_ids.length) {
+      throw new ExamTimetableError('One or more sections not found for this school');
+    }
+    for (const sec of sections) {
+      if (sec.academic_year_id !== exam.academic_year_id) {
+        throw new ExamTimetableError('All selected sections must belong to the exam academic year');
+      }
+      if (!params.class_ids.includes(String(sec.class_id))) {
+        throw new ExamTimetableError('Selected section does not belong to a selected class');
+      }
+      sectionMap.set(String(sec.id), {
+        id: String(sec.id),
+        class_id: String(sec.class_id),
+        class_name: sec.class_name,
+        section_name: sec.section_name,
+        label: `${sec.class_name} - ${sec.section_name}`,
+      });
+    }
   }
 
-  const emptyClasses = params.class_ids.filter((id) => classSubjects.get(id).size === 0);
-  if (emptyClasses.length > 0) {
-    throw new ExamTimetableError(
-      'Some classes have no subjects mapped. Assign subjects in Academics first.',
-      400,
-      { classes: emptyClasses.map((id) => classNames.get(id)) }
+  // Subjects taught. Timetable slots are a valid source because the timetable
+  // editor intentionally allows ad-hoc assignments that may not have a matching
+  // class_subjects row.
+  let subjectRows;
+  const sectionSubjects = new Map();
+  let classSubjects = new Map();
+  const subjectNames = new Map();
+
+  if (params.mode === 'per_section') {
+    subjectRows = await db`
+      WITH taught_subjects AS (
+        SELECT cs.id AS class_section_id, cs.class_id, csub.subject_id
+        FROM class_subjects csub
+        JOIN class_sections cs ON csub.class_section_id = cs.id
+        WHERE cs.id = ANY(${params.class_section_ids})
+          AND cs.academic_year_id = ${exam.academic_year_id}
+          AND cs.school_id = ${schoolId}
+          AND csub.school_id = ${schoolId}
+          AND csub.deleted_at IS NULL
+          AND cs.deleted_at IS NULL
+
+        UNION
+
+        SELECT cs.id AS class_section_id, cs.class_id, ts.subject_id
+        FROM timetable_slots ts
+        JOIN class_sections cs ON ts.class_section_id = cs.id
+        WHERE cs.id = ANY(${params.class_section_ids})
+          AND cs.academic_year_id = ${exam.academic_year_id}
+          AND ts.academic_year_id = ${exam.academic_year_id}
+          AND cs.school_id = ${schoolId}
+          AND ts.school_id = ${schoolId}
+          AND ts.deleted_at IS NULL
+          AND cs.deleted_at IS NULL
+      )
+      SELECT DISTINCT taught.class_section_id, taught.class_id, sub.id AS subject_id, sub.name AS subject_name
+      FROM taught_subjects taught
+      JOIN subjects sub ON taught.subject_id = sub.id
+      WHERE sub.school_id = ${schoolId}
+        AND sub.deleted_at IS NULL
+    `;
+
+    for (const id of params.class_section_ids) {
+      const secInfo = sectionMap.get(id);
+      sectionSubjects.set(id, {
+        class_id: secInfo.class_id,
+        subjects: new Set(),
+        name: secInfo.label,
+      });
+    }
+    for (const row of subjectRows) {
+      sectionSubjects.get(String(row.class_section_id))?.subjects.add(String(row.subject_id));
+      subjectNames.set(String(row.subject_id), row.subject_name);
+    }
+
+    const emptySections = params.class_section_ids.filter(
+      (id) => sectionSubjects.get(id)?.subjects.size === 0
     );
+    if (emptySections.length > 0) {
+      throw new ExamTimetableError(
+        'Some sections have no subjects mapped. Assign subjects in Academics first.',
+        400,
+        {
+          sections: emptySections.map((id) => sectionMap.get(id)?.label || id),
+          class_names: emptySections.map((id) => sectionMap.get(id)?.class_name || ''),
+          section_names: emptySections.map((id) => sectionMap.get(id)?.section_name || ''),
+        }
+      );
+    }
+  } else {
+    subjectRows = await db`
+      WITH taught_subjects AS (
+        SELECT cs.class_id, csub.subject_id
+        FROM class_subjects csub
+        JOIN class_sections cs ON csub.class_section_id = cs.id
+        WHERE cs.class_id = ANY(${params.class_ids})
+          AND cs.academic_year_id = ${exam.academic_year_id}
+          AND cs.school_id = ${schoolId}
+          AND csub.school_id = ${schoolId}
+          AND csub.deleted_at IS NULL
+          AND cs.deleted_at IS NULL
+
+        UNION
+
+        SELECT cs.class_id, ts.subject_id
+        FROM timetable_slots ts
+        JOIN class_sections cs ON ts.class_section_id = cs.id
+        WHERE cs.class_id = ANY(${params.class_ids})
+          AND cs.academic_year_id = ${exam.academic_year_id}
+          AND ts.academic_year_id = ${exam.academic_year_id}
+          AND cs.school_id = ${schoolId}
+          AND ts.school_id = ${schoolId}
+          AND ts.deleted_at IS NULL
+          AND cs.deleted_at IS NULL
+      )
+      SELECT DISTINCT taught.class_id, sub.id AS subject_id, sub.name AS subject_name
+      FROM taught_subjects taught
+      JOIN subjects sub ON taught.subject_id = sub.id
+      WHERE sub.school_id = ${schoolId}
+        AND sub.deleted_at IS NULL
+    `;
+
+    classSubjects = new Map(params.class_ids.map((id) => [id, new Set()]));
+    for (const row of subjectRows) {
+      classSubjects.get(String(row.class_id))?.add(String(row.subject_id));
+      subjectNames.set(String(row.subject_id), row.subject_name);
+    }
+
+    const emptyClasses = params.class_ids.filter((id) => classSubjects.get(id).size === 0);
+    if (emptyClasses.length > 0) {
+      throw new ExamTimetableError(
+        'Some classes have no subjects mapped. Assign subjects in Academics first.',
+        400,
+        { classes: emptyClasses.map((id) => classNames.get(id)) }
+      );
+    }
   }
 
   const unionIds = [...new Set(subjectRows.map((r) => String(r.subject_id)))];
@@ -645,16 +813,28 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
     // Explicit ordered selection: only these subjects, in exactly this order.
     subjectOrder = params.subject_ids.filter((id) => unionIds.includes(id));
     if (subjectOrder.length === 0) {
-      throw new ExamTimetableError('None of the selected subjects are taught in the selected classes');
+      throw new ExamTimetableError('None of the selected subjects are taught in the selected classes or sections');
     }
     const selection = new Set(subjectOrder);
-    for (const [classId, subjects] of classSubjects) {
-      const kept = new Set([...subjects].filter((s) => selection.has(s)));
-      classSubjects.set(classId, kept);
-      if (kept.size === 0) {
-        preFilterWarnings.push(
-          `${classNames.get(classId)} teaches none of the selected subjects — no papers scheduled for it.`
-        );
+    if (params.mode === 'per_section') {
+      for (const [sectionId, data] of sectionSubjects) {
+        const kept = new Set([...data.subjects].filter((s) => selection.has(s)));
+        data.subjects = kept;
+        if (kept.size === 0) {
+          preFilterWarnings.push(
+            `${data.name} teaches none of the selected subjects — no papers scheduled for it.`
+          );
+        }
+      }
+    } else {
+      for (const [classId, subjects] of classSubjects) {
+        const kept = new Set([...subjects].filter((s) => selection.has(s)));
+        classSubjects.set(classId, kept);
+        if (kept.size === 0) {
+          preFilterWarnings.push(
+            `${classNames.get(classId)} teaches none of the selected subjects — no papers scheduled for it.`
+          );
+        }
       }
     }
   } else {
@@ -685,7 +865,8 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
 
   const sessionsPerDay = params.sessions.length;
   const { assignments, required } = assignSubjects({
-    classSubjects,
+    classSubjects: params.mode === 'per_section' ? null : classSubjects,
+    sectionSubjects: params.mode === 'per_section' ? sectionSubjects : null,
     subjectOrder,
     dates,
     mode: params.mode,
@@ -706,7 +887,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
 
     // Papers with recorded marks are immovable — keep them exactly as they are.
     const preservedRows = await tx`
-      SELECT es.id, es.class_id, es.subject_id
+      SELECT es.id, es.class_id, es.class_section_id, es.subject_id
       FROM exam_subjects es
       WHERE es.exam_id = ${examId}
         AND es.school_id = ${schoolId}
@@ -714,25 +895,78 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
         AND es.deleted_at IS NULL
         AND EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
     `;
-    const preservedKeys = new Set(
-      preservedRows.map((r) => `${r.class_id}|${r.subject_id}`)
-    );
 
-    await tx`
-      UPDATE exam_subjects es
-      SET deleted_at = now()
-      WHERE es.exam_id = ${examId}
-        AND es.school_id = ${schoolId}
-        AND es.class_id = ANY(${params.class_ids})
-        AND es.deleted_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
-    `;
+    const hasMarkedClassPapers = preservedRows.some((row) => !row.class_section_id);
+    const hasMarkedSectionPapers = preservedRows.some((row) => Boolean(row.class_section_id));
+    if (params.mode === 'per_section' && hasMarkedClassPapers) {
+      throw new ExamTimetableError(
+        'Cannot switch this timetable to per-section mode because class-level papers already have marks. Keep the current mode or remove those marks first.',
+        409
+      );
+    }
+    if (params.mode !== 'per_section' && hasMarkedSectionPapers) {
+      throw new ExamTimetableError(
+        'Cannot switch this timetable to class-level mode because section-level papers already have marks. Keep per-section mode or remove those marks first.',
+        409
+      );
+    }
+
+    const preservedClassKeys = new Set();
+    const preservedSectionKeys = new Set();
+    const preservedClassHasSectionMarks = new Set();
+    for (const r of preservedRows) {
+      if (r.class_section_id) {
+        preservedSectionKeys.add(`${r.class_section_id}|${r.subject_id}`);
+        preservedClassHasSectionMarks.add(`${r.class_id}|${r.subject_id}`);
+      } else {
+        preservedClassKeys.add(`${r.class_id}|${r.subject_id}`);
+      }
+    }
+
+    if (params.mode === 'per_section') {
+      await tx`
+        UPDATE exam_subjects es
+        SET deleted_at = now()
+        WHERE es.exam_id = ${examId}
+          AND es.school_id = ${schoolId}
+          AND (
+            es.class_section_id = ANY(${params.class_section_ids})
+            OR (es.class_id = ANY(${params.class_ids}) AND es.class_section_id IS NULL)
+          )
+          AND es.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
+      `;
+    } else {
+      await tx`
+        UPDATE exam_subjects es
+        SET deleted_at = now()
+        WHERE es.exam_id = ${examId}
+          AND es.school_id = ${schoolId}
+          AND es.class_id = ANY(${params.class_ids})
+          AND es.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
+      `;
+    }
 
     const subjectMarks = new Map(
       params.subject_marks.map((entry) => [entry.subject_id, entry])
     );
+
+    const isPreserved = (a) => {
+      if (a.class_section_id) {
+        return (
+          preservedSectionKeys.has(`${a.class_section_id}|${a.subject_id}`) ||
+          preservedClassKeys.has(`${a.class_id}|${a.subject_id}`)
+        );
+      }
+      return (
+        preservedClassKeys.has(`${a.class_id}|${a.subject_id}`) ||
+        preservedClassHasSectionMarks.has(`${a.class_id}|${a.subject_id}`)
+      );
+    };
+
     const toInsert = assignments
-      .filter((a) => !preservedKeys.has(`${a.class_id}|${a.subject_id}`))
+      .filter((a) => !isPreserved(a))
       .map((a) => {
         const marks = subjectMarks.get(a.subject_id);
         return {
@@ -740,6 +974,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
           exam_id: examId,
           subject_id: a.subject_id,
           class_id: a.class_id,
+          class_section_id: a.class_section_id || null,
           exam_date: a.exam_date,
           start_time: params.sessions[a.session_index]?.start_time ?? null,
           end_time: params.sessions[a.session_index]?.end_time ?? null,
@@ -782,9 +1017,12 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
       WHERE id = ${examId} AND school_id = ${schoolId}
     `;
 
+    const skippedConflicts = assignments.filter(isPreserved).length;
+
     return {
       inserted: toInsert.length,
       preserved: preservedRows.length,
+      skipped_conflicts: skippedConflicts,
       seating_cleared: clearedSeating.length,
     };
   });
@@ -793,6 +1031,11 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   if (result.preserved > 0) {
     warnings.push(
       `${result.preserved} paper(s) already have marks recorded and were kept unchanged.`
+    );
+  }
+  if (result.skipped_conflicts > 0) {
+    warnings.push(
+      `${result.skipped_conflicts} paper slot(s) were skipped because matching papers already have marks recorded.`
     );
   }
   if (exam.timetable_published) {

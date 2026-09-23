@@ -1,0 +1,32 @@
+(node:10989) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/bhanureddy/Desktop/Single%20Source%20of%20truth/SchoolIMS/SchoolIMS-Frontend/src/services/driverLocationMath.test.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/bhanureddy/Desktop/Single Source of truth/SchoolIMS/SchoolIMS-Frontend/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ adaptive interval is fast at or within 500m (0.296542ms)
+✔ adaptive interval is slow on long stretches and conservative without a target (0.049917ms)
+(node:10990) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/bhanureddy/Desktop/Single%20Source%20of%20truth/SchoolIMS/SchoolIMS-Frontend/src/services/transportLiveSimulation.test.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/bhanureddy/Desktop/Single Source of truth/SchoolIMS/SchoolIMS-Frontend/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ live simulation advances a moving fix in the reported direction (0.359875ms)
+✔ live simulation stops projecting after its safe horizon (0.280542ms)
+✔ live simulation does not invent movement without a trustworthy heading (0.049542ms)
+✔ route simulation travels from the first stop to the last stop (0.118834ms)
+✔ route simulation bridges stops without coordinates (0.05425ms)
+✔ a previous trip location is rejected for a newly started trip (0.056084ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 63.326042
+PASS src/services/driverLocationTask.test.ts
+PASS src/services/driverLocationPermissionFlow.test.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       11 passed, 11 total
+Snapshots:   0 total
+Time:        0.814 s
+Ran all test suites within paths "src/services/driverLocationTask.test.ts", "src/services/driverLocationPermissionFlow.test.ts".

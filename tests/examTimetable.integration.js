@@ -499,6 +499,115 @@ async function run() {
       );
       assertions++;
 
+      // ── Per-Section Scheduling Mode Integration ───────────────────────
+      const [secExam] = await tx`
+        INSERT INTO exams (school_id, name, academic_year_id, exam_type)
+        VALUES (${schoolId}, 'Per Section Integration Exam', ${year.id}, 'unit') RETURNING id
+      `;
+
+      // 1. Generation in per_section mode
+      const secGen = await generateExamTimetable({
+        schoolId,
+        examId: secExam.id,
+        db: tx,
+        params: {
+          class_ids: [c1.id, c2.id],
+          class_section_ids: [cs1.id, cs2.id],
+          mode: 'per_section',
+          start_date: '2026-07-20',
+          end_date: '2026-07-25',
+          subject_order: [subjectIds.Math, subjectIds.Science, subjectIds.English],
+        },
+      });
+      eq(secGen.inserted, 5, 'per_section mode inserts 3 papers for cs1 + 2 for cs2');
+
+      const secPapers = await tx`
+        SELECT id, class_id, class_section_id, subject_id, exam_date::text AS exam_date
+        FROM exam_subjects
+        WHERE exam_id = ${secExam.id} AND deleted_at IS NULL
+        ORDER BY class_section_id, exam_date
+      `;
+      eq(secPapers.length, 5, '5 section-specific papers inserted');
+      const cs1Papers = secPapers.filter((p) => p.class_section_id === cs1.id);
+      const cs2Papers = secPapers.filter((p) => p.class_section_id === cs2.id);
+      eq(cs1Papers.length, 3, 'cs1 has 3 papers');
+      eq(cs2Papers.length, 2, 'cs2 has 2 papers');
+      ok(cs1Papers.every((p) => p.class_id === c1.id), 'cs1 papers point to parent class c1');
+      ok(cs2Papers.every((p) => p.class_id === c2.id), 'cs2 papers point to parent class c2');
+
+      // 2. Schedule retrieval for a section
+      const cs1Schedule = await getSectionExamSchedule({
+        schoolId,
+        classSectionId: cs1.id,
+        examId: secExam.id,
+        includeUnpublished: true,
+        db: tx,
+      });
+      eq(cs1Schedule.length, 3, 'getSectionExamSchedule returns 3 papers for cs1');
+      ok(cs1Schedule.every((p) => p.class_section_id === cs1.id), 'all returned papers have cs1 section_id');
+
+      // 3. Partial unique index prevents duplicate active section paper
+      await assert.rejects(
+        tx`
+          INSERT INTO exam_subjects (school_id, exam_id, class_id, class_section_id, subject_id, exam_date)
+          VALUES (${schoolId}, ${secExam.id}, ${c1.id}, ${cs1.id}, ${subjectIds.Math}, '2026-07-25')
+        `,
+        /idx_exam_subjects_active_section|duplicate key value/i
+      );
+      assertions++;
+
+      // 4. Mark preservation during per_section regeneration
+      const cs1MathPaper = cs1Papers.find((p) => p.subject_id === subjectIds.Math);
+      await tx`
+        INSERT INTO marks (school_id, exam_subject_id, student_enrollment_id, marks_obtained)
+        VALUES (${schoolId}, ${cs1MathPaper.id}, ${enrollment.id}, 95)
+      `;
+
+      const secRegen = await generateExamTimetable({
+        schoolId,
+        examId: secExam.id,
+        db: tx,
+        params: {
+          class_ids: [c1.id, c2.id],
+          class_section_ids: [cs1.id, cs2.id],
+          mode: 'per_section',
+          start_date: '2026-08-03',
+          end_date: '2026-08-08',
+          subject_order: [subjectIds.Math, subjectIds.Science, subjectIds.English],
+        },
+      });
+      eq(secRegen.preserved, 1, 'per_section regeneration preserves 1 marked paper');
+      eq(secRegen.inserted, 4, 'per_section regeneration reschedules remaining 4 papers');
+
+      const [preservedPaper] = await tx`
+        SELECT exam_date::text AS exam_date FROM exam_subjects WHERE id = ${cs1MathPaper.id} AND deleted_at IS NULL
+      `;
+      eq(preservedPaper.exam_date, '2026-07-20', 'marked section paper kept its original date');
+
+      // 5. Empty section validation error
+      const [secB] = await tx`INSERT INTO sections (school_id, name) VALUES (${schoolId}, 'B') RETURNING id`;
+      const [csEmpty] = await tx`
+        INSERT INTO class_sections (school_id, class_id, section_id, academic_year_id)
+        VALUES (${schoolId}, ${c1.id}, ${secB.id}, ${year.id}) RETURNING id
+      `;
+
+      await assert.rejects(
+        generateExamTimetable({
+          schoolId,
+          examId: secExam.id,
+          db: tx,
+          params: {
+            class_ids: [c1.id],
+            class_section_ids: [csEmpty.id],
+            mode: 'per_section',
+            start_date: '2026-08-10',
+            end_date: '2026-08-15',
+          },
+        }),
+        (err) => err instanceof ExamTimetableError && /no subjects mapped/i.test(err.message) && err.details?.sections?.length > 0
+      );
+      assertions++;
+
       throw ROLLBACK; // never commit test data
     });
   } catch (err) {

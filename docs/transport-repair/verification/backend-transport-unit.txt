@@ -1,0 +1,25 @@
+[requirePermission] denied: user=user-1 roles=[staff] missing=transport.manage PATCH /api/v1/transport/stops/stop-1/geo
+✔ calibration leg parsing is explicit and never defaults invalid input to morning (0.335375ms)
+✔ transport.manage is required for calibration mutations (0.334541ms)
+✔ calibration endpoints ignore client tenant input and use the JWT school (0.269875ms)
+✔ route calibration requires four successful clean trips (0.824291ms)
+✔ driver calibration status exposes the server threshold (0.327583ms)
+✔ adaptive stop radius uses 40 percent and clamps both extremes (0.396292ms)
+✔ location batches sort, deduplicate, and reject stale fixes (1.517625ms)
+✔ live tracking ignores client school_id and uses the verified JWT tenant (0.296875ms)
+✔ calculateProjectedDelayMinutes returns positive and negative schedule variance (0.446208ms)
+✔ running-late threshold is strictly greater than eight minutes (0.10625ms)
+✔ calculateProjectedDelayMinutes rejects missing or invalid timestamps (0.049083ms)
+✔ projectDelayAtStop combines cumulative learned schedule with live GPS progress (0.186667ms)
+✔ projectDelayAtStop refuses an incomplete learned schedule (0.054333ms)
+✔ notifyParentsAtNextStop claims and alerts parents assigned to the following stop (0.415375ms)
+✔ bus approaching uses the dedicated confirmation sound and channel (0.036625ms)
+✔ driver present attendance uses the dedicated bus-present sound and channel (0.033958ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 467.116541
