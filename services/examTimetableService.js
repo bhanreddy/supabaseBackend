@@ -274,6 +274,7 @@ export function selectEffectiveSectionPapers(rows = [], classSectionId) {
 export async function getSectionExamSchedule({
   schoolId,
   classSectionId,
+  examId,
   includeUnpublished = false,
   db = sql,
 }) {
@@ -309,6 +310,7 @@ export async function getSectionExamSchedule({
     WHERE e.school_id = ${schoolId}
       AND e.deleted_at IS NULL
       AND e.status <> 'cancelled'
+      ${examId ? sql`AND e.id = ${examId}` : sql``}
       ${includeUnpublished ? sql`` : sql`AND e.timetable_published = TRUE`}
       AND e.academic_year_id = ${section.academic_year_id}
       AND es.class_id = ${section.class_id}
@@ -1013,7 +1015,8 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
           ),
           timetable_params = ${sql.json(params)},
           timetable_published = FALSE,
-          timetable_published_at = NULL
+          timetable_published_at = NULL,
+          timetable_version = timetable_version + 1
       WHERE id = ${examId} AND school_id = ${schoolId}
     `;
 

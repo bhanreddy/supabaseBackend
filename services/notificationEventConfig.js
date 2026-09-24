@@ -45,6 +45,16 @@ export const NotificationEventConfig = Object.freeze({
         deepLink: '/(tabs)/results',
         requiredParams: ['message']
     },
+    EXAM_TIMETABLE_PUBLISHED: {
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
+        titleTemplate: '📅 Exam Timetable & Syllabus Published',
+        bodyTemplate: '📝 {{message}}',
+        titleTemplate_te: '📅 పరీక్షల టైమ్‌టేబుల్ & సిలబస్ ప్రచురించబడింది',
+        bodyTemplate_te: '📝 {{message_te}}',
+        deepLink: '/(tabs)/timetable',
+        requiredParams: ['message']
+    },
 
     // ===== COMPLAINTS (General) =====
     COMPLAINT_CREATED: {   // Staff → Parent (student login)

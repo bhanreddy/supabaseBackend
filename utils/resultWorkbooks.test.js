@@ -24,6 +24,188 @@ test('missing marks export includes assigned and unassigned class-subject gaps',
   assert.ok(buildMissingMarksWorkbook({ schoolName: 'School', examName: 'FA-1', readiness }).length > 0);
 });
 
+test('missing marks export: Follow-up is first sheet, compact widths, and correct headers', () => {
+  const readiness = {
+    expected_entries: 40,
+    entered_entries: 35,
+    missing_entries: 5,
+    papers: [
+      {
+        class_name: '5',
+        subject_name: 'Mathematics',
+        pending_teachers: [
+          {
+            teacher_name: 'Rajesh Sharma',
+            section_names: ['A', 'B'],
+            expected_entries: 40,
+            entered_entries: 35,
+            missing_entries: 5,
+          },
+        ],
+        unassigned_sections: [],
+      },
+    ],
+  };
+
+  const buffer = buildMissingMarksWorkbook({
+    schoolName: 'Greenwood High',
+    examName: 'Mid-Term 2026',
+    readiness,
+  });
+
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellStyles: true });
+  assert.equal(workbook.SheetNames[0], 'Follow-up');
+  assert.equal(workbook.SheetNames[1], 'Details');
+
+  const followupSheet = workbook.Sheets['Follow-up'];
+  const rows = XLSX.utils.sheet_to_json(followupSheet, { header: 1, defval: '' });
+
+  // Title and metadata rows
+  assert.equal(rows[0][0], 'Greenwood High — Unuploaded Marks');
+  assert.equal(rows[1][0], 'Exam');
+  assert.equal(rows[1][1], 'Mid-Term 2026');
+  assert.equal(rows[3][0], 'Expected Entries');
+  assert.equal(rows[3][1], 40);
+  assert.equal(rows[3][2], 'Uploaded Entries');
+  assert.equal(rows[3][3], 35);
+  assert.equal(rows[4][0], 'Missing Entries');
+  assert.equal(rows[4][1], 5);
+  assert.equal(rows[4][2], 'Follow-up Items');
+  assert.equal(rows[4][3], 1);
+
+  // Table header at row index 6
+  assert.deepEqual(rows[6], ['#', 'Staff', 'Class / Section', 'Subject', 'Progress', 'Missing', 'Status']);
+
+  // Data row 1
+  assert.equal(rows[7][0], 1);
+  assert.equal(rows[7][1], 'Rajesh Sharma');
+  assert.equal(rows[7][2], '5 - A, B'); // multiple sections combined correctly
+  assert.equal(rows[7][3], 'Mathematics');
+  assert.equal(rows[7][4], '35 / 40');
+  assert.equal(rows[7][5], 5);
+  assert.equal(rows[7][6], 'Follow up');
+
+  // Column width constraint: total widths <= 96 characters
+  const cols = followupSheet['!cols'];
+  assert.ok(cols && cols.length === 7);
+  const totalWidth = cols.reduce((sum, col) => sum + (col.wch || 0), 0);
+  assert.ok(totalWidth <= 96, `Follow-up total column width ${totalWidth} exceeds 96 character limit`);
+  assert.ok(totalWidth >= 80, `Follow-up total column width ${totalWidth} is too narrow`);
+
+  // Autofilter covers all columns A through G and rows 7 to 8
+  assert.equal(followupSheet['!autofilter']?.ref, 'A7:G8');
+});
+
+test('missing marks export: unassigned and unresolved gaps preserve distinction without fake zeroes', () => {
+  const readiness = {
+    expected_entries: 50,
+    entered_entries: 20,
+    missing_entries: 30,
+    papers: [
+      {
+        class_name: '3',
+        subject_name: 'Science',
+        missing_entries: 10,
+        pending_teachers: [],
+        unassigned_sections: [{ section_name: 'C' }],
+      },
+      {
+        class_name: '4',
+        subject_name: 'Social Studies',
+        expected_entries: 20,
+        entered_entries: 0,
+        missing_entries: 20,
+        pending_teachers: [],
+        unassigned_sections: [],
+      },
+    ],
+  };
+
+  const buffer = buildMissingMarksWorkbook({
+    schoolName: 'Delhi Public School',
+    examName: 'Annual Exam',
+    readiness,
+  });
+
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const followupRows = XLSX.utils.sheet_to_json(workbook.Sheets['Follow-up'], { header: 1, defval: '' });
+
+  // Unassigned section row
+  assert.equal(followupRows[7][1], 'Unassigned');
+  assert.equal(followupRows[7][2], '3 - C');
+  assert.equal(followupRows[7][3], 'Science');
+  assert.equal(followupRows[7][4], '—');
+  assert.equal(followupRows[7][5], ''); // never converted to fake 0
+  assert.equal(followupRows[7][6], 'Teacher not assigned');
+
+  // Unresolved paper row
+  assert.equal(followupRows[8][1], 'Unresolved');
+  assert.equal(followupRows[8][2], '4');
+  assert.equal(followupRows[8][3], 'Social Studies');
+  assert.equal(followupRows[8][4], '0 / 20');
+  assert.equal(followupRows[8][5], 20); // accurate numeric missing count
+  assert.equal(followupRows[8][6], 'Assignment unresolved');
+
+  // Check Details worksheet retains complete raw columns
+  const detailsRows = XLSX.utils.sheet_to_json(workbook.Sheets.Details, { header: 1, defval: '' });
+  assert.deepEqual(detailsRows[5], [
+    '#', 'Staff Name', 'Class', 'Sections', 'Subject',
+    'Expected', 'Uploaded', 'Missing', 'Assignment Status',
+  ]);
+  assert.equal(detailsRows[6][1], 'Unassigned');
+  assert.equal(detailsRows[6][5], ''); // expected is empty
+  assert.equal(detailsRows[6][7], ''); // missing is empty, not 0
+  assert.equal(detailsRows[6][8], 'Teacher not assigned');
+
+  assert.equal(detailsRows[7][1], 'Unresolved');
+  assert.equal(detailsRows[7][5], 20);
+  assert.equal(detailsRows[7][6], 0);
+  assert.equal(detailsRows[7][7], 20);
+  assert.equal(detailsRows[7][8], 'No teacher assignment found');
+});
+
+test('missing marks export: handles long names and malformed/empty arrays safely', () => {
+  const longTeacherName = 'Prof. Dr. Venkata Satyanarayana Murthy Krishna Swamy';
+  const longSubject = 'Advanced Information and Communications Technology & Applications';
+  const readiness = {
+    missing_entries: 1,
+    papers: [
+      {
+        class_name: '10',
+        subject_name: longSubject,
+        pending_teachers: [
+          {
+            teacher_name: longTeacherName,
+            section_names: ['Section-A1', 'Section-A2', 'Section-Special-Honors'],
+            expected_entries: 50,
+            entered_entries: 49,
+            missing_entries: 1,
+          },
+        ],
+      },
+      null, // null paper
+      {
+        // empty paper
+        pending_teachers: null,
+        unassigned_sections: null,
+      },
+    ],
+  };
+
+  const buffer = buildMissingMarksWorkbook({
+    schoolName: '',
+    examName: '',
+    readiness,
+  });
+
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const followupRows = XLSX.utils.sheet_to_json(workbook.Sheets['Follow-up'], { header: 1, defval: '' });
+
+  assert.equal(followupRows[7][1], longTeacherName);
+  assert.equal(followupRows[7][3], longSubject);
+  assert.equal(followupRows[7][6], 'Follow up');
+});
+
 test('class marks export uses direct columns for direct papers and component columns for component papers', () => {
   const buffer = buildClassMarksWorkbook({
     schoolName: 'School', teacherName: 'Teacher', rankingMethod: 'competition',

@@ -36,8 +36,15 @@ export function notificationCategoryForEvent(eventType = '') {
   if (eventType.startsWith('DIARY_')) return 'diary';
   if (eventType.startsWith('RESULT_')) return 'results';
   if (eventType.startsWith('LMS_')) return 'learning';
-  if (eventType.startsWith('TIMETABLE_') || eventType.startsWith('SUBSTITUTION_')) return 'timetable';
-  if (eventType.startsWith('NOTICE_') || eventType === 'POPUP_ANNOUNCEMENT') return 'notices';
+  if (eventType.startsWith('TIMETABLE_') || eventType.startsWith('SUBSTITUTION_') || eventType.startsWith('EXAM_TIMETABLE_')) return 'timetable';
+  if (
+    eventType.startsWith('NOTICE_') ||
+    eventType === 'POPUP_ANNOUNCEMENT' ||
+    eventType.startsWith('INTELLIGENCE_') ||
+    eventType.startsWith('ANECDOTE_') ||
+    eventType.startsWith('INTERVENTION_') ||
+    eventType.startsWith('DAILY_')
+  ) return 'notices';
   if (eventType.startsWith('COMPLAINT_')) return 'complaints';
   if (eventType.startsWith('LEAVE_')) return 'leave';
   if (eventType.startsWith('EXPENSE_')) return 'expenses';

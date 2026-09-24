@@ -462,7 +462,7 @@ export const CalendarService = {
       }
 
       // Trigger push notifications asynchronously
-      if (initialStatus === 'PUBLISHED') {
+      if (initialStatus === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true) {
         notifyEventPublished(numericSchoolId, event).catch((err) => {
           logger.error({ err, eventId: event.id }, 'calendar_event_publish_failed');
         });
@@ -595,7 +595,7 @@ export const CalendarService = {
       }
 
       // Notify users of update if already published
-      if (oldEvent.status === 'PUBLISHED') {
+      if (oldEvent.status === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true) {
         notifyEventUpdated(numericSchoolId, updated, oldEvent).catch((err) => {
           logger.error({ err, eventId }, 'calendar_notification_failed');
         });
@@ -1170,6 +1170,7 @@ export const CalendarService = {
       }));
     }
 
+    const isExamModule = sourceModule === 'EXAM';
     const normalizedData = {
       ...eventData,
       source_module: sourceModule,
@@ -1182,6 +1183,8 @@ export const CalendarService = {
       timetable_enabled: eventData.timetable_enabled !== undefined
         ? eventData.timetable_enabled
         : (eventData.affects_timetable !== undefined ? !eventData.affects_timetable : null),
+      notify: eventData?.notify !== undefined ? eventData.notify : !isExamModule,
+      skip_notifications: eventData?.skip_notifications !== undefined ? eventData.skip_notifications : isExamModule,
     };
 
     const [existing] = await sql`

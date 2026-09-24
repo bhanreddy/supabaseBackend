@@ -71,12 +71,12 @@ const familyResultVisibility = () => sql`
   )
 `;
 
-async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
+async function syncExamSubjectToCalendar(schoolId, examSubjectId, options = {}) {
   try {
     const [row] = await sql`
       SELECT
         es.id, es.exam_date, es.start_time::text AS start_time, es.end_time::text AS end_time,
-        es.class_id, es.class_section_id, e.name AS exam_name,
+        es.class_id, es.class_section_id, e.name AS exam_name, e.timetable_published,
         sub.name AS subject_name, c.name AS class_name, section.name AS section_name
       FROM exam_subjects es
       JOIN exams e ON e.id = es.exam_id
@@ -86,7 +86,7 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
       LEFT JOIN sections section ON section.id = class_section.section_id
       WHERE es.id = ${examSubjectId} AND es.school_id = ${schoolId}
     `;
-    if (!row?.exam_date) {
+    if (!row?.exam_date || (!row.timetable_published && !options.force)) {
       await CalendarService.syncSourceEvent(schoolId, 'EXAM', examSubjectId, null);
       return;
     }
@@ -110,6 +110,8 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
         priority: 'HIGH',
         attendance_enabled: false,
         timetable_enabled: false,
+        notify: false,
+        skip_notifications: true,
       },
       targets: row.class_section_id
         ? [{ target_type: 'SECTION', target_id: row.class_section_id }]
@@ -119,6 +121,34 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId) {
     });
   } catch (err) {
     console.error(`[resultsRoutes] Failed to sync exam subject ${examSubjectId} to calendar:`, err.message);
+  }
+}
+
+async function syncExamPapersToCalendar(schoolId, examId) {
+  try {
+    const papers = await sql`
+      SELECT id FROM exam_subjects
+      WHERE exam_id = ${examId} AND school_id = ${schoolId} AND exam_date IS NOT NULL AND deleted_at IS NULL
+    `;
+    for (const paper of papers) {
+      await syncExamSubjectToCalendar(schoolId, paper.id, { force: true });
+    }
+  } catch (err) {
+    console.error(`[resultsRoutes] Failed to sync exam papers to calendar:`, err.message);
+  }
+}
+
+async function removeExamCalendarEvents(schoolId, examId) {
+  try {
+    const papers = await sql`
+      SELECT id FROM exam_subjects
+      WHERE exam_id = ${examId} AND school_id = ${schoolId}
+    `;
+    for (const paper of papers) {
+      await CalendarService.syncSourceEvent(schoolId, 'EXAM', paper.id, null);
+    }
+  } catch (err) {
+    console.error(`[resultsRoutes] Failed to clear calendar events for exam:`, err.message);
   }
 }
 
@@ -276,6 +306,110 @@ async function notifyPublishedResultUsers(schoolId, exam) {
     }
   } catch (error) {
     console.error('Failed to notify users about published results', error);
+  }
+}
+
+export async function revertExamTimetableToDraft(schoolId, examId, tx = sql) {
+  const [updated] = await tx`
+    UPDATE exams
+    SET timetable_published = FALSE,
+        timetable_published_at = NULL,
+        timetable_version = timetable_version + 1
+    WHERE id = ${examId} AND school_id = ${schoolId} AND timetable_published = TRUE
+    RETURNING id, timetable_version
+  `;
+  if (updated) {
+    removeExamCalendarEvents(schoolId, examId).catch((err) => {
+      console.error('[resultsRoutes] Failed to clear calendar events for reverted draft:', err.message);
+    });
+  }
+  return updated;
+}
+
+export async function notifyPublishedTimetableUsers(schoolId, exam, options = {}) {
+  try {
+    const db = options.db || sql;
+    let sendNotification = options.sendNotification;
+    if (!sendNotification) {
+      const { sendNotificationToUsers } = await import('../services/notificationService.js');
+      sendNotification = sendNotificationToUsers;
+    }
+
+    const users = await db`
+      WITH target_students AS (
+        SELECT DISTINCT se.student_id
+        FROM exam_subjects es
+        JOIN class_sections cs
+          ON cs.class_id = es.class_id
+         AND cs.academic_year_id = ${exam.academic_year_id}
+         AND cs.school_id = ${schoolId}
+         AND cs.deleted_at IS NULL
+        JOIN student_enrollments se
+          ON se.class_section_id = cs.id
+         AND se.academic_year_id = ${exam.academic_year_id}
+         AND se.school_id = ${schoolId}
+         AND se.status = 'active'
+         AND se.deleted_at IS NULL
+        JOIN students active_student
+          ON active_student.id = se.student_id
+         AND active_student.school_id = ${schoolId}
+         AND active_student.deleted_at IS NULL
+         AND active_student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        WHERE es.exam_id = ${exam.id}
+          AND es.school_id = ${schoolId}
+          AND es.deleted_at IS NULL
+          AND (es.class_section_id IS NULL OR cs.id = es.class_section_id)
+      )
+      SELECT DISTINCT u.id AS user_id
+      FROM target_students ts
+      JOIN students st ON st.id = ts.student_id
+        AND st.school_id = ${schoolId}
+        AND st.deleted_at IS NULL
+        AND st.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+      JOIN users u
+        ON u.person_id = st.person_id
+       AND u.school_id = ${schoolId}
+       AND u.account_status = 'active'
+       AND u.deleted_at IS NULL
+      UNION
+      SELECT DISTINCT u.id AS user_id
+      FROM target_students ts
+      JOIN student_parents sp
+        ON sp.student_id = ts.student_id
+       AND sp.school_id = ${schoolId}
+       AND sp.deleted_at IS NULL
+      JOIN parents p
+        ON p.id = sp.parent_id
+       AND p.school_id = ${schoolId}
+       AND p.deleted_at IS NULL
+      JOIN users u
+        ON u.person_id = p.person_id
+       AND u.school_id = ${schoolId}
+       AND u.account_status = 'active'
+       AND u.deleted_at IS NULL
+    `;
+
+    const userIds = users.map((u) => u.user_id);
+    if (userIds.length === 0) return { recipientCount: 0, userIds: [] };
+
+    const message = `The exam timetable and syllabus for ${exam.name} have been published. Check your schedule and syllabus portions.`;
+    const message_te = `${exam.name} పరీక్షల టైమ్‌టేబుల్ మరియు సిలబస్ ప్రచురించబడ్డాయి. పూర్తి వివరాలను పరిశీలించండి.`;
+    const deepLink = `/(tabs)/timetable?examId=${exam.id}`;
+
+    await sendNotification(userIds, 'EXAM_TIMETABLE_PUBLISHED', {
+      message,
+      message_te,
+    }, {
+      schoolId,
+      deepLink,
+      examId: exam.id,
+      idempotencyKey: `exam_timetable_published:${exam.id}:${options.version || exam.timetable_published_version || 1}`,
+    });
+
+    return { recipientCount: userIds.length, userIds };
+  } catch (error) {
+    console.error('[resultsRoutes] Failed to notify users about published exam timetable & syllabus', error);
+    return { recipientCount: 0, userIds: [], error: error.message };
   }
 }
 
@@ -568,6 +702,15 @@ router.put('/exams/:id', requirePermission('exams.manage'), asyncHandler(async (
     return res.status(404).json({ error: 'Exam not found' });
   }
 
+  if (start_date !== undefined || end_date !== undefined || academic_year_id !== undefined || name !== undefined) {
+    const reverted = await revertExamTimetableToDraft(req.schoolId, id);
+    if (reverted) {
+      updated.timetable_published = false;
+      updated.timetable_published_at = null;
+      updated.timetable_version = reverted.timetable_version;
+    }
+  }
+
   return sendSuccess(res, req.schoolId, { message: 'Exam updated', exam: updated });
 }));
 
@@ -662,8 +805,9 @@ router.post('/exams/:id/subjects', requirePermission('exams.manage'), asyncHandl
   let seatingCleared = 0;
   if (exam_date) {
     seatingCleared = await clearExamSeating(sql, req.schoolId, id);
-    syncExamSubjectToCalendar(req.schoolId, examSubject.id);
   }
+  // Adding a paper reverts timetable to draft; zero notifications sent during draft changes
+  await revertExamTimetableToDraft(req.schoolId, id);
 
   return sendSuccess(res, req.schoolId, {
     message:
@@ -3309,6 +3453,7 @@ router.post('/exams/:id/timetable/generate', requirePermission('exams.manage'), 
       examId: req.params.id,
       params: req.body,
     });
+    await removeExamCalendarEvents(req.schoolId, req.params.id);
     return sendSuccess(res, req.schoolId, { message: 'Timetable generated', ...result });
   } catch (err) {
     if (err instanceof ExamTimetableError) {
@@ -3587,9 +3732,8 @@ router.patch('/exam-subjects/:id', requirePermission('exams.manage'), asyncHandl
     seatingCleared = await clearExamSeating(sql, req.schoolId, paper.exam_id);
   }
 
-  if (updated.exam_date) {
-    syncExamSubjectToCalendar(req.schoolId, updated.id);
-  }
+  // Editing a paper reverts timetable to draft; zero notifications sent during draft changes
+  await revertExamTimetableToDraft(req.schoolId, paper.exam_id);
 
   return sendSuccess(res, req.schoolId, {
     message:
@@ -3639,7 +3783,7 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
 
   // Load the paper (school-scoped) with its exam's academic year.
   const [paper] = await sql`
-    SELECT es.id, es.class_id, es.class_section_id, es.subject_id, e.academic_year_id
+    SELECT es.id, es.exam_id, es.class_id, es.class_section_id, es.subject_id, e.academic_year_id
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id AND e.deleted_at IS NULL
     WHERE es.id = ${id} AND es.school_id = ${req.schoolId} AND es.deleted_at IS NULL
@@ -3691,6 +3835,9 @@ router.patch('/exam-subjects/:id/syllabus', requireAuth, asyncHandler(async (req
     RETURNING id, syllabus
   `;
 
+  // Editing syllabus reverts timetable to draft; zero notifications sent during draft changes
+  await revertExamTimetableToDraft(req.schoolId, paper.exam_id);
+
   return sendSuccess(res, req.schoolId, { message: 'Syllabus updated', paper: updated });
 }));
 
@@ -3733,6 +3880,8 @@ router.delete('/exam-subjects/:id', requirePermission('exams.manage'), asyncHand
   if (deleted.exam_date) {
     seatingCleared = await clearExamSeating(sql, req.schoolId, deleted.exam_id);
   }
+  // Removing a paper reverts timetable to draft; zero notifications sent during draft changes
+  await revertExamTimetableToDraft(req.schoolId, deleted.exam_id);
   return sendSuccess(res, req.schoolId, {
     message:
       seatingCleared > 0
@@ -3745,45 +3894,125 @@ router.delete('/exam-subjects/:id', requirePermission('exams.manage'), asyncHand
 /**
  * POST /results/exams/:id/timetable/publish
  * Body: { published: boolean }. Publishing requires every paper to have a date.
+ * Governed publish flow:
+ * - Transactional execution with row-level locking (`FOR UPDATE`).
+ * - Validates papers and dates prior to committing publish state.
+ * - Idempotency: double-clicking or retrying Publish when already published at the current version skips duplicate notifications.
+ * - If published is true and version is new (or unpublish -> republish): updates timetable_published = TRUE, timetable_published_version = timetable_version.
+ * - Calendar events synced with notify: false.
+ * - Dispatches exactly ONE consolidated notification per intended recipient (student/parent) only AFTER transaction commit.
+ * - If transaction fails or rolls back: ZERO notifications sent.
  */
 router.post('/exams/:id/timetable/publish', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   const published = req.body?.published !== false;
 
-  const [exam] = await sql`
-    SELECT id FROM exams WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
-  `;
-  if (!exam) {
-    return res.status(404).json({ error: 'Exam not found' });
+  if (!published) {
+    const unpublishResult = await sql.begin(async (tx) => {
+      const [exam] = await tx`
+        SELECT id, timetable_version FROM exams
+        WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+        FOR UPDATE
+      `;
+      if (!exam) {
+        const err = new Error('Exam not found');
+        err.status = 404;
+        throw err;
+      }
+
+      const [updated] = await tx`
+        UPDATE exams
+        SET timetable_published = FALSE,
+            timetable_published_at = NULL,
+            timetable_version = timetable_version + 1
+        WHERE id = ${id} AND school_id = ${req.schoolId}
+        RETURNING id, name, timetable_published, timetable_published_at, timetable_version, timetable_published_version
+      `;
+      return updated;
+    });
+
+    await removeExamCalendarEvents(req.schoolId, id);
+
+    res.set('Cache-Control', 'no-store');
+    return sendSuccess(res, req.schoolId, {
+      message: 'Exam timetable unpublished',
+      exam: unpublishResult,
+      notified: false,
+    });
   }
 
-  if (published) {
-    const [{ total, undated }] = await sql`
-      SELECT COUNT(*)::int AS total,
-             COUNT(*) FILTER (WHERE exam_date IS NULL)::int AS undated
+  // Transactionally validate and commit the published state
+  const { updatedExam, papers, shouldNotify, isAlreadyPublished } = await sql.begin(async (tx) => {
+    const [exam] = await tx`
+      SELECT id, name, academic_year_id, timetable_published, timetable_published_at, timetable_version, timetable_published_version
+      FROM exams
+      WHERE id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+    if (!exam) {
+      const err = new Error('Exam not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const papers = await tx`
+      SELECT id, subject_id, class_id, class_section_id, exam_date, start_time, end_time, syllabus
       FROM exam_subjects
       WHERE exam_id = ${id} AND school_id = ${req.schoolId} AND deleted_at IS NULL
     `;
-    if (total === 0) {
-      return res.status(400).json({ error: 'Generate the timetable before publishing' });
+    if (papers.length === 0) {
+      const err = new Error('Generate the timetable before publishing');
+      err.status = 400;
+      throw err;
     }
-    if (undated > 0) {
-      return res.status(400).json({ error: `${undated} paper(s) have no date set` });
+    const undated = papers.filter((p) => !p.exam_date);
+    if (undated.length > 0) {
+      const err = new Error(`${undated.length} paper(s) have no date set`);
+      err.status = 400;
+      throw err;
     }
-  }
 
-  const [updated] = await sql`
-    UPDATE exams
-    SET timetable_published = ${published},
-        timetable_published_at = ${published ? sql`now()` : null}
-    WHERE id = ${id} AND school_id = ${req.schoolId}
-    RETURNING id, timetable_published, timetable_published_at
-  `;
+    const currentVersion = exam.timetable_version || 1;
+    const publishedVersion = exam.timetable_published_version || 0;
+    const alreadyPublished = Boolean(exam.timetable_published && publishedVersion === currentVersion);
+
+    if (alreadyPublished) {
+      return { updatedExam: exam, papers, shouldNotify: false, isAlreadyPublished: true };
+    }
+
+    const [updated] = await tx`
+      UPDATE exams
+      SET timetable_published = TRUE,
+          timetable_published_at = now(),
+          timetable_published_version = timetable_version
+      WHERE id = ${id} AND school_id = ${req.schoolId}
+      RETURNING id, name, academic_year_id, timetable_published, timetable_published_at, timetable_version, timetable_published_version
+    `;
+
+    return { updatedExam: updated, papers, shouldNotify: true, isAlreadyPublished: false };
+  });
+
+  // Post-commit operations (strictly only executed if transaction committed):
+  // 1. Sync papers to academic calendar without sending calendar notifications
+  await syncExamPapersToCalendar(req.schoolId, id, papers, { notify: false });
+
+  // 2. Dispatch exactly 1 consolidated notification per recipient for new published version
+  let recipientCount = 0;
+  if (shouldNotify) {
+    const notifyRes = await notifyPublishedTimetableUsers(req.schoolId, updatedExam, {
+      version: updatedExam.timetable_published_version,
+    });
+    recipientCount = notifyRes.recipientCount;
+  }
 
   res.set('Cache-Control', 'no-store');
   return sendSuccess(res, req.schoolId, {
-    message: published ? 'Exam timetable published' : 'Exam timetable unpublished',
-    exam: updated,
+    message: isAlreadyPublished
+      ? 'Exam timetable is already published'
+      : 'Exam timetable published',
+    exam: updatedExam,
+    notified: shouldNotify,
+    recipient_count: recipientCount,
   });
 }));
 

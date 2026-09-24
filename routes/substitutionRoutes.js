@@ -5,15 +5,18 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 import { rankSubstitutionCandidates } from '../services/substitutionRankingService.js';
+import {
+  getSubstitutionBoardData,
+  validateSubstituteAvailability,
+  getFirstAfternoonPeriodNumber,
+  getTodayInSchoolTimezone,
+  weekdayForDate,
+} from '../services/teacherAvailabilityService.js';
 
 const router = express.Router();
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function weekdayForDate(date) {
-  return DAYS[new Date(`${date}T12:00:00.000Z`).getUTCDay()];
-}
 
 function requireDate(res, rawDate) {
   const date = String(rawDate || '');
@@ -154,90 +157,14 @@ router.get('/board', requirePermission('academics.manage'), asyncHandler(async (
   const date = requireDate(res, req.query.date);
   if (!date) return;
 
-  const context = await scheduleContext(sql, req.schoolId, date);
-  if (!context) {
-    return sendSuccess(res, req.schoolId, {
-      date, academic_year_id: null, timetable_day: weekdayForDate(date),
-      timetable_mode: 'uniform', periods: [], slots: [], teachers: [],
-      summary: { total_slots: 0, covered_slots: 0, uncovered_slots: 0 },
-    });
-  }
-
-  const [periods, slots, teachers] = await Promise.all([
-    sql`
-      SELECT id, name, start_time, end_time, sort_order
-      FROM periods
-      WHERE school_id = ${req.schoolId}
-        AND COALESCE(is_break, false) = false
-      ORDER BY sort_order, start_time
-    `,
-    sql`
-      SELECT
-        ts.id AS slot_id, ts.class_section_id, ts.period_number,
-        ts.start_time, ts.end_time, ts.room_no,
-        c.name AS class_name, sec.name AS section_name,
-        sub.id AS subject_id, sub.name AS subject_name,
-        ts.teacher_id AS regular_teacher_id,
-        COALESCE(NULLIF(tp.display_name, ''), tp.first_name, regular_staff.staff_code) AS regular_teacher_name,
-        cover.id AS substitution_id, cover.reason,
-        cover.substitute_teacher_id,
-        cover.is_auto_suggested,
-        cover.leave_application_id,
-        COALESCE(NULLIF(cp.display_name, ''), cp.first_name, cover_staff.staff_code) AS substitute_teacher_name,
-        cover.created_at AS assigned_at
-      FROM timetable_slots ts
-      JOIN class_sections cs ON cs.id = ts.class_section_id
-      JOIN classes c ON c.id = cs.class_id
-      JOIN sections sec ON sec.id = cs.section_id
-      JOIN subjects sub ON sub.id = ts.subject_id
-      LEFT JOIN staff regular_staff ON regular_staff.id = ts.teacher_id
-      LEFT JOIN persons tp ON tp.id = regular_staff.person_id
-      LEFT JOIN timetable_substitutions cover
-        ON cover.timetable_slot_id = ts.id
-        AND cover.school_id = ${req.schoolId}
-        AND cover.substitution_date = ${date}
-        AND cover.cancelled_at IS NULL
-      LEFT JOIN staff cover_staff ON cover_staff.id = cover.substitute_teacher_id
-      LEFT JOIN persons cp ON cp.id = cover_staff.person_id
-      WHERE ts.school_id = ${req.schoolId}
-        AND cs.school_id = ${req.schoolId}
-        AND ts.academic_year_id = ${context.academicYearId}
-        AND LOWER(ts.day_of_week::text) = ${context.timetableDay}
-        AND ts.deleted_at IS NULL
-      ORDER BY ts.period_number, c.name, sec.name
-    `,
-    sql`
-      SELECT DISTINCT
-        st.id,
-        COALESCE(NULLIF(p.display_name, ''), p.first_name, st.staff_code) AS teacher_name
-      FROM timetable_slots ts
-      JOIN staff st ON st.id = ts.teacher_id
-      JOIN persons p ON p.id = st.person_id
-      JOIN class_sections cs ON cs.id = ts.class_section_id
-      WHERE ts.school_id = ${req.schoolId}
-        AND cs.school_id = ${req.schoolId}
-        AND ts.academic_year_id = ${context.academicYearId}
-        AND LOWER(ts.day_of_week::text) = ${context.timetableDay}
-        AND ts.deleted_at IS NULL
-      ORDER BY teacher_name
-    `,
-  ]);
-
-  const covered = slots.filter((slot) => slot.substitution_id).length;
-  return sendSuccess(res, req.schoolId, {
+  const scope = req.query.scope === 'all' ? 'all' : 'affected';
+  const boardData = await getSubstitutionBoardData(sql, {
+    schoolId: req.schoolId,
     date,
-    academic_year_id: context.academicYearId,
-    timetable_day: context.timetableDay,
-    timetable_mode: context.mode,
-    periods,
-    slots,
-    teachers,
-    summary: {
-      total_slots: slots.length,
-      covered_slots: covered,
-      uncovered_slots: slots.length - covered,
-    },
+    scope,
   });
+
+  return sendSuccess(res, req.schoolId, boardData);
 }));
 
 /**
@@ -258,6 +185,8 @@ router.get('/candidates', requirePermission('academics.manage'), asyncHandler(as
   if (!slot.absent_teacher_id) {
     return res.status(400).json({ error: 'This timetable slot has no regular teacher to substitute' });
   }
+
+  const firstAfternoonPeriod = await getFirstAfternoonPeriodNumber(sql, req.schoolId);
 
   const candidates = await sql`
     SELECT
@@ -355,13 +284,27 @@ router.get('/candidates', requirePermission('academics.manage'), asyncHandler(as
           AND other_cover.period_number = ${slot.period_number}
           AND other_cover.cancelled_at IS NULL
       )
+      -- Exclude approved leave
       AND NOT EXISTS (
-        SELECT 1 FROM staff_attendance absent
-        WHERE absent.school_id = ${req.schoolId}
-          AND absent.staff_id = st.id
-          AND absent.attendance_date = ${date}
-          AND absent.status = 'absent'
-          AND absent.deleted_at IS NULL
+        SELECT 1 FROM leave_applications la
+        JOIN users lu ON la.applicant_id = lu.id
+        WHERE lu.person_id = st.person_id
+          AND lu.school_id = ${req.schoolId}
+          AND la.school_id = ${req.schoolId}
+          AND la.status = 'approved'
+          AND ${date}::date BETWEEN la.start_date AND la.end_date
+      )
+      -- Exclude attendance absence (full day or half day in afternoon)
+      AND NOT EXISTS (
+        SELECT 1 FROM staff_attendance sa
+        WHERE sa.school_id = ${req.schoolId}
+          AND sa.staff_id = st.id
+          AND sa.attendance_date = ${date}
+          AND sa.deleted_at IS NULL
+          AND (
+            sa.status = 'absent'
+            OR (sa.status = 'half_day' AND ${slot.period_number} >= ${firstAfternoonPeriod})
+          )
       )
       AND NOT EXISTS (
         SELECT 1 FROM timetable_substitutions absent_cover
@@ -395,7 +338,7 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
     return res.status(400).json({ error: 'slot_id and substitute_teacher_id must be valid UUIDs' });
   }
 
-  const today = await todayForSchool(sql, req.schoolId);
+  const today = await getTodayInSchoolTimezone(sql, req.schoolId);
   if (date < today) {
     return res.status(400).json({ error: 'Past dates cannot receive new substitutions' });
   }
@@ -416,20 +359,25 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
         error.status = 400;
         throw error;
       }
-      if (slot.absent_teacher_id === substituteTeacherId) {
-        const error = new Error('The regular teacher cannot substitute for their own class');
-        error.status = 400;
+
+      // Reusable availability validation
+      const validation = await validateSubstituteAvailability(tx, {
+        schoolId: req.schoolId,
+        date,
+        slot,
+        substituteTeacherId,
+        academicYearId: context.academicYearId,
+        timetableDay: context.timetableDay,
+      });
+      if (!validation.available) {
+        const error = new Error(validation.error);
+        error.status = validation.status || 409;
         throw error;
       }
 
       const substituteUser = await activeTeachingUserExists(
         tx, req.schoolId, substituteTeacherId, context.academicYearId
       );
-      if (!substituteUser) {
-        const error = new Error('Selected teacher is inactive or is not scheduled to teach this academic year');
-        error.status = 400;
-        throw error;
-      }
 
       // If an auto-suggested substitution exists for this slot & date, remove it before assigning confirmed substitution
       await tx`
@@ -440,51 +388,6 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
           AND is_auto_suggested = true
           AND cancelled_at IS NULL
       `;
-
-      const [blocked] = await tx`
-        SELECT
-          EXISTS (
-            SELECT 1 FROM timetable_slots busy
-            WHERE busy.teacher_id = ${substituteTeacherId}
-              AND busy.academic_year_id = ${context.academicYearId}
-              AND LOWER(busy.day_of_week::text) = ${context.timetableDay}
-              AND busy.period_number = ${slot.period_number}
-              AND busy.deleted_at IS NULL
-          ) AS has_regular_class,
-          EXISTS (
-            SELECT 1 FROM timetable_substitutions other_cover
-            WHERE other_cover.school_id = ${req.schoolId}
-              AND other_cover.substitution_date = ${date}
-              AND other_cover.substitute_teacher_id = ${substituteTeacherId}
-              AND other_cover.period_number = ${slot.period_number}
-              AND other_cover.cancelled_at IS NULL
-          ) AS has_other_cover,
-          EXISTS (
-            SELECT 1 FROM staff_attendance absent
-            WHERE absent.school_id = ${req.schoolId}
-              AND absent.staff_id = ${substituteTeacherId}
-              AND absent.attendance_date = ${date}
-              AND absent.status = 'absent'
-              AND absent.deleted_at IS NULL
-          ) AS is_absent,
-          EXISTS (
-            SELECT 1 FROM timetable_substitutions absent_cover
-            WHERE absent_cover.school_id = ${req.schoolId}
-              AND absent_cover.substitution_date = ${date}
-              AND absent_cover.absent_teacher_id = ${substituteTeacherId}
-              AND absent_cover.cancelled_at IS NULL
-          ) AS declared_absent
-      `;
-      if (blocked.has_regular_class || blocked.has_other_cover) {
-        const error = new Error('That teacher is no longer free in this period. Refresh and choose another teacher.');
-        error.status = 409;
-        throw error;
-      }
-      if (blocked.is_absent || blocked.declared_absent) {
-        const error = new Error('That teacher is marked absent for the selected date');
-        error.status = 409;
-        throw error;
-      }
 
       const [row] = await tx`
         INSERT INTO timetable_substitutions (

@@ -57,17 +57,18 @@ const workbookBuffer = (worksheet, sheetName) => {
 
 export function missingMarksRows(readiness) {
   return (readiness?.papers || []).flatMap((paper) => {
-    const assigned = (paper.pending_teachers || []).map((teacher) => ({
+    if (!paper) return [];
+    const assigned = (paper.pending_teachers || []).filter(Boolean).map((teacher) => ({
       teacher_name: teacher.teacher_name || 'Teacher',
       class_name: paper.class_name || '',
-      sections: (teacher.section_names || []).join(', '),
+      sections: (teacher.section_names || []).filter(Boolean).join(', '),
       subject_name: paper.subject_name || '',
       expected_entries: safeNumber(teacher.expected_entries),
       entered_entries: safeNumber(teacher.entered_entries),
       missing_entries: safeNumber(teacher.missing_entries),
       assignment_status: 'Assigned',
     }));
-    const unassigned = (paper.unassigned_sections || []).map((section) => ({
+    const unassigned = (paper.unassigned_sections || []).filter(Boolean).map((section) => ({
       teacher_name: 'Unassigned',
       class_name: paper.class_name || '',
       sections: section.section_name || '',
@@ -93,38 +94,170 @@ export function missingMarksRows(readiness) {
   });
 }
 
+const headerCellStyle = {
+  fill: { fgColor: { rgb: '9A3412' } },
+  font: { bold: true, color: { rgb: 'FFFFFF' } },
+  alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+  border: {
+    top: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    bottom: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    left: { style: 'thin', color: { rgb: 'E5E7EB' } },
+    right: { style: 'thin', color: { rgb: 'E5E7EB' } },
+  },
+};
+
 export function buildMissingMarksWorkbook({ schoolName, examName, readiness }) {
   const rows = missingMarksRows(readiness);
-  const data = [
+
+  // ── Sheet 1: Compact, mobile-first Follow-up Sheet ──────────────────────────
+  const followupHeaders = ['#', 'Staff', 'Class / Section', 'Subject', 'Progress', 'Missing', 'Status'];
+  const followupCols = [
+    { wch: 6 },  // #
+    { wch: 18 }, // Staff
+    { wch: 16 }, // Class / Section
+    { wch: 18 }, // Subject
+    { wch: 11 }, // Progress
+    { wch: 9 },  // Missing
+    { wch: 17 }, // Status
+  ];
+
+  const followupDataRows = rows.map((row, index) => {
+    const classSection = row.class_name && row.sections
+      ? `${row.class_name} - ${row.sections}`
+      : (row.class_name || row.sections || '—');
+
+    let progress = '—';
+    if (typeof row.expected_entries === 'number' && typeof row.entered_entries === 'number' && row.expected_entries > 0) {
+      progress = `${row.entered_entries} / ${row.expected_entries}`;
+    }
+
+    const missing = typeof row.missing_entries === 'number' && row.missing_entries >= 0
+      ? row.missing_entries
+      : '';
+
+    let status = 'Follow up';
+    if (row.assignment_status === 'Teacher not assigned') {
+      status = 'Teacher not assigned';
+    } else if (row.assignment_status === 'No teacher assignment found' || row.assignment_status === 'Assignment unresolved') {
+      status = 'Assignment unresolved';
+    }
+
+    return [
+      index + 1,
+      row.teacher_name,
+      classSection,
+      row.subject_name,
+      progress,
+      missing,
+      status,
+    ];
+  });
+
+  const followupAoa = [
     [`${schoolName || 'School'} — Unuploaded Marks`],
     ['Exam', examName || ''],
-    ['Missing mark entries', safeNumber(readiness?.missing_entries)],
     ['Generated', new Date().toLocaleString('en-IN')],
+    ['Expected Entries', safeNumber(readiness?.expected_entries), 'Uploaded Entries', safeNumber(readiness?.entered_entries)],
+    ['Missing Entries', safeNumber(readiness?.missing_entries), 'Follow-up Items', rows.length],
     [],
-    ['S.No.', 'Staff Name', 'Class', 'Section(s)', 'Subject', 'Expected Entries', 'Uploaded Entries', 'Missing Entries', 'Assignment Status'],
-    ...rows.map((row, index) => [
-      index + 1, row.teacher_name, row.class_name, row.sections, row.subject_name,
-      row.expected_entries, row.entered_entries, row.missing_entries, row.assignment_status,
-    ]),
+    followupHeaders,
+    ...followupDataRows,
   ];
-  const worksheet = XLSX.utils.aoa_to_sheet(data);
-  worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
-  worksheet['!cols'] = [
-    { wch: 8 }, { wch: 28 }, { wch: 14 }, { wch: 18 }, { wch: 24 },
-    { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 22 },
-  ];
-  worksheet['!autofilter'] = { ref: `A6:I${Math.max(6, rows.length + 6)}` };
-  worksheet['!freeze'] = { xSplit: 0, ySplit: 6 };
-  const headerStyle = {
-    fill: { fgColor: { rgb: '9A3412' } },
-    font: { bold: true, color: { rgb: 'FFFFFF' } },
-    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-  };
-  for (let col = 0; col < 9; col += 1) {
-    const address = XLSX.utils.encode_cell({ r: 5, c: col });
-    if (worksheet[address]) worksheet[address].s = headerStyle;
+
+  const followupSheet = XLSX.utils.aoa_to_sheet(followupAoa);
+  followupSheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
+  followupSheet['!cols'] = followupCols;
+  followupSheet['!autofilter'] = { ref: `A7:G${Math.max(7, rows.length + 7)}` };
+  followupSheet['!freeze'] = { xSplit: 0, ySplit: 7 };
+
+  for (let col = 0; col < followupHeaders.length; col += 1) {
+    const address = XLSX.utils.encode_cell({ r: 6, c: col });
+    if (followupSheet[address]) followupSheet[address].s = headerCellStyle;
   }
-  return workbookBuffer(worksheet, 'Unuploaded Marks');
+
+  // Format data cells
+  for (let r = 0; r < followupDataRows.length; r += 1) {
+    const rowIdx = 7 + r;
+    const row = rows[r];
+    const isUnassigned = row.assignment_status === 'Teacher not assigned';
+    const isUnresolved = row.assignment_status === 'No teacher assignment found';
+
+    // Wrap text on text cells
+    for (let c = 0; c < followupHeaders.length; c += 1) {
+      const addr = XLSX.utils.encode_cell({ r: rowIdx, c });
+      if (!followupSheet[addr]) continue;
+      const cell = followupSheet[addr];
+      cell.s = cell.s || {};
+      cell.s.alignment = cell.s.alignment || {};
+      if (c === 0 || c === 5) {
+        cell.s.alignment.horizontal = 'right';
+      } else if (c === 4 || c === 6) {
+        cell.s.alignment.horizontal = 'center';
+      } else {
+        cell.s.alignment.wrapText = true;
+      }
+      if (isUnassigned || isUnresolved) {
+        cell.s.fill = { fgColor: { rgb: 'FFFBEB' } }; // Subtle amber highlight
+      }
+    }
+  }
+
+  // ── Sheet 2: Complete Numeric Details Sheet ─────────────────────────────────
+  const detailsHeaders = [
+    '#', 'Staff Name', 'Class', 'Sections', 'Subject',
+    'Expected', 'Uploaded', 'Missing', 'Assignment Status',
+  ];
+  const detailsCols = [
+    { wch: 6 },  // #
+    { wch: 22 }, // Staff Name
+    { wch: 12 }, // Class
+    { wch: 14 }, // Sections
+    { wch: 20 }, // Subject
+    { wch: 12 }, // Expected
+    { wch: 12 }, // Uploaded
+    { wch: 12 }, // Missing
+    { wch: 22 }, // Assignment Status
+  ];
+
+  const detailsDataRows = rows.map((row, index) => [
+    index + 1,
+    row.teacher_name,
+    row.class_name,
+    row.sections,
+    row.subject_name,
+    row.expected_entries,
+    row.entered_entries,
+    row.missing_entries,
+    row.assignment_status,
+  ]);
+
+  const detailsAoa = [
+    [`${schoolName || 'School'} — Missing Marks Details`],
+    ['Exam', examName || ''],
+    ['Generated', new Date().toLocaleString('en-IN')],
+    ['Total Missing Entries', safeNumber(readiness?.missing_entries)],
+    [],
+    detailsHeaders,
+    ...detailsDataRows,
+  ];
+
+  const detailsSheet = XLSX.utils.aoa_to_sheet(detailsAoa);
+  detailsSheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
+  detailsSheet['!cols'] = detailsCols;
+  detailsSheet['!autofilter'] = { ref: `A6:I${Math.max(6, rows.length + 6)}` };
+  detailsSheet['!freeze'] = { xSplit: 0, ySplit: 6 };
+
+  for (let col = 0; col < detailsHeaders.length; col += 1) {
+    const address = XLSX.utils.encode_cell({ r: 5, c: col });
+    if (detailsSheet[address]) detailsSheet[address].s = headerCellStyle;
+  }
+
+  // Assemble workbook buffer with Follow-up first
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, followupSheet, 'Follow-up');
+  XLSX.utils.book_append_sheet(workbook, detailsSheet, 'Details');
+
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellStyles: true });
 }
 
 const classMarksWorksheet = ({

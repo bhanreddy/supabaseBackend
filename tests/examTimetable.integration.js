@@ -548,10 +548,12 @@ async function run() {
 
       // 3. Partial unique index prevents duplicate active section paper
       await assert.rejects(
-        tx`
-          INSERT INTO exam_subjects (school_id, exam_id, class_id, class_section_id, subject_id, exam_date)
-          VALUES (${schoolId}, ${secExam.id}, ${c1.id}, ${cs1.id}, ${subjectIds.Math}, '2026-07-25')
-        `,
+        tx.savepoint(async (sp) => {
+          await sp`
+            INSERT INTO exam_subjects (school_id, exam_id, class_id, class_section_id, subject_id, exam_date)
+            VALUES (${schoolId}, ${secExam.id}, ${c1.id}, ${cs1.id}, ${subjectIds.Math}, '2026-07-25')
+          `;
+        }),
         /idx_exam_subjects_active_section|duplicate key value/i
       );
       assertions++;
