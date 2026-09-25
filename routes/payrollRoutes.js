@@ -5,6 +5,8 @@ import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendNotificationToUsers } from '../services/notificationService.js';
 
+import teacherPayrollRouter from './teacherPayrollRoutes.js';
+
 const router = express.Router();
 
 /**
@@ -78,6 +80,8 @@ async function notifyPayrollRecipient(staffId, schoolId) {
   );
 }
 
+router.use('/teacher', teacherPayrollRouter);
+
 /**
  * GET /distribution-status
  * Whether accounts payroll processing is blocked for this school
@@ -105,7 +109,7 @@ router.put('/:id/adjust', requirePayrollIssuer, asyncHandler(async (req, res) =>
   const adjustment = Number(salary_adjustment);
 
   const [existing] = await sql`
-    SELECT sp.id, sp.status, sp.base_salary, sp.bonus, sp.deductions
+    SELECT sp.id, sp.status, sp.base_salary, sp.bonus, sp.deductions, sp.calculation_engine
     FROM staff_payroll sp
     JOIN staff s ON sp.staff_id = s.id
     WHERE sp.id = ${id} AND s.school_id = ${req.schoolId}
@@ -113,6 +117,13 @@ router.put('/:id/adjust', requirePayrollIssuer, asyncHandler(async (req, res) =>
 
   if (!existing) {
     return res.status(404).json({ error: 'Payroll record not found' });
+  }
+
+  if (existing.calculation_engine === 'teacher-salary-v1') {
+    return res.status(409).json({
+      error: 'Calculated teacher payroll cannot be overwritten. Add an approved manual adjustment instead.',
+      code: 'USE_TEACHER_PAYROLL',
+    });
   }
 
   if (existing.status !== 'pending') {
@@ -157,9 +168,25 @@ router.post('/process', requirePayrollIssuer, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'staff_id, month, and year are required' });
   }
 
-  const [staffCheck] = await sql`SELECT id FROM staff WHERE id = ${staff_id} AND school_id = ${req.schoolId}`;
+  const [staffCheck] = await sql`
+    SELECT s.id, sp.calculation_engine
+    FROM staff s
+    LEFT JOIN staff_payroll sp
+      ON sp.staff_id = s.id
+     AND sp.payroll_month = ${month}
+     AND sp.payroll_year = ${year}
+     AND sp.run_kind = 'ORIGINAL'
+     AND sp.run_sequence = 0
+    WHERE s.id = ${staff_id} AND s.school_id = ${req.schoolId}
+  `;
   if (!staffCheck) {
     return res.status(404).json({ error: 'Staff not found' });
+  }
+  if (staffCheck.calculation_engine === 'teacher-salary-v1') {
+    return res.status(409).json({
+      error: 'Use the teacher payroll pay step after the payslip is locked.',
+      code: 'USE_TEACHER_PAYROLL',
+    });
   }
 
   await sql`SELECT recalculate_staff_payroll(${staff_id}, ${month}, ${year})`;
@@ -205,12 +232,19 @@ router.put('/:id/pay', requirePayrollIssuer, asyncHandler(async (req, res) => {
   const payment_date = new Date();
 
   const [payrollCheck] = await sql`
-    SELECT sp.id FROM staff_payroll sp
+    SELECT sp.id, sp.calculation_engine
+    FROM staff_payroll sp
     JOIN staff s ON sp.staff_id = s.id
     WHERE sp.id = ${id} AND s.school_id = ${req.schoolId}
   `;
   if (!payrollCheck) {
     return res.status(404).json({ error: 'Payroll record not found' });
+  }
+  if (payrollCheck.calculation_engine === 'teacher-salary-v1') {
+    return res.status(409).json({
+      error: 'Use the teacher payroll pay step after the payslip is locked.',
+      code: 'USE_TEACHER_PAYROLL',
+    });
   }
 
   const [payroll] = await sql`

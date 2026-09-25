@@ -10,8 +10,6 @@ import {
   validateSubstituteAvailability,
   getFirstAfternoonPeriodNumber,
   getTodayInSchoolTimezone,
-  getUnavailableTeachers,
-  requiresManualSubstitutionReason,
   weekdayForDate,
 } from '../services/teacherAvailabilityService.js';
 
@@ -396,22 +394,6 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
       if (!validation.available) {
         const error = new Error(validation.error);
         error.status = validation.status || 409;
-        throw error;
-      }
-
-      const { unavailableMap } = await getUnavailableTeachers(tx, {
-        schoolId: req.schoolId,
-        date,
-      });
-      const firstAfternoonPeriod = await getFirstAfternoonPeriodNumber(tx, req.schoolId);
-      const manual = requiresManualSubstitutionReason(
-        unavailableMap.get(slot.absent_teacher_id),
-        slot.period_number,
-        firstAfternoonPeriod,
-      );
-      if (manual && String(reason || '').trim().length < 3) {
-        const error = new Error('A short reason is required when the regular teacher is not on leave or marked absent');
-        error.status = 400;
         throw error;
       }
 

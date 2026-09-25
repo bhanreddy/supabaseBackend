@@ -39,6 +39,10 @@ const contentEngineHardeningMigrationName = '20260914_v439_content_engine_harden
 const databaseBackupMigrationName = '20260914_v445_database_backup_subsystem.sql';
 const transportReliabilityMigrationName = '20260921_transport_reliability.sql';
 const examPerSectionTimetableMigrationName = '20260923_exam_per_section_timetable.sql';
+const parentProfilePhotoPermissionMigrationName = '20260925_parent_profile_photo_permission.sql';
+const examHallTicketBatchesMigrationName = '20260925_exam_hall_ticket_batches.sql';
+const teacherSalaryPayrollMigrationName = '20260925_teacher_salary_payroll.sql';
+const leaveSalaryApprovalMigrationName = '20260925_leave_salary_approval.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -225,6 +229,10 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
   await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
   await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
+  await applyNamedSqlMigration(db, parentProfilePhotoPermissionMigrationName, 4490925);
+  await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
+  await applyNamedSqlMigration(db, teacherSalaryPayrollMigrationName, 4510925);
+  await applyNamedSqlMigration(db, leaveSalaryApprovalMigrationName, 4520925);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -246,6 +254,27 @@ export async function verifyReleaseDatabase(db) {
   const [examSectionMigration] = await db`SELECT 1 FROM schema_migrations
     WHERE filename = ${examPerSectionTimetableMigrationName}`;
   if (!examSectionMigration) throw new Error('Exam per-section timetable migration is not recorded');
+  const [parentPhotoMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${parentProfilePhotoPermissionMigrationName}`;
+  if (!parentPhotoMigration) throw new Error('Parent profile photo permission migration is not recorded');
+  const [hallTicketMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${examHallTicketBatchesMigrationName}`;
+  if (!hallTicketMigration) throw new Error('Exam hall-ticket batch migration is not recorded');
+  const [teacherSalaryMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${teacherSalaryPayrollMigrationName}`;
+  if (!teacherSalaryMigration) throw new Error('Teacher salary payroll migration is not recorded');
+  const [teacherSalaryTable] = await db`SELECT to_regclass('public.teacher_payroll_snapshots') AS name`;
+  if (!teacherSalaryTable?.name) throw new Error('Teacher salary payroll snapshot table is missing');
+  const [leaveSalaryMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${leaveSalaryApprovalMigrationName}`;
+  if (!leaveSalaryMigration) throw new Error('Leave salary approval migration is not recorded');
+  const [leaveSalaryColumn] = await db`SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='leave_applications' AND column_name='payroll_treatment'`;
+  if (!leaveSalaryColumn) throw new Error('Leave payroll treatment column is missing');
+  for (const name of ['exam_hall_ticket_batches', 'exam_hall_ticket_batch_students']) {
+    const [table] = await db`SELECT to_regclass(${`public.${name}`}) AS name`;
+    if (!table?.name) throw new Error(`Exam hall-ticket tracking table is missing: ${name}`);
+  }
   for (const name of ['idx_exam_subjects_active_class','idx_exam_subjects_active_section']) {
     const [index] = await db`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=${name}`;
@@ -452,6 +481,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
       await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
       await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
+      await applyNamedSqlMigration(db, parentProfilePhotoPermissionMigrationName, 4490925);
+      await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
+      await applyNamedSqlMigration(db, teacherSalaryPayrollMigrationName, 4510925);
+      await applyNamedSqlMigration(db, leaveSalaryApprovalMigrationName, 4520925);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

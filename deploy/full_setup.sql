@@ -1062,6 +1062,7 @@ CREATE TABLE IF NOT EXISTS leave_applications (
     reviewed_by UUID REFERENCES users(id),
     reviewed_at TIMESTAMPTZ,
     review_remarks TEXT,
+    payroll_treatment TEXT CHECK (payroll_treatment IS NULL OR payroll_treatment IN ('PAID_CL', 'PAID_LEAVE', 'UNPAID')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_leave_dates CHECK (end_date >= start_date)

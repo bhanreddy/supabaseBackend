@@ -293,12 +293,11 @@ test('approved leave can still be covered without a manual reason', async () => 
   assert.equal(state.inserts.length, 1);
 });
 
-test('requires a short reason for a manual substitution', async () => {
+test('allows a manual substitution without a reason', async () => {
   resetState();
-  const missing = await request('POST', '/substitutions', { body: assignmentBody({ reason: ' ' }) });
-  assert.equal(missing.status, 400);
-  assert.match(missing.json.error, /short reason/i);
-  assert.equal(state.inserts.length, 0);
+  const created = await request('POST', '/substitutions', { body: assignmentBody({ reason: ' ' }) });
+  assert.equal(created.status, 201);
+  assert.equal(state.inserts.length, 1);
 });
 
 test('allows a future date and rejects a past date', async () => {

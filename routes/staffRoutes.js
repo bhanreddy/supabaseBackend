@@ -191,14 +191,33 @@ function formatStaffPayslipRows(payslips) {
     date.setMonth(Number(p.month) - 1);
     const monthName = date.toLocaleString('default', { month: 'long' });
     const statusStr = p.status != null ? String(p.status) : '';
+    const result = p.calculation_result || null;
+    const lines = Array.isArray(result?.lineItems)
+      ? result.lineItems.map((line) => ({
+        name: line.name,
+        kind: line.kind,
+        quantity: line.quantity,
+        rate: line.rate,
+        amount: line.amount,
+        explanation: line.explanation,
+      }))
+      : [];
     return {
       id: p.id,
       month: `${monthName} ${p.year}`,
       status: statusStr ? statusStr.charAt(0).toUpperCase() + statusStr.slice(1) : '',
-      earnings: formatCurrency(p.earnings),
-      deductions: formatCurrency(p.deductions),
-      net: formatCurrency(p.net),
-      payment_date: p.payment_date
+      earnings: result?.grossEarnings ? formatCurrency(result.grossEarnings) : formatCurrency(p.earnings),
+      deductions: result?.totalDeductions ? formatCurrency(result.totalDeductions) : formatCurrency(p.deductions),
+      net: result?.netSalary ? formatCurrency(result.netSalary) : formatCurrency(p.net),
+      payment_date: p.payment_date,
+      payment_reference: p.payment_reference || null,
+      amount_in_words: result?.amountInWords || null,
+      per_day_salary: result?.perDaySalary || null,
+      calendar_days: result?.month?.calendarDays || null,
+      employment_days: result?.employment?.eligibleDays || null,
+      attendance: result?.attendance || null,
+      identity: result?.identity || null,
+      lines,
     };
   });
 }
@@ -214,10 +233,14 @@ async function fetchPayslipsForStaffId(staffId, schoolId, opts = {}) {
       sp.payroll_month as month,
       sp.payroll_year as year,
       sp.status,
+      sp.workflow_status,
       sp.net_salary as net,
       sp.base_salary + COALESCE(sp.bonus, 0) as earnings,
       sp.deductions as deductions,
       sp.payment_date,
+      sp.payment_reference,
+      sn.result AS calculation_result,
+      sn.publish_at,
       st.staff_code,
       p.display_name as staff_name,
       sd.name as designation
@@ -225,8 +248,18 @@ async function fetchPayslipsForStaffId(staffId, schoolId, opts = {}) {
     JOIN staff st ON sp.staff_id = st.id AND st.school_id = ${schoolId}
     JOIN persons p ON st.person_id = p.id
     LEFT JOIN staff_designations sd ON st.designation_id = sd.id
+    LEFT JOIN teacher_payroll_snapshots sn ON sn.staff_payroll_id = sp.id
     WHERE sp.staff_id = ${staffId}
-    ${disbursedOnly ? sql`AND sp.status = 'paid'` : sql``}
+    ${disbursedOnly ? sql`AND (
+      sp.status = 'paid'
+      OR (
+        sp.calculation_engine = 'teacher-salary-v1'
+        AND (
+          (COALESCE(sn.publish_at, 'LOCKED') = 'APPROVED' AND sp.workflow_status IN ('APPROVED', 'LOCKED', 'PAID'))
+          OR (COALESCE(sn.publish_at, 'LOCKED') <> 'APPROVED' AND sp.workflow_status IN ('LOCKED', 'PAID'))
+        )
+      )
+    )` : sql``}
     ORDER BY sp.payroll_year DESC, sp.payroll_month DESC
   `;
 }

@@ -11,6 +11,11 @@ import {
   sendSchoolEmailConflict
 } from '../utils/schoolEmail.js';
 import { resolveDbRoleCode } from '../utils/roleCodes.js';
+import {
+  PARENT_PROFILE_PHOTO_SETTING_KEY,
+  isParentPortalAccount,
+  parentProfilePhotoChangeDecision,
+} from '../utils/parentProfilePhotoPolicy.js';
 
 const router = express.Router();
 
@@ -303,11 +308,42 @@ router.delete('/:id/roles/:roleId', async (req, res) => {
   }
 });
 
+async function parentProfilePhotoBlocked(req, res) {
+  if (!isParentPortalAccount(req.user?.roles)) return false;
+
+  let settingValue = null;
+  try {
+    const schoolId = req.schoolId ?? req.user?.schoolId;
+    if (schoolId != null && schoolId !== '') {
+      const [row] = await sql`
+        SELECT value
+        FROM school_settings
+        WHERE school_id = ${schoolId}
+          AND key = ${PARENT_PROFILE_PHOTO_SETTING_KEY}
+        LIMIT 1
+      `;
+      settingValue = row?.value;
+    }
+  } catch {
+    settingValue = null;
+  }
+
+  const decision = parentProfilePhotoChangeDecision({
+    roles: req.user?.roles,
+    settingValue,
+  });
+  if (decision.allowed) return false;
+
+  res.status(decision.status).json({ error: decision.error });
+  return true;
+}
+
 /**
  * PATCH /users/me/photo
  * Self-service profile picture upload/update for ANY portal (parent/admin/
  * staff/driver/accountant). Strictly scoped to the authenticated user's own
  * person via req.user.person_id — one user can never overwrite another's photo.
+ * Parent-portal accounts are refused unless the school setting is enabled.
  *
  * Multipart form field: "photo". The server re-encodes to a square JPEG in the
  * 50–100 KB band, upserts it to the public `avatars` bucket at a stable path,
@@ -317,6 +353,7 @@ router.patch('/me/photo', singleAvatarUpload, handleAvatarMulterError, async (re
   if (!req.user || !req.user.person_id) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  if (await parentProfilePhotoBlocked(req, res)) return;
   if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
     return res.status(400).json({ error: 'No image provided. Attach an image under the "photo" field.' });
   }
@@ -353,6 +390,7 @@ router.delete('/me/photo', async (req, res) => {
   if (!req.user || !req.user.person_id) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  if (await parentProfilePhotoBlocked(req, res)) return;
 
   try {
     await removeAvatar(req.schoolId, req.user.person_id).catch(() => {});

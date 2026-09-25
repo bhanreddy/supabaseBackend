@@ -7,6 +7,12 @@ import { sendNotificationToUsers } from '../services/notificationService.js';
 import { translateFields } from '../services/geminiTranslator.js';
 import { emitSchoolEvent, AUTOMATION_EVENTS } from '../services/automationEventService.js';
 import { handleStaffLeaveCancelled } from '../services/leaveSubstitutionService.js';
+import {
+  LEAVE_PAYROLL_TREATMENTS,
+  attachLeavePayrollContext,
+  defaultPayrollTreatment,
+  findLockedPayrollForLeave,
+} from '../services/leavePayrollContextService.js';
 
 const router = express.Router();
 
@@ -26,14 +32,19 @@ router.get('/', requirePermission('leaves.view'), asyncHandler(async (req, res) 
     leaves = await sql`
       SELECT
         la.id, la.leave_type, la.start_date, la.end_date, la.reason, la.reason_te, la.status,
-        la.review_remarks, la.review_remarks_te, la.created_at,
+        la.review_remarks, la.review_remarks_te, la.created_at, la.payroll_treatment,
         applicant.display_name as applicant_name,
+        staff_member.id AS staff_id,
         (SELECT r.code FROM user_roles ur JOIN roles r ON ur.role_id = r.id WHERE ur.user_id = u.id LIMIT 1) as applicant_role,
         reviewer.display_name as reviewed_by_name,
         la.reviewed_at
       FROM leave_applications la
       JOIN users u ON la.applicant_id = u.id
       JOIN persons applicant ON u.person_id = applicant.id
+      LEFT JOIN staff staff_member
+        ON staff_member.person_id = u.person_id
+       AND staff_member.school_id = u.school_id
+       AND staff_member.deleted_at IS NULL
       LEFT JOIN users ru ON la.reviewed_by = ru.id
       LEFT JOIN persons reviewer ON ru.person_id = reviewer.id
       WHERE u.school_id = ${schoolId}
@@ -53,7 +64,7 @@ router.get('/', requirePermission('leaves.view'), asyncHandler(async (req, res) 
     leaves = await sql`
       SELECT
         la.id, la.leave_type, la.start_date, la.end_date, la.reason, la.reason_te, la.status,
-        la.review_remarks, la.review_remarks_te, la.created_at, la.reviewed_at,
+        la.review_remarks, la.review_remarks_te, la.created_at, la.reviewed_at, la.payroll_treatment,
         reviewer.display_name as reviewed_by_name
       FROM leave_applications la
       LEFT JOIN users ru ON la.reviewed_by = ru.id
@@ -66,7 +77,8 @@ router.get('/', requirePermission('leaves.view'), asyncHandler(async (req, res) 
     `;
   }
 
-  return sendSuccess(res, req.schoolId, leaves);
+  const response = isAdmin ? await attachLeavePayrollContext(leaves, schoolId) : leaves;
+  return sendSuccess(res, req.schoolId, response);
 }));
 
 /**
@@ -81,10 +93,15 @@ router.get('/:id', requirePermission('leaves.view'), asyncHandler(async (req, re
     SELECT
       la.*,
       applicant.display_name as applicant_name,
+      staff_member.id AS staff_id,
       reviewer.display_name as reviewed_by_name
     FROM leave_applications la
     JOIN users u ON la.applicant_id = u.id
     JOIN persons applicant ON u.person_id = applicant.id
+    LEFT JOIN staff staff_member
+      ON staff_member.person_id = u.person_id
+     AND staff_member.school_id = u.school_id
+     AND staff_member.deleted_at IS NULL
     LEFT JOIN users ru ON la.reviewed_by = ru.id
     LEFT JOIN persons reviewer ON ru.person_id = reviewer.id
     WHERE la.id = ${id}
@@ -172,14 +189,19 @@ router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res
  */
 router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { status, review_remarks, leave_type, start_date, end_date, reason } = req.body;
+  const { status, review_remarks, leave_type, start_date, end_date, reason, payroll_treatment } = req.body;
   const schoolId = req.schoolId;
 
   // LV2: Fetch with school-scoped ownership
   const [existing] = await sql`
-    SELECT la.applicant_id, la.status
+    SELECT la.applicant_id, la.status, la.leave_type, la.start_date, la.end_date,
+           staff_member.id AS staff_id
     FROM leave_applications la
     JOIN users u ON la.applicant_id = u.id
+    LEFT JOIN staff staff_member
+      ON staff_member.person_id = u.person_id
+     AND staff_member.school_id = u.school_id
+     AND staff_member.deleted_at IS NULL
     WHERE la.id = ${id}
       AND u.school_id = ${schoolId}
   `;
@@ -191,6 +213,28 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
   if (status && (status === 'approved' || status === 'rejected')) {
     if (!isApprover) {
       return res.status(403).json({ error: 'Only authorized users can approve/reject leaves' });
+    }
+
+    const validTreatments = Object.values(LEAVE_PAYROLL_TREATMENTS);
+    if (payroll_treatment != null && !validTreatments.includes(payroll_treatment)) {
+      return res.status(400).json({
+        error: `payroll_treatment must be one of: ${validTreatments.join(', ')}`,
+        code: 'INVALID_PAYROLL_TREATMENT',
+      });
+    }
+
+    const decidedTreatment = status === 'approved'
+      ? (payroll_treatment || defaultPayrollTreatment(existing.leave_type))
+      : null;
+
+    let lockedPayroll = null;
+    if (status === 'approved' && existing.staff_id) {
+      lockedPayroll = await findLockedPayrollForLeave({
+        schoolId,
+        staffId: existing.staff_id,
+        startDate: existing.start_date,
+        endDate: existing.end_date,
+      });
     }
 
     let sql_review_remarks_te = sql`review_remarks_te`;
@@ -207,6 +251,7 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
         status = ${status},
         review_remarks = ${review_remarks || null},
         review_remarks_te = ${sql_review_remarks_te},
+        payroll_treatment = ${decidedTreatment},
         reviewed_by = ${req.user.internal_id},
         reviewed_at = NOW()
       WHERE id = ${id}
@@ -241,14 +286,30 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
             await sendNotificationToUsers(
               [existing.applicant_id],
               eventType,
-              { message: `Your leave application has been ${status}.` }
+              {
+                message: status === 'approved'
+                  ? `Your leave application has been approved${decidedTreatment === 'PAID_CL' ? ' with casual leave' : decidedTreatment === 'UNPAID' ? ' as unpaid leave' : ''}.`
+                  : 'Your leave application has been rejected.',
+              }
             );
           }
         }
       } catch (err) {}
     })();
 
-    return sendSuccess(res, req.schoolId, { message: `Leave ${status}`, leave: updated });
+    return sendSuccess(res, req.schoolId, {
+      message: `Leave ${status}`,
+      leave: updated,
+      payroll_follow_up: lockedPayroll ? {
+        required: true,
+        code: 'SUPPLEMENTARY_PAYROLL_REQUIRED',
+        payroll_id: lockedPayroll.id,
+        month: lockedPayroll.payroll_month,
+        year: lockedPayroll.payroll_year,
+        workflow_status: lockedPayroll.workflow_status,
+        message: 'This payroll period is already frozen. The leave is approved, but its salary difference must be handled through the supplementary payroll workflow.',
+      } : null,
+    });
   }
 
   if (isOwner) {

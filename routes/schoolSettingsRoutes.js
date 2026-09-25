@@ -6,6 +6,11 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { singleSignatureUpload, handleAvatarMulterError } from '../middleware/avatarUpload.js';
 import { normalizePrincipalSignature } from '../utils/principalSignatureImage.js';
 import { uploadPrincipalSignature, removePrincipalSignature } from '../utils/schoolAssetStorage.js';
+import {
+  PARENT_PROFILE_PHOTO_SETTING_KEY,
+  isParentProfilePhotoUploadEnabled,
+  normalizeParentProfilePhotoSetting,
+} from '../utils/parentProfilePhotoPolicy.js';
 
 const router = express.Router();
 
@@ -25,6 +30,7 @@ const SETTING_KEYS = [
   'school_board',
   'enable_driver_bus_attendance',
   'result_ranking_method',
+  PARENT_PROFILE_PHOTO_SETTING_KEY,
 ];
 
 const RESULT_RANKING_METHODS = new Set(['competition', 'attendance_tiebreak', 'dense']);
@@ -48,6 +54,12 @@ function buildSettingsPayload(rows, schoolRow) {
   if (!payload.school_name && schoolRow?.name) payload.school_name = schoolRow.name;
   if (!payload.school_address && schoolRow?.address) payload.school_address = schoolRow.address;
   if (!payload.school_logo_url && schoolRow?.logo_url) payload.school_logo_url = schoolRow.logo_url;
+
+  payload[PARENT_PROFILE_PHOTO_SETTING_KEY] = isParentProfilePhotoUploadEnabled(
+    settings[PARENT_PROFILE_PHOTO_SETTING_KEY],
+  )
+    ? 'true'
+    : 'false';
 
   return payload;
 }
@@ -116,14 +128,24 @@ router.put(
 
     const validKeys = SETTING_KEYS;
 
-    for (const [key, value] of Object.entries(updates)) {
+    for (const [key, rawValue] of Object.entries(updates)) {
       if (!validKeys.includes(key)) {
         return res.status(400).json({ error: `Invalid setting key: ${key}` });
       }
+      let value = rawValue;
       if (key === 'result_ranking_method' && !RESULT_RANKING_METHODS.has(value)) {
         return res.status(400).json({
           error: 'result_ranking_method must be competition, attendance_tiebreak, or dense',
         });
+      }
+      if (key === PARENT_PROFILE_PHOTO_SETTING_KEY) {
+        const normalized = normalizeParentProfilePhotoSetting(value);
+        if (!normalized) {
+          return res.status(400).json({
+            error: 'allow_parent_profile_photo_upload must be true or false',
+          });
+        }
+        value = normalized;
       }
 
       // SS2: UPSERT with (school_id, key) unique constraint — no cross-tenant writes possible

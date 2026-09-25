@@ -2970,6 +2970,10 @@ BEGIN
     ('expenses.edit', 'Edit Expenses'), ('expenses.delete', 'Delete Expenses'),
     ('expenses.approve', 'Approve Expenses'),
     ('payroll.process', 'Process Payroll'),
+    ('payroll.prepare', 'Prepare Payroll'),
+    ('payroll.approve', 'Approve Payroll'),
+    ('payroll.pay', 'Mark Payroll Paid'),
+    ('payroll.audit', 'Audit Payroll'),
     ('academic_year.upgrade', 'Upgrade Academic Year'),
     ('certificates.issue', 'Issue Certificates'),
     -- RBAC & Segregation-of-Duties (Phase 1)
@@ -4666,6 +4670,7 @@ CREATE TABLE IF NOT EXISTS leave_applications (
     reviewed_at TIMESTAMPTZ,
     review_remarks TEXT,
     review_remarks_te TEXT,
+    payroll_treatment TEXT CHECK (payroll_treatment IS NULL OR payroll_treatment IN ('PAID_CL', 'PAID_LEAVE', 'UNPAID')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_leave_dates CHECK (end_date >= start_date),
@@ -4677,6 +4682,8 @@ CREATE INDEX IF NOT EXISTS idx_leave_app_school_id ON leave_applications(school_
 
 CREATE INDEX IF NOT EXISTS idx_leaves_applicant ON leave_applications(applicant_id);
 CREATE INDEX IF NOT EXISTS idx_leaves_status ON leave_applications(status);
+CREATE INDEX IF NOT EXISTS idx_leave_payroll_cl_usage ON leave_applications(school_id, applicant_id, start_date, end_date)
+WHERE status = 'approved' AND payroll_treatment = 'PAID_CL';
 
 DROP TRIGGER IF EXISTS trg_leaves_updated ON leave_applications;
 CREATE TRIGGER trg_leaves_updated

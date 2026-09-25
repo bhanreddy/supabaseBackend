@@ -16,6 +16,9 @@ const JWT_SCHOOL_ID_PATHS = [
   // current and future transport endpoint inherits the same contract.
   /^\/api\/v1\/transport(?:\/.*)?$/i,
   /^\/api\/v1\/calendar(?:\/.*)?$/i,
+  // Hall-ticket fee eligibility and batch history are always scoped to the
+  // authenticated school; no request field may select another tenant.
+  /^\/api\/v1\/hall-tickets(?:\/.*)?$/i,
   /^\/api\/v1\/visitor-management(?:\/.*)?$/i,
   /^\/api\/visitor-management(?:\/.*)?$/i,
   /^\/api\/v1\/hostel(?:\/.*)?$/i,
