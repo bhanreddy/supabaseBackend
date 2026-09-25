@@ -6,6 +6,7 @@ import {
   validateSubstituteAvailability,
   getFirstAfternoonPeriodNumber,
   getScheduleContext,
+  requiresManualSubstitutionReason,
 } from '../services/teacherAvailabilityService.js';
 
 describe('teacherAvailabilityService', () => {
@@ -475,6 +476,155 @@ describe('teacherAvailabilityService', () => {
     assert.ok(result.error.includes('inactive'));
   });
 
+  test('substitute validation rejects a teacher already covering another class in the period', async () => {
+    const mockDb = createMockDb({ hasOtherCover: true });
+    const result = await validateSubstituteAvailability(mockDb, {
+      schoolId: 1,
+      date: '2026-09-24',
+      slot: { absent_teacher_id: 't-absent', period_number: 2 },
+      substituteTeacherId: 't-busy',
+      academicYearId: 'ay-1',
+      timetableDay: 'monday',
+    });
+
+    assert.equal(result.available, false);
+    assert.equal(result.status, 409);
+    assert.ok(result.error.includes('no longer free'));
+  });
+
+  test('substitute validation rejects half-day attendance in an afternoon period', async () => {
+    const mockDb = createMockDb({ isHalfDayAfternoon: true });
+    const result = await validateSubstituteAvailability(mockDb, {
+      schoolId: 1,
+      date: '2026-09-24',
+      slot: { absent_teacher_id: 't-absent', period_number: 6 },
+      substituteTeacherId: 't-half',
+      academicYearId: 'ay-1',
+      timetableDay: 'monday',
+    });
+
+    assert.equal(result.available, false);
+    assert.equal(result.status, 409);
+    assert.ok(result.error.includes('half-day'));
+  });
+
+  test('manual cover is required only when the regular teacher is still available', () => {
+    assert.equal(requiresManualSubstitutionReason(null, 1, 5), true);
+    assert.equal(requiresManualSubstitutionReason({ is_half_day: true }, 2, 5), true);
+    assert.equal(requiresManualSubstitutionReason({ is_half_day: true }, 5, 5), false);
+    assert.equal(requiresManualSubstitutionReason({ is_half_day: false, sources: ['leave'] }, 1, 5), false);
+    assert.equal(requiresManualSubstitutionReason({ is_half_day: false, sources: ['attendance'] }, 3, 5), false);
+  });
+
+  test('scope=all loads scheduled slots without counting them as uncovered before assignment', async () => {
+    const slots = [
+      {
+        slot_id: 'slot-free',
+        period_number: 1,
+        is_break: false,
+        regular_teacher_id: 't-free',
+        regular_teacher_name: 'Free Teacher',
+        class_name: '6',
+        section_name: 'A',
+        subject_name: 'English',
+      },
+      {
+        slot_id: 'slot-break',
+        period_number: 2,
+        is_break: true,
+        regular_teacher_id: 't-free',
+        regular_teacher_name: 'Free Teacher',
+        class_name: '6',
+        section_name: 'A',
+        subject_name: 'Lunch',
+      },
+      {
+        slot_id: 'slot-open',
+        period_number: 3,
+        is_break: false,
+        regular_teacher_id: null,
+        class_name: '7',
+        section_name: 'B',
+        subject_name: 'Art',
+      },
+    ];
+    const mockDb = createMockDb({
+      leaves: [],
+      attendance: [],
+      scheduleContext: { academic_year_id: 'ay-1', timetable_mode: 'uniform' },
+      slots,
+    });
+
+    const all = await getSubstitutionBoardData(mockDb, {
+      schoolId: 1,
+      date: '2026-09-24',
+      scope: 'all',
+    });
+    const affected = await getSubstitutionBoardData(mockDb, {
+      schoolId: 1,
+      date: '2026-09-24',
+      scope: 'affected',
+    });
+
+    assert.equal(all.slots.length, 3);
+    assert.deepEqual(all.slots.map((slot) => slot.slot_id), ['slot-free', 'slot-break', 'slot-open']);
+    assert.equal(all.summary.total_slots, 0);
+    assert.equal(all.summary.uncovered_slots, 0);
+    assert.equal(all.summary.covered_slots, 0);
+    assert.equal(affected.slots.length, 0);
+    assert.equal(affected.summary.uncovered_slots, 0);
+  });
+
+  test('a manual substitution appears on the affected board and is labelled manual', async () => {
+    const mockDb = createMockDb({
+      leaves: [],
+      attendance: [],
+      scheduleContext: { academic_year_id: 'ay-1', timetable_mode: 'uniform' },
+      slots: [
+        {
+          slot_id: 'slot-free',
+          period_number: 1,
+          is_break: false,
+          regular_teacher_id: 't-free',
+          regular_teacher_name: 'Free Teacher',
+          class_name: '6',
+          section_name: 'A',
+          subject_name: 'English',
+        },
+        {
+          slot_id: 'slot-manual',
+          period_number: 4,
+          is_break: false,
+          regular_teacher_id: 't-free',
+          regular_teacher_name: 'Free Teacher',
+          class_name: '8',
+          section_name: 'C',
+          subject_name: 'Science',
+          substitution_id: 'sub-1',
+          substitute_teacher_id: 't-cover',
+          substitute_teacher_name: 'Cover Teacher',
+          reason: 'Department meeting',
+        },
+      ],
+    });
+
+    const board = await getSubstitutionBoardData(mockDb, {
+      schoolId: 1,
+      date: '2026-09-24',
+      scope: 'affected',
+    });
+
+    assert.equal(board.slots.length, 1);
+    assert.equal(board.slots[0].slot_id, 'slot-manual');
+    assert.deepEqual(board.slots[0].unavailability_sources, ['manual']);
+    assert.equal(board.slots[0].unavailability_label, 'Manual Substitution');
+    assert.equal(board.slots[0].substitute_teacher_name, 'Cover Teacher');
+    assert.equal(board.slots[0].reason, 'Department meeting');
+    assert.equal(board.summary.total_slots, 1);
+    assert.equal(board.summary.covered_slots, 1);
+    assert.equal(board.summary.uncovered_slots, 0);
+  });
+
   test('tenant isolation ensures schoolId is strictly scoped in queries', async () => {
     const capturedValues = [];
     const mockDb = async (strings, ...values) => {
@@ -486,8 +636,14 @@ describe('teacherAvailabilityService', () => {
       schoolId: 42,
       date: '2026-09-24',
     });
+    await getSubstitutionBoardData(mockDb, {
+      schoolId: 42,
+      date: '2026-09-24',
+      scope: 'all',
+    });
 
-    // Verify schoolId 42 was passed to SQL queries
+    // Verify schoolId 42 was passed to SQL queries and another school was not.
     assert.ok(capturedValues.includes(42), 'schoolId 42 must be present in SQL parameters');
+    assert.equal(capturedValues.includes(99), false);
   });
 });

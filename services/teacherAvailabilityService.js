@@ -278,7 +278,8 @@ export async function getSubstitutionBoardData(exec, { schoolId, date, scope = '
   `;
 
   // Annotate each slot with unavailability metadata and filter according to scope
-  const annotatedSlots = [];
+  const operationalSlots = [];
+  const visibleSlots = [];
   const teacherAffectedCounts = new Map();
 
   for (const slot of allSlots) {
@@ -321,9 +322,10 @@ export async function getSubstitutionBoardData(exec, { schoolId, date, scope = '
       unavailability_label: unavailabilityLabel,
     };
 
-    if (scope === 'all' || isAffected || hasActiveCover) {
-      annotatedSlots.push(annotatedSlot);
-    }
+    // Operational rows are leave/absence slots plus any active cover.
+    // Ordinary timetable rows are picker-only and must not become uncovered counts.
+    if (isAffected || hasActiveCover) operationalSlots.push(annotatedSlot);
+    if (scope === 'all' || isAffected || hasActiveCover) visibleSlots.push(annotatedSlot);
   }
 
   // Update affected counts on unavailable teachers
@@ -331,9 +333,10 @@ export async function getSubstitutionBoardData(exec, { schoolId, date, scope = '
     teacher.affected_slots_count = teacherAffectedCounts.get(teacher.id) || 0;
   }
 
-  // Covered slots: slots with a confirmed substitute teacher
-  const coveredSlotsCount = annotatedSlots.filter((s) => Boolean(s.substitution_id && s.substitute_teacher_name)).length;
-  const uncoveredSlotsCount = annotatedSlots.length - coveredSlotsCount;
+  // Covered slots: slots with a confirmed substitute teacher.
+  // Summary always uses operational rows, even when scope=all returns the full day.
+  const coveredSlotsCount = operationalSlots.filter((s) => Boolean(s.substitution_id && s.substitute_teacher_name)).length;
+  const uncoveredSlotsCount = operationalSlots.length - coveredSlotsCount;
 
   // Build the list of teachers for quick filtering
   const teachers = unavailableTeachers.map((t) => ({
@@ -347,17 +350,27 @@ export async function getSubstitutionBoardData(exec, { schoolId, date, scope = '
     timetable_day: context.timetableDay,
     timetable_mode: context.mode,
     periods,
-    slots: annotatedSlots,
+    slots: visibleSlots,
     teachers,
     unavailable_teachers: unavailableTeachers,
     attendance_recorded: attendanceRecorded,
     summary: {
-      total_slots: annotatedSlots.length,
+      total_slots: operationalSlots.length,
       covered_slots: coveredSlotsCount,
       uncovered_slots: uncoveredSlotsCount,
       unavailable_teachers_count: unavailableTeachers.length,
     },
   };
+}
+
+/**
+ * A manual substitution is cover for a teacher who is not on approved leave
+ * or marked unavailable for that period. Those assignments need a reason.
+ */
+export function requiresManualSubstitutionReason(unavailableEntry, periodNumber, firstAfternoonPeriod) {
+  if (!unavailableEntry) return true;
+  if (unavailableEntry.is_half_day && Number(periodNumber) < Number(firstAfternoonPeriod)) return true;
+  return false;
 }
 
 /**
@@ -371,6 +384,7 @@ export async function validateSubstituteAvailability(exec, {
   substituteTeacherId,
   academicYearId,
   timetableDay,
+  excludeSubstitutionId = null,
 }) {
   if (slot.absent_teacher_id === substituteTeacherId) {
     return {
@@ -432,6 +446,7 @@ export async function validateSubstituteAvailability(exec, {
           AND other_cover.substitute_teacher_id = ${substituteTeacherId}
           AND other_cover.period_number = ${slot.period_number}
           AND other_cover.cancelled_at IS NULL
+          AND (${excludeSubstitutionId}::uuid IS NULL OR other_cover.id <> ${excludeSubstitutionId}::uuid)
       ) AS has_other_cover,
 
       -- 3. Approved leave for this date

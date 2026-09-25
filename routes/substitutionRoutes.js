@@ -10,6 +10,8 @@ import {
   validateSubstituteAvailability,
   getFirstAfternoonPeriodNumber,
   getTodayInSchoolTimezone,
+  getUnavailableTeachers,
+  requiresManualSubstitutionReason,
   weekdayForDate,
 } from '../services/teacherAvailabilityService.js';
 
@@ -334,8 +336,13 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
   const slotId = String(req.body.slot_id || '');
   const substituteTeacherId = String(req.body.substitute_teacher_id || '');
   const reason = String(req.body.reason || '').trim().slice(0, 500) || null;
+  const rawSupersede = req.body.supersede_substitution_id;
+  const supersedeId = rawSupersede ? String(rawSupersede) : null;
   if (!UUID_RE.test(slotId) || !UUID_RE.test(substituteTeacherId)) {
     return res.status(400).json({ error: 'slot_id and substitute_teacher_id must be valid UUIDs' });
+  }
+  if (supersedeId && !UUID_RE.test(supersedeId)) {
+    return res.status(400).json({ error: 'supersede_substitution_id must be a valid UUID' });
   }
 
   const today = await getTodayInSchoolTimezone(sql, req.schoolId);
@@ -360,7 +367,23 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
         throw error;
       }
 
-      // Reusable availability validation
+      const [existing] = await tx`
+        SELECT id, COALESCE(is_auto_suggested, false) AS is_auto_suggested
+        FROM timetable_substitutions
+        WHERE school_id = ${req.schoolId}
+          AND substitution_date = ${date}
+          AND timetable_slot_id = ${slot.slot_id}
+          AND cancelled_at IS NULL
+        LIMIT 1
+      `;
+      if (existing && !existing.is_auto_suggested && existing.id !== supersedeId) {
+        const error = new Error('A substitution is already assigned for this class and date');
+        error.status = 409;
+        throw error;
+      }
+
+      // Reusable availability validation. The row being replaced must not
+      // count as a same-period clash for the teacher who already holds it.
       const validation = await validateSubstituteAvailability(tx, {
         schoolId: req.schoolId,
         date,
@@ -368,6 +391,7 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
         substituteTeacherId,
         academicYearId: context.academicYearId,
         timetableDay: context.timetableDay,
+        excludeSubstitutionId: existing && !existing.is_auto_suggested ? existing.id : null,
       });
       if (!validation.available) {
         const error = new Error(validation.error);
@@ -375,19 +399,43 @@ router.post('/', requirePermission('academics.manage'), asyncHandler(async (req,
         throw error;
       }
 
+      const { unavailableMap } = await getUnavailableTeachers(tx, {
+        schoolId: req.schoolId,
+        date,
+      });
+      const firstAfternoonPeriod = await getFirstAfternoonPeriodNumber(tx, req.schoolId);
+      const manual = requiresManualSubstitutionReason(
+        unavailableMap.get(slot.absent_teacher_id),
+        slot.period_number,
+        firstAfternoonPeriod,
+      );
+      if (manual && String(reason || '').trim().length < 3) {
+        const error = new Error('A short reason is required when the regular teacher is not on leave or marked absent');
+        error.status = 400;
+        throw error;
+      }
+
       const substituteUser = await activeTeachingUserExists(
         tx, req.schoolId, substituteTeacherId, context.academicYearId
       );
 
-      // If an auto-suggested substitution exists for this slot & date, remove it before assigning confirmed substitution
-      await tx`
-        DELETE FROM timetable_substitutions
-        WHERE school_id = ${req.schoolId}
-          AND substitution_date = ${date}
-          AND timetable_slot_id = ${slot.slot_id}
-          AND is_auto_suggested = true
-          AND cancelled_at IS NULL
-      `;
+      if (existing?.is_auto_suggested) {
+        await tx`
+          DELETE FROM timetable_substitutions
+          WHERE id = ${existing.id}
+            AND school_id = ${req.schoolId}
+            AND is_auto_suggested = true
+            AND cancelled_at IS NULL
+        `;
+      } else if (existing) {
+        await tx`
+          UPDATE timetable_substitutions
+          SET cancelled_at = now(), cancelled_by = ${req.user.internal_id || null}
+          WHERE id = ${existing.id}
+            AND school_id = ${req.schoolId}
+            AND cancelled_at IS NULL
+        `;
+      }
 
       const [row] = await tx`
         INSERT INTO timetable_substitutions (
