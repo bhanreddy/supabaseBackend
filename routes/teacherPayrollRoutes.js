@@ -14,6 +14,7 @@ import {
   listPayrollPolicies,
   lockTeacherPayroll,
   payTeacherPayroll,
+  forcePayTeacherPayroll,
   prepareTeacherPayroll,
   saveClassification,
   saveClOverride,
@@ -21,6 +22,13 @@ import {
   saveSalaryRevision,
   validateTeacherPayroll,
 } from '../services/teacherPayrollService.js';
+import {
+  listTeacherPayrollPeriod,
+  prepareTeacherPayrollPeriod,
+  previewAttendanceSummary,
+  revertAttendanceSummary,
+  saveAttendanceSummary,
+} from '../services/teacherAttendanceSummaryService.js';
 
 const router = express.Router();
 
@@ -118,6 +126,35 @@ router.post('/cl-overrides', asyncHandler(async (req, res) => {
   }
 }));
 
+router.get('/', asyncHandler(async (req, res) => {
+  try {
+    const period = await listTeacherPayrollPeriod({
+      schoolId: req.schoolId,
+      year: Number(req.query.year),
+      month: Number(req.query.month),
+      user: req.user,
+    });
+    return sendSuccess(res, req.schoolId, period);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
+router.post('/prepare-period', asyncHandler(async (req, res) => {
+  try {
+    const period = await prepareTeacherPayrollPeriod({
+      schoolId: req.schoolId,
+      year: Number(req.body.year),
+      month: Number(req.body.month),
+      actorId: actorId(req),
+      user: req.user,
+    });
+    return sendSuccess(res, req.schoolId, period);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
 router.post('/prepare', asyncHandler(async (req, res) => {
   try {
     const payroll = await prepareTeacherPayroll({
@@ -184,6 +221,20 @@ router.post('/:payrollId/pay', asyncHandler(async (req, res) => {
   }
 }));
 
+router.post('/:payrollId/force-pay', asyncHandler(async (req, res) => {
+  try {
+    const payroll = await forcePayTeacherPayroll({
+      schoolId: req.schoolId,
+      payrollId: req.params.payrollId,
+      actorId: actorId(req),
+      user: req.user,
+    });
+    return sendSuccess(res, req.schoolId, payroll);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
 router.post('/:payrollId/adjustments', asyncHandler(async (req, res) => {
   try {
     const result = await addPayrollAdjustment({
@@ -239,6 +290,50 @@ router.post('/:payrollId/reversal', asyncHandler(async (req, res) => {
       reason: req.body.reason,
     });
     return sendSuccess(res, req.schoolId, payroll, 201);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
+router.post('/:payrollId/attendance-summary/preview', asyncHandler(async (req, res) => {
+  try {
+    const preview = await previewAttendanceSummary({
+      schoolId: req.schoolId,
+      payrollId: req.params.payrollId,
+      user: req.user,
+      body: req.body,
+    });
+    return sendSuccess(res, req.schoolId, preview);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
+router.put('/:payrollId/attendance-summary', asyncHandler(async (req, res) => {
+  try {
+    const saved = await saveAttendanceSummary({
+      schoolId: req.schoolId,
+      payrollId: req.params.payrollId,
+      actorId: actorId(req),
+      user: req.user,
+      body: req.body,
+    });
+    return sendSuccess(res, req.schoolId, saved);
+  } catch (err) {
+    return fail(res, err);
+  }
+}));
+
+router.post('/:payrollId/attendance-summary/revert', asyncHandler(async (req, res) => {
+  try {
+    const saved = await revertAttendanceSummary({
+      schoolId: req.schoolId,
+      payrollId: req.params.payrollId,
+      actorId: actorId(req),
+      user: req.user,
+      body: req.body,
+    });
+    return sendSuccess(res, req.schoolId, saved);
   } catch (err) {
     return fail(res, err);
   }

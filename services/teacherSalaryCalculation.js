@@ -5,8 +5,14 @@
  */
 import {
   ZERO, ONE, rat, fromDecimal, add, sub, mul, div, isZero, isNegative, isPositive,
-  minRat, maxRat, roundHalfUp, toDecimal, formatInr, amountInWords,
+  minRat, maxRat, compare, roundHalfUp, toDecimal, formatInr, amountInWords,
 } from '../utils/money.js';
+import {
+  attendanceSourceLabel,
+  parseHalfDay,
+  parseWholeCount,
+  resolveHolidayCount,
+} from './payrollAttendancePolicy.js';
 
 export const CALCULATION_VERSION = 'teacher-salary-v1';
 
@@ -234,6 +240,125 @@ function roundComponent(amount, scale) {
   return roundHalfUp(amount, scale);
 }
 
+function settleManualAttendance({
+  summary,
+  policy,
+  cl,
+  teacher,
+  scheduled,
+  segmentList,
+  bonusRateDay,
+  issues,
+}) {
+  const clParsed = parseHalfDay(summary?.clDays, 'CL days');
+  const nonClParsed = parseHalfDay(summary?.nonClDays, 'Non-CL leave days');
+  const lateParsed = parseWholeCount(summary?.lateCount, 'Late count');
+  for (const parsed of [clParsed, nonClParsed, lateParsed]) {
+    if (!parsed.ok) issues.push(parsed.issue);
+  }
+  if (!summary?.reason || !String(summary.reason).trim()) {
+    issues.push(issue(
+      'block',
+      'MANUAL_SUMMARY_REASON',
+      'A reason is required when payroll uses manual attendance totals.',
+    ));
+  }
+  if (!summary?.verified) {
+    issues.push(issue(
+      'block',
+      'MANUAL_SUMMARY_UNVERIFIED',
+      'Confirm that the attendance totals were verified before this payslip can be approved.',
+    ));
+  }
+  const empty = {
+    applied: false,
+    bonusDays: ZERO,
+    bonusAmount: ZERO,
+    lateAmount: ZERO,
+    unpaidAmount: ZERO,
+    lateDeductionDays: ZERO,
+    clDays: ZERO,
+    nonClDays: ZERO,
+    paidCl: ZERO,
+    excessCl: ZERO,
+    lateCount: 0,
+    permittedLates: null,
+    excessLates: null,
+  };
+  if (!clParsed.ok || !nonClParsed.ok || !lateParsed.ok) return empty;
+
+  const clDays = clParsed.value;
+  const nonClDays = nonClParsed.value;
+  const lateCount = lateParsed.count;
+  const permittedLates = teacher.classification === 'LOCAL'
+    ? policy.localPermittedLates
+    : teacher.classification === 'NON_LOCAL'
+      ? policy.nonLocalPermittedLates
+      : null;
+  const paidCl = minRat(clDays, cl.days);
+  const excessCl = maxRat(ZERO, sub(clDays, cl.days));
+  const excessLates = permittedLates == null ? null : Math.max(0, lateCount - permittedLates);
+  const deductionFactor = fromDecimal(policy.deductionPerExcessLateDays);
+  const lateDeductionDays = excessLates == null
+    ? ZERO
+    : mul(deductionFactor, rat(BigInt(excessLates), 1n));
+  const scheduledDays = rat(BigInt(scheduled), 1n);
+  const leaveTotal = add(clDays, nonClDays);
+  if (compare(leaveTotal, scheduledDays) > 0) {
+    issues.push(issue(
+      'block',
+      'LEAVE_EXCEEDS_SCHEDULED',
+      `CL and Non-CL leave total ${decimalDays(leaveTotal)} days, which is more than ${scheduled} scheduled working days.`,
+    ));
+  }
+  const workedDays = maxRat(ZERO, sub(scheduledDays, leaveTotal));
+  if (excessLates != null && compare(rat(BigInt(lateCount), 1n), workedDays) > 0) {
+    issues.push(issue(
+      'block',
+      'LATES_EXCEED_WORKED',
+      `Late count ${lateCount} is more than ${decimalDays(workedDays)} worked days after leave.`,
+    ));
+  }
+
+  const rateDependent = isPositive(nonClDays) || isPositive(excessCl) || (excessLates || 0) > 0;
+  const payableSegments = segmentList.filter((segment) => segment.days > 0);
+  let lateAmount = ZERO;
+  let unpaidAmount = ZERO;
+  if (payableSegments.length > 1 && rateDependent) {
+    issues.push(issue(
+      'block',
+      'MANUAL_SUMMARY_MULTI_RATE',
+      'This month includes more than one salary rate, and these attendance totals would deduct pay without the dates of the leave or lates. Import date-level attendance or record an approved monetary adjustment. Payroll will not apply an average rate.',
+    ));
+  } else if (payableSegments.length === 1) {
+    const perDay = payableSegments[0].perDay;
+    unpaidAmount = mul(perDay, add(nonClDays, excessCl));
+    if (permittedLates != null) lateAmount = mul(perDay, lateDeductionDays);
+  }
+
+  const bonusDays = cl.bonusEligible && summary.verified && isZero(clDays) && isZero(nonClDays)
+    ? fromDecimal(policy.unusedClBonusDays)
+    : ZERO;
+  const bonusAmount = isPositive(bonusDays) && bonusRateDay ? mul(bonusRateDay.perDay, bonusDays) : ZERO;
+
+  return {
+    applied: true,
+    bonusDays,
+    bonusAmount,
+    lateAmount,
+    unpaidAmount,
+    lateDeductionDays,
+    clDays,
+    nonClDays,
+    paidCl,
+    excessCl,
+    lateCount,
+    permittedLates,
+    excessLates,
+    deductionFactor,
+  };
+}
+
 export function calculateTeacherSalary(input) {
   const policy = normalizePolicy(input.policy);
   const scale = policy.roundingScale;
@@ -293,11 +418,18 @@ export function calculateTeacherSalary(input) {
       }
     }
   }
-  const holidayCount = holidayMap.size;
+  const calendarHolidayCount = holidayMap.size;
+  const payrollHoliday = resolveHolidayCount(calendarHolidayCount, bounds.days, input.holidayOverride);
+  for (const holidayIssue of payrollHoliday.issues) issues.push(holidayIssue);
+  const holidayCount = payrollHoliday.count;
+  const manualMode = input.attendanceSummary?.mode === 'MANUAL_SUMMARY';
+  if (input.attendanceSummary && !['SYSTEM_DAILY', 'MANUAL_SUMMARY'].includes(input.attendanceSummary.mode)) {
+    issues.push(issue('block', 'MANUAL_SUMMARY_INVALID', `Attendance source "${input.attendanceSummary.mode}" is not supported.`));
+  }
 
   const attendanceByDate = new Map();
   const duplicateAttendance = new Set();
-  for (const row of input.attendance || []) {
+  for (const row of manualMode ? [] : (input.attendance || [])) {
     if (attendanceByDate.has(row.date)) {
       duplicateAttendance.add(row.date);
       issues.push(issue(
@@ -311,7 +443,7 @@ export function calculateTeacherSalary(input) {
   }
 
   const leaveByDate = new Map();
-  for (const leave of input.leaves || []) {
+  for (const leave of manualMode ? [] : (input.leaves || [])) {
     if (!['approved', 'pending', 'rejected', 'cancelled'].includes(leave.status)) {
       issues.push(issue('block', 'UNKNOWN_LEAVE_STATUS', `Leave ${leave.id || ''} has an unknown status.`));
       continue;
@@ -386,13 +518,18 @@ export function calculateTeacherSalary(input) {
         `Date ${date} has both approved leave and attendance status "${attendance.status}". Remove one record so the day is deducted only once.`,
       ));
     } else if (leave && leave.status === 'approved' && (holidayName || (isWeeklyOff && !policy.countWeeklyOffAsHoliday))) {
-      conflict = true;
-      category = 'conflict';
-      issues.push(issue(
-        'block',
-        'LEAVE_ON_NON_WORKING_DAY',
-        `Approved leave overlaps ${holidayName ? `holiday "${holidayName}"` : 'a weekly off'} on ${date}. Cancel or move the leave.`,
-      ));
+      const kind = leaveKind(leave, policy, issues);
+      if (kind === 'unpaid') {
+        category = 'unpaid_leave';
+      } else {
+        conflict = true;
+        category = 'conflict';
+        issues.push(issue(
+          'block',
+          'LEAVE_ON_NON_WORKING_DAY',
+          `Approved leave overlaps ${holidayName ? `holiday "${holidayName}"` : 'a weekly off'} on ${date}. Cancel or move the leave.`,
+        ));
+      }
     } else if (holidayName) {
       category = 'official_holiday';
       if (attendance) {
@@ -404,6 +541,8 @@ export function calculateTeacherSalary(input) {
       }
     } else if (isWeeklyOff && !policy.countWeeklyOffAsHoliday) {
       category = 'weekly_off';
+    } else if (manualMode) {
+      category = 'manual_summary';
     } else if (onDuty.has(date) || attendance?.onDuty) {
       category = 'on_duty';
     } else if (leave?.status === 'pending') {
@@ -428,7 +567,7 @@ export function calculateTeacherSalary(input) {
       category = 'missing_attendance';
     }
 
-    if (category === 'missing_attendance') {
+    if (category === 'missing_attendance' && !manualMode) {
       issues.push(issue(
         'block',
         'INCOMPLETE_ATTENDANCE',
@@ -552,6 +691,7 @@ export function calculateTeacherSalary(input) {
     if (day.category === 'half_day_absence') halfDayAbsences = add(halfDayAbsences, fromDecimal('0.5'));
     if (day.category === 'missing_attendance') missingDates.push(day.date);
   }
+  const nonClUnpaidQuantity = unpaidLeave;
   unpaidLeave = add(unpaidLeave, unpaidFromExcessCl);
 
   const halfDayAmount = dayRows
@@ -574,14 +714,28 @@ export function calculateTeacherSalary(input) {
   const unauthorizedAbsence = isPositive(fullDayAbsences) || isPositive(halfDayAbsences) || missingDates.length > 0 || dayRows.some((day) => day.category === 'pending_leave' || day.conflict);
   const anyLeave = isPositive(casualQuantity) || isPositive(otherPaid) || isPositive(unpaidLeave) || isPositive(halfDayAbsences);
   const attendanceComplete = missingDates.length === 0 && dayRows.every((day) => day.category !== 'conflict' && day.category !== 'pending_leave');
-  const bonusDays = cl.bonusEligible && isZero(casualQuantity) && !anyLeave && !unauthorizedAbsence && attendanceComplete && fullMonth
+  let bonusDays = cl.bonusEligible && isZero(casualQuantity) && !anyLeave && !unauthorizedAbsence && attendanceComplete && fullMonth
     ? fromDecimal(policy.unusedClBonusDays)
     : ZERO;
   const bonusRateDay = [...dayRows].reverse().find((day) => day.inEmployment && isPositive(day.perDay));
-  const bonusAmount = isPositive(bonusDays) && bonusRateDay ? mul(bonusRateDay.perDay, bonusDays) : ZERO;
+  let bonusAmount = isPositive(bonusDays) && bonusRateDay ? mul(bonusRateDay.perDay, bonusDays) : ZERO;
+  const segmentList = [...segmentTotals.values()];
+  const manualLines = manualMode ? settleManualAttendance({
+    summary: input.attendanceSummary,
+    policy,
+    cl,
+    teacher,
+    scheduled,
+    segmentList,
+    bonusRateDay,
+    issues,
+  }) : null;
+  if (manualLines) {
+    bonusDays = manualLines.bonusDays;
+    bonusAmount = manualLines.bonusAmount;
+  }
 
   const lineItems = [];
-  const segmentList = [...segmentTotals.values()];
   const grossExplanation = segmentList.length === 0
     ? `No payable salary segment was found for ${monthLabel}.`
     : segmentList.map((segment) => (
@@ -610,8 +764,10 @@ export function calculateTeacherSalary(input) {
       rateUnrounded: toDecimal(bonusRateDay.perDay, 6),
       amountUnrounded: toDecimal(bonusAmount, 6),
       amount: toDecimal(roundComponent(bonusAmount, scale), scale),
-      source: 'attendance_bonus',
-      explanation: `Casual leave was available and unused, with no leave, absence, or missing attendance. Bonus = ${decimalDays(bonusDays)} × ${formatInr(toDecimal(bonusRateDay.perDay, scale))} (rate on ${bonusRateDay.date}).`,
+      source: manualLines ? 'manual_attendance_summary' : 'attendance_bonus',
+      explanation: manualLines
+        ? `Verified manual attendance used no CL and no Non-CL leave, and holiday count is below the casual-leave threshold. Bonus = ${decimalDays(bonusDays)} × ${formatInr(toDecimal(bonusRateDay.perDay, scale))}.`
+        : `Casual leave was available and unused, with no leave, absence, or missing attendance. Bonus = ${decimalDays(bonusDays)} × ${formatInr(toDecimal(bonusRateDay.perDay, scale))} (rate on ${bonusRateDay.date}).`,
     });
   }
 
@@ -642,6 +798,27 @@ export function calculateTeacherSalary(input) {
     });
   }
 
+  if (manualLines && isPositive(manualLines.lateAmount)) {
+    const excess = manualLines.excessLates;
+    lineItems.push({
+      code: 'LATE_DEDUCTION',
+      name: 'Late Deduction',
+      kind: 'deduction',
+      quantity: decimalDays(manualLines.lateDeductionDays),
+      rate: segmentList.length === 1 ? toDecimal(segmentList[0].perDay, scale) : null,
+      rateUnrounded: segmentList.length === 1 ? toDecimal(segmentList[0].perDay, 6) : null,
+      amountUnrounded: toDecimal(manualLines.lateAmount, 6),
+      amount: toDecimal(roundComponent(manualLines.lateAmount, scale), scale),
+      source: 'manual_attendance_summary',
+      explanation: [
+        `${manualLines.lateCount} recorded lates - ${manualLines.permittedLates} permitted lates = ${excess} excess lates.`,
+        `Late deduction days = ${excess} × ${decimalDays(manualLines.deductionFactor)} = ${decimalDays(manualLines.lateDeductionDays)}.`,
+        `Late deduction = ${decimalDays(manualLines.lateDeductionDays)} × ${formatInr(toDecimal(segmentList[0].perDay, scale))} = ${formatInr(toDecimal(roundComponent(manualLines.lateAmount, scale), scale))}.`,
+        'Individual late dates were not supplied. The manual total replaces SchoolIMS attendance for this payslip.',
+      ].join('\n'),
+    });
+  }
+
   if (isPositive(totalUnpaidDays)) {
     lineItems.push({
       code: 'UNPAID_DEDUCTION',
@@ -658,6 +835,27 @@ export function calculateTeacherSalary(input) {
         isPositive(excessCl) ? `Casual leave used ${decimalDays(casualQuantity)} against entitlement ${decimalDays(cl.days)}; excess ${decimalDays(excessCl)} is unpaid.` : null,
         `Deduction = ${formatInr(toDecimal(roundComponent(unpaidAmount, scale), scale))}.`,
       ].filter(Boolean).join('\n'),
+    });
+  }
+
+  if (manualLines && isPositive(manualLines.unpaidAmount)) {
+    const manualUnpaidDays = add(manualLines.nonClDays, manualLines.excessCl);
+    lineItems.push({
+      code: 'UNPAID_DEDUCTION',
+      name: 'Leave and Absence Deduction',
+      kind: 'deduction',
+      quantity: decimalDays(manualUnpaidDays),
+      rate: segmentList.length === 1 ? toDecimal(segmentList[0].perDay, scale) : null,
+      rateUnrounded: segmentList.length === 1 ? toDecimal(segmentList[0].perDay, 6) : null,
+      amountUnrounded: toDecimal(manualLines.unpaidAmount, 6),
+      amount: toDecimal(roundComponent(manualLines.unpaidAmount, scale), scale),
+      source: 'manual_attendance_summary',
+      explanation: [
+        `Non-CL unpaid days ${decimalDays(manualLines.nonClDays)} + excess CL ${decimalDays(manualLines.excessCl)} = ${decimalDays(manualUnpaidDays)} unpaid days.`,
+        `CL used ${decimalDays(manualLines.clDays)} against entitlement ${decimalDays(cl.days)}; paid CL ${decimalDays(manualLines.paidCl)}.`,
+        `Deduction = ${decimalDays(manualUnpaidDays)} × ${formatInr(toDecimal(segmentList[0].perDay, scale))} = ${formatInr(toDecimal(roundComponent(manualLines.unpaidAmount, scale), scale))}.`,
+        'Manual totals replace SchoolIMS attendance for this payslip and are not added to daily leave.',
+      ].join('\n'),
     });
   }
 
@@ -742,12 +940,46 @@ export function calculateTeacherSalary(input) {
     },
     perDaySalaryUnrounded: toDecimal(primaryPerDay, 6),
     perDaySalary: toDecimal(roundHalfUp(primaryPerDay, scale), scale),
-    attendance: {
+    attendance: manualMode ? {
+      source: 'MANUAL_SUMMARY',
+      sourceLabel: attendanceSourceLabel('MANUAL_SUMMARY'),
+      calendarDays: bounds.days,
+      employmentEligibleDays: employmentDays,
+      scheduledWorkingDays: scheduled,
+      daysPresent: null,
+      officialHolidays: holidayCount,
+      payrollHolidayCount: holidayCount,
+      calendarHolidays: calendarHolidayCount,
+      holidayCountSource: payrollHoliday.applied ? 'OVERRIDE' : 'CALENDAR',
+      weeklyOffs: weeklyOffCount,
+      totalLates: manualLines.lateCount,
+      permittedLates: manualLines.permittedLates,
+      excessLates: manualLines.excessLates,
+      lateDeductionDays: decimalDays(manualLines.lateDeductionDays),
+      paidClEntitlement: decimalDays(cl.days),
+      clEntitlementReason: cl.reason,
+      clUsed: decimalDays(manualLines.clDays),
+      paidClDays: decimalDays(manualLines.paidCl),
+      excessClDays: decimalDays(manualLines.excessCl),
+      nonClUnpaidDays: decimalDays(manualLines.nonClDays),
+      otherPaidLeave: '0',
+      unpaidLeave: decimalDays(add(manualLines.nonClDays, manualLines.excessCl)),
+      fullDayAbsences: '0',
+      halfDayAbsences: '0',
+      attendanceBonusDays: decimalDays(manualLines.bonusDays),
+      onDutyDays: 0,
+      notApplicableDays: notApplicable,
+    } : {
+      source: 'SYSTEM_DAILY',
+      sourceLabel: attendanceSourceLabel('SYSTEM_DAILY'),
       calendarDays: bounds.days,
       employmentEligibleDays: employmentDays,
       scheduledWorkingDays: scheduled,
       daysPresent: presentDays,
       officialHolidays: holidayCount,
+      payrollHolidayCount: holidayCount,
+      calendarHolidays: calendarHolidayCount,
+      holidayCountSource: payrollHoliday.applied ? 'OVERRIDE' : 'CALENDAR',
       weeklyOffs: weeklyOffCount,
       totalLates: lateDays.length,
       permittedLates,
@@ -758,6 +990,7 @@ export function calculateTeacherSalary(input) {
       clUsed: decimalDays(casualQuantity),
       paidClDays: decimalDays(paidCl),
       excessClDays: decimalDays(excessCl),
+      nonClUnpaidDays: decimalDays(nonClUnpaidQuantity),
       otherPaidLeave: decimalDays(otherPaid),
       unpaidLeave: decimalDays(unpaidLeave),
       fullDayAbsences: decimalDays(fullDayAbsences),
@@ -774,7 +1007,7 @@ export function calculateTeacherSalary(input) {
     totalDeductions: toDecimal(totalDeductions, scale),
     netUnrounded: toDecimal(sub(
       add(gross, bonusAmount),
-      add(lateAmount, unpaidAmount),
+      add(add(lateAmount, unpaidAmount), add(manualLines?.lateAmount || ZERO, manualLines?.unpaidAmount || ZERO)),
     ), 6),
     netSalary: toDecimal(net, scale),
     amountInWords: amountInWords(toDecimal(net, scale)),

@@ -16,6 +16,7 @@ import {
   normalizePolicy,
   addDays,
 } from './teacherSalaryCalculation.js';
+import { publicPayslipAttendance } from './payrollAttendancePolicy.js';
 import {
   assertCanRecalculate,
   assertTransition,
@@ -49,7 +50,7 @@ function actorOrReject(actorId) {
   return actorId;
 }
 
-async function writeAudit(db, { schoolId, payrollId, staffId, actorId, action, detail }) {
+export async function writeAudit(db, { schoolId, payrollId, staffId, actorId, action, detail }) {
   await db`
     INSERT INTO teacher_payroll_audit_logs (
       school_id, staff_payroll_id, staff_id, actor_id, action, detail
@@ -220,6 +221,19 @@ export async function assemblePayrollInput(db, schoolId, staffId, year, month, p
     ORDER BY created_at
   ` : [];
 
+  const [attendanceSummaryRow] = payrollId ? await db`
+    SELECT input_mode, cl_days, non_cl_days, late_count, provider_name, supporting_reference,
+           reason, verified, version, updated_by
+    FROM teacher_payroll_attendance_summaries
+    WHERE school_id = ${schoolId} AND staff_payroll_id = ${payrollId}
+  ` : [];
+
+  const [holidayOverrideRow] = await db`
+    SELECT holiday_count, source, provider_name, supporting_reference, reason, version
+    FROM school_payroll_period_overrides
+    WHERE school_id = ${schoolId} AND payroll_year = ${year} AND payroll_month = ${month}
+  `;
+
   const input = {
     year,
     month,
@@ -252,6 +266,26 @@ export async function assemblePayrollInput(db, schoolId, staffId, year, month, p
       createdBy: adjustment.created_by,
       approvedBy: adjustment.approved_by,
     })),
+    attendanceSummary: attendanceSummaryRow?.input_mode === 'MANUAL_SUMMARY' ? {
+      mode: 'MANUAL_SUMMARY',
+      clDays: String(attendanceSummaryRow.cl_days),
+      nonClDays: String(attendanceSummaryRow.non_cl_days),
+      lateCount: Number(attendanceSummaryRow.late_count),
+      verified: Boolean(attendanceSummaryRow.verified),
+      reason: attendanceSummaryRow.reason,
+      providerName: attendanceSummaryRow.provider_name,
+      reference: attendanceSummaryRow.supporting_reference,
+      version: attendanceSummaryRow.version,
+      updatedBy: attendanceSummaryRow.updated_by,
+    } : { mode: 'SYSTEM_DAILY' },
+    holidayOverride: holidayOverrideRow ? {
+      count: Number(holidayOverrideRow.holiday_count),
+      source: holidayOverrideRow.source,
+      providerName: holidayOverrideRow.provider_name,
+      reference: holidayOverrideRow.supporting_reference,
+      reason: holidayOverrideRow.reason,
+      version: holidayOverrideRow.version,
+    } : null,
     teacher: {
       classification,
       classificationChangedInMonth,
@@ -281,6 +315,10 @@ export async function assemblePayrollInput(db, schoolId, staffId, year, month, p
     paymentReferenceMasked: staff.payment_reference_masked || null,
   };
   return { input, identity, staff, policy };
+}
+
+export function presentPayroll(payroll, snapshot) {
+  return present(payroll, snapshot);
 }
 
 function present(payroll, snapshot) {
@@ -316,7 +354,7 @@ function present(payroll, snapshot) {
   };
 }
 
-async function saveCalculation(db, payroll, input, identity, actorId) {
+export async function saveCalculation(db, payroll, input, identity, actorId) {
   const result = calculateTeacherSalary(input);
   result.identity = identity;
   const inputHash = hashInput(input);
@@ -523,6 +561,43 @@ export async function payTeacherPayroll({ schoolId, payrollId, actorId, user, pa
   });
 }
 
+export async function forcePayTeacherPayroll({ schoolId, payrollId, actorId, user }) {
+  if (!user?.roles?.includes('admin')) {
+    throw new PayrollWorkflowError('Only an administrator can force pay a payslip.', 'FORBIDDEN');
+  }
+  actorOrReject(actorId);
+  return sql.begin(async (tx) => {
+    const { payroll, snapshot } = await loadOwned(tx, schoolId, payrollId);
+    if (payroll.workflow_status === 'PAID' || payroll.status === 'paid') {
+      throw new PayrollError(409, 'This payslip is already paid.', 'ALREADY_PAID');
+    }
+    const paymentDate = new Date().toISOString().slice(0, 10);
+    const [updated] = await tx`
+      UPDATE staff_payroll
+      SET workflow_status = 'PAID',
+          status = 'paid',
+          payment_date = ${paymentDate},
+          payment_reference = ${`FORCE-${paymentDate}`},
+          paid_by = ${actorId}
+      WHERE id = ${payrollId}
+      RETURNING *
+    `;
+    await writeAudit(tx, {
+      schoolId,
+      payrollId,
+      staffId: payroll.staff_id,
+      actorId,
+      action: 'FORCE_PAY',
+      detail: {
+        paymentDate,
+        reviewReason: payroll.review_reason || null,
+        previousStatus: payroll.workflow_status,
+      },
+    });
+    return present(updated, snapshot);
+  });
+}
+
 export async function addPayrollAdjustment({ schoolId, payrollId, actorId, user, kind, name, amount, reason, reference }) {
   authorizePayrollAction(user, 'adjust');
   actorOrReject(actorId);
@@ -693,7 +768,9 @@ export async function getTeacherPayroll({ schoolId, payrollId, user, personId })
   } else if (!canReadPayroll(user)) {
     throw new PayrollWorkflowError('You do not have permission for this payroll action.', 'FORBIDDEN');
   }
-  return present(payroll, snapshot);
+  const body = present(payroll, snapshot);
+  if (isSelf) body.attendance = publicPayslipAttendance(body.attendance);
+  return body;
 }
 
 export async function getTeacherPayrollEvidence({ schoolId, payrollId, user }) {
@@ -765,29 +842,109 @@ export async function listPayrollPolicies(schoolId, user) {
   `;
 }
 
-export async function saveClassification({ schoolId, staffId, actorId, user, classification, effectiveFrom, effectiveTo }) {
-  authorizePayrollAction(user, 'prepare');
-  actorOrReject(actorId);
-  if (!['LOCAL', 'NON_LOCAL'].includes(classification) || !effectiveFrom) {
-    throw new PayrollError(400, 'Classification must be LOCAL or NON_LOCAL and include an effective date.', 'INVALID_CLASSIFICATION');
+const LOCALITY_VALUES = ['LOCAL', 'NON_LOCAL'];
+
+/**
+ * Staff forms send locality_classification as LOCAL, NON_LOCAL, null, or omit it.
+ * Any other value is rejected before a staff row is written.
+ */
+export function readLocalityClassificationField(body) {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, 'locality_classification')) {
+    return { present: false, value: null };
   }
-  await loadStaff(sql, schoolId, staffId);
-  await sql`
+  const value = body.locality_classification;
+  if (value === null || LOCALITY_VALUES.includes(value)) {
+    return { present: true, value };
+  }
+  return { present: true, invalid: true, value };
+}
+
+/** First day of the payroll month that contains a school-local YYYY-MM-DD date. */
+export function payrollMonthStart(isoDate) {
+  const iso = String(isoDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  return `${iso.slice(0, 7)}-01`;
+}
+
+export async function readEffectiveLocalityClassification(db, schoolId, staffId) {
+  const [row] = await db`
+    SELECT classification
+    FROM staff_locality_classifications
+    WHERE school_id = ${schoolId}
+      AND staff_id = ${staffId}
+      AND effective_from <= CURRENT_DATE
+      AND (effective_to IS NULL OR effective_to >= CURRENT_DATE)
+    ORDER BY effective_from DESC
+    LIMIT 1
+  `;
+  return row?.classification ?? null;
+}
+
+async function listLocalityClassifications(db, schoolId, staffId) {
+  return db`
+    SELECT id, classification, effective_from, effective_to
+    FROM staff_locality_classifications
+    WHERE school_id = ${schoolId} AND staff_id = ${staffId}
+    ORDER BY effective_from
+  `;
+}
+
+async function closeOpenClassificationsBefore(db, schoolId, staffId, effectiveFrom) {
+  await db`
     UPDATE staff_locality_classifications
     SET effective_to = ${addDays(effectiveFrom, -1)}
     WHERE school_id = ${schoolId} AND staff_id = ${staffId}
       AND effective_to IS NULL AND effective_from < ${effectiveFrom}
   `;
-  const overlaps = await sql`
+}
+
+async function closeClassificationRow(db, { id, schoolId, staffId, effectiveTo }) {
+  await db`
+    UPDATE staff_locality_classifications
+    SET effective_to = ${effectiveTo}
+    WHERE id = ${id}
+      AND school_id = ${schoolId}
+      AND staff_id = ${staffId}
+      AND effective_to IS NULL
+  `;
+}
+
+async function deleteProspectiveClassification(db, { id, schoolId, staffId, effectiveFrom }) {
+  await db`
+    DELETE FROM staff_locality_classifications
+    WHERE id = ${id}
+      AND school_id = ${schoolId}
+      AND staff_id = ${staffId}
+      AND effective_from >= ${effectiveFrom}
+  `;
+}
+
+async function updateClassificationStartingOn(db, { id, schoolId, staffId, classification, effectiveFrom }) {
+  const [row] = await db`
+    UPDATE staff_locality_classifications
+    SET classification = ${classification}, effective_to = NULL
+    WHERE id = ${id}
+      AND school_id = ${schoolId}
+      AND staff_id = ${staffId}
+      AND effective_from = ${effectiveFrom}
+    RETURNING *
+  `;
+  return row;
+}
+
+async function classificationOverlaps(db, schoolId, staffId, effectiveFrom, effectiveTo) {
+  return db`
     SELECT id FROM staff_locality_classifications
     WHERE school_id = ${schoolId} AND staff_id = ${staffId}
       AND effective_from <= COALESCE(${effectiveTo}, DATE '9999-12-31')
       AND COALESCE(effective_to, DATE '9999-12-31') >= ${effectiveFrom}
   `;
-  if (overlaps.length > 0) {
-    throw new PayrollError(409, 'This classification overlaps an existing effective period.', 'CLASSIFICATION_OVERLAP');
-  }
-  const [row] = await sql`
+}
+
+export async function insertStaffLocalityClassification(db, {
+  schoolId, staffId, classification, effectiveFrom, effectiveTo = null, actorId,
+}) {
+  const [row] = await db`
     INSERT INTO staff_locality_classifications (
       school_id, staff_id, classification, effective_from, effective_to, created_by
     ) VALUES (
@@ -795,6 +952,121 @@ export async function saveClassification({ schoolId, staffId, actorId, user, cla
     )
     RETURNING *
   `;
+  return row;
+}
+
+/**
+ * Temporal locality change used by Edit Staff. Does not require payroll.prepare
+ * and does not rewrite payroll snapshots. Callers run this inside the staff
+ * transaction so the staff row and classification commit together.
+ *
+ * effectiveFrom is the first day of the current payroll month. A row that
+ * already starts on that date is updated in place. Clearing null closes an
+ * earlier open row; a row that starts on or after effectiveFrom is removed
+ * because closing it before it starts would violate the date check, and it
+ * has not covered a prior payroll month.
+ */
+export async function applyStaffLocalityClassification(db, {
+  schoolId, staffId, actorId, classification, effectiveFrom,
+}) {
+  if (![...LOCALITY_VALUES, null].includes(classification) || !effectiveFrom) {
+    throw new PayrollError(400, 'Classification must be LOCAL, NON_LOCAL, or null and include an effective date.', 'INVALID_CLASSIFICATION');
+  }
+
+  const current = await readEffectiveLocalityClassification(db, schoolId, staffId);
+  if ((current || null) === classification) {
+    return { changed: false, classification: current };
+  }
+
+  const rows = await listLocalityClassifications(db, schoolId, staffId);
+  if (classification == null) {
+    for (const row of rows) {
+      const from = isoDate(row.effective_from);
+      const to = isoDate(row.effective_to);
+      if (to && to < effectiveFrom) continue;
+      if (from < effectiveFrom) {
+        await closeClassificationRow(db, {
+          id: row.id,
+          schoolId,
+          staffId,
+          effectiveTo: addDays(effectiveFrom, -1),
+        });
+      } else {
+        await deleteProspectiveClassification(db, { id: row.id, schoolId, staffId, effectiveFrom });
+      }
+    }
+    await writeAudit(db, {
+      schoolId,
+      payrollId: null,
+      staffId,
+      actorId,
+      action: 'CLASSIFICATION_CLEARED',
+      detail: { previous: current, effectiveFrom, source: 'staff' },
+    });
+    return { changed: true, classification: null };
+  }
+
+  let kept = null;
+  for (const row of rows) {
+    const from = isoDate(row.effective_from);
+    const to = isoDate(row.effective_to);
+    if (to && to < effectiveFrom) continue;
+    if (from < effectiveFrom) {
+      await closeClassificationRow(db, {
+        id: row.id,
+        schoolId,
+        staffId,
+        effectiveTo: addDays(effectiveFrom, -1),
+      });
+    } else if (from === effectiveFrom && !kept) {
+      kept = row;
+    } else {
+      await deleteProspectiveClassification(db, { id: row.id, schoolId, staffId, effectiveFrom });
+    }
+  }
+
+  const saved = kept
+    ? await updateClassificationStartingOn(db, {
+      id: kept.id, schoolId, staffId, classification, effectiveFrom,
+    })
+    : await insertAfterOverlapCheck(db, { schoolId, staffId, classification, effectiveFrom, actorId });
+
+  await writeAudit(db, {
+    schoolId,
+    payrollId: null,
+    staffId,
+    actorId,
+    action: 'CLASSIFICATION_SAVED',
+    detail: { classification, previous: current, effectiveFrom, source: 'staff' },
+  });
+  return { changed: true, classification, row: saved };
+}
+
+async function insertAfterOverlapCheck(db, { schoolId, staffId, classification, effectiveFrom, actorId }) {
+  const overlaps = await classificationOverlaps(db, schoolId, staffId, effectiveFrom, null);
+  if (overlaps.length > 0) {
+    throw new PayrollError(409, 'This classification overlaps an existing effective period.', 'CLASSIFICATION_OVERLAP');
+  }
+  return insertStaffLocalityClassification(db, {
+    schoolId, staffId, classification, effectiveFrom, effectiveTo: null, actorId,
+  });
+}
+
+export async function saveClassification({ schoolId, staffId, actorId, user, classification, effectiveFrom, effectiveTo }) {
+  authorizePayrollAction(user, 'prepare');
+  actorOrReject(actorId);
+  if (!LOCALITY_VALUES.includes(classification) || !effectiveFrom) {
+    throw new PayrollError(400, 'Classification must be LOCAL or NON_LOCAL and include an effective date.', 'INVALID_CLASSIFICATION');
+  }
+  await loadStaff(sql, schoolId, staffId);
+  await closeOpenClassificationsBefore(sql, schoolId, staffId, effectiveFrom);
+  const overlaps = await classificationOverlaps(sql, schoolId, staffId, effectiveFrom, effectiveTo || null);
+  if (overlaps.length > 0) {
+    throw new PayrollError(409, 'This classification overlaps an existing effective period.', 'CLASSIFICATION_OVERLAP');
+  }
+  const row = await insertStaffLocalityClassification(sql, {
+    schoolId, staffId, classification, effectiveFrom, effectiveTo: effectiveTo || null, actorId,
+  });
   await writeAudit(sql, { schoolId, payrollId: null, staffId, actorId, action: 'CLASSIFICATION_SAVED', detail: { classification, effectiveFrom } });
   return row;
 }

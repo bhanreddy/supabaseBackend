@@ -28,6 +28,14 @@ For new approvals, `leave_applications.payroll_treatment` is authoritative: `PAI
 
 The admin leave screen previews the same `teacher-salary-v1` inputs used by payslips. It shows CL already used, entitlement, remaining CL, and the projected paid/unpaid split before the decision is saved. If a backdated leave is approved after that month’s payroll reaches `APPROVED`, `LOCKED`, or `PAID`, the frozen payslip is not rewritten; the approval response flags that a supplementary payroll correction is required.
 
+The legacy payroll list also recalculates open draft rows whenever a month is loaded. It deducts approved `UNPAID` decisions and casual-leave days above the configured whole-day monthly CL entitlement, while preserving paid CL and other paid leave. Paid or frozen payroll rows are never rewritten by this compatibility calculation.
+
+Schools that only have a monthly biometric total can replace SchoolIMS attendance for one teacher and month. `MANUAL_SUMMARY` ignores `staff_attendance` and `leave_applications` for that payslip and uses the entered CL days, Non-CL unpaid days, and late count. Those totals are not added to the daily records, and the daily records stay unchanged. CL and Non-CL values must be `0.5` increments. Local teachers keep 3 permitted lates and non-local teachers keep 5; each excess late deducts `0.5` day. Every Non-CL day is unpaid. The unused-CL bonus still requires a verified summary, zero CL, zero Non-CL, holiday count below 8, and the usual employment rules.
+
+Holiday count is stored once per school, year, and month. It changes the casual-leave threshold and the holiday count printed on payslips. It does not create holiday dates. Saving a new count recalculates draft and validated payrolls for that month and returns validated rows to draft. Approved, locked, and paid rows, and frozen snapshots, are skipped. If a manual total would deduct pay and the teacher has more than one salary rate in the month, calculation stops instead of using an average rate.
+
+Apply `migrations/20260925_payroll_manual_attendance_summary.sql` with the teacher salary migration.
+
 ## Workflow
 
 `DRAFT → VALIDATED → APPROVED → LOCKED → PAID`
@@ -50,6 +58,8 @@ All routes are under `/api/v1/payroll/teacher`.
 - `POST /:id/adjustments` and `POST /:id/adjustments/:adjustmentId/approve`
 - `POST /:id/reversal` and `POST /:id/supplementary`
 - `GET /:id` payslip, `GET /:id/evidence` calculation evidence
+- `GET /?month=&year=` and `POST /prepare-period`
+- `POST /:id/attendance-summary/preview`, `PUT /:id/attendance-summary`, `POST /:id/attendance-summary/revert`
 - `POST /policies`, `/classifications`, `/salary-revisions`, `/cl-overrides`
 
 Apply `migrations/20260925_teacher_salary_payroll.sql` before using these routes.

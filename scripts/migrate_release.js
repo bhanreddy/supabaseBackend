@@ -43,6 +43,8 @@ const parentProfilePhotoPermissionMigrationName = '20260925_parent_profile_photo
 const examHallTicketBatchesMigrationName = '20260925_exam_hall_ticket_batches.sql';
 const teacherSalaryPayrollMigrationName = '20260925_teacher_salary_payroll.sql';
 const leaveSalaryApprovalMigrationName = '20260925_leave_salary_approval.sql';
+const leavePayrollRecalculationMigrationName = '20260925_leave_payroll_recalculation.sql';
+const payrollAttendanceSummaryMigrationName = '20260925_payroll_manual_attendance_summary.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -233,6 +235,8 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
   await applyNamedSqlMigration(db, teacherSalaryPayrollMigrationName, 4510925);
   await applyNamedSqlMigration(db, leaveSalaryApprovalMigrationName, 4520925);
+  await applyNamedSqlMigration(db, leavePayrollRecalculationMigrationName, 4530925);
+  await applyNamedSqlMigration(db, payrollAttendanceSummaryMigrationName, 4540925);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -271,6 +275,16 @@ export async function verifyReleaseDatabase(db) {
   const [leaveSalaryColumn] = await db`SELECT 1 FROM information_schema.columns
     WHERE table_schema='public' AND table_name='leave_applications' AND column_name='payroll_treatment'`;
   if (!leaveSalaryColumn) throw new Error('Leave payroll treatment column is missing');
+  const [leavePayrollRecalculation] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${leavePayrollRecalculationMigrationName}`;
+  if (!leavePayrollRecalculation) throw new Error('Leave payroll recalculation migration is not recorded');
+  const [attendanceSummaryMigration] = await db`SELECT 1 FROM schema_migrations
+    WHERE filename = ${payrollAttendanceSummaryMigrationName}`;
+  if (!attendanceSummaryMigration) throw new Error('Payroll attendance summary migration is not recorded');
+  for (const name of ['teacher_payroll_attendance_summaries', 'school_payroll_period_overrides']) {
+    const [table] = await db`SELECT to_regclass(${`public.${name}`}) AS name`;
+    if (!table?.name) throw new Error(`Payroll attendance summary table is missing: ${name}`);
+  }
   for (const name of ['exam_hall_ticket_batches', 'exam_hall_ticket_batch_students']) {
     const [table] = await db`SELECT to_regclass(${`public.${name}`}) AS name`;
     if (!table?.name) throw new Error(`Exam hall-ticket tracking table is missing: ${name}`);
@@ -485,6 +499,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
       await applyNamedSqlMigration(db, teacherSalaryPayrollMigrationName, 4510925);
       await applyNamedSqlMigration(db, leaveSalaryApprovalMigrationName, 4520925);
+      await applyNamedSqlMigration(db, leavePayrollRecalculationMigrationName, 4530925);
+      await applyNamedSqlMigration(db, payrollAttendanceSummaryMigrationName, 4540925);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

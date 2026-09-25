@@ -137,6 +137,7 @@ test('local teacher late bands are 0, 3, 4, and multiple excess lates', () => {
   const atLimit = calculateMonth({ ...base, lates: ['2026-06-01', '2026-06-02', '2026-06-03'] });
   assert.equal(atLimit.attendance.permittedLates, 3);
   assert.equal(atLimit.attendance.excessLates, 0);
+  assert.equal(atLimit.attendance.lateDeductionDays, '0');
   assert.equal(atLimit.attendance.attendanceBonusDays, '1');
   assert.equal(atLimit.netSalary, '31000.00');
 
@@ -170,6 +171,7 @@ test('non-local teacher late bands are 0, 5, 6, and multiple excess lates', () =
     lates: ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05'],
   });
   assert.equal(atLimit.attendance.excessLates, 0);
+  assert.equal(atLimit.attendance.lateDeductionDays, '0');
   assert.equal(atLimit.netSalary, '31000.00');
 
   const oneExcess = calculateMonth({
@@ -238,6 +240,43 @@ test('unused casual leave pays a one-day attendance bonus and used casual leave 
   assert.equal(used.attendance.attendanceBonusDays, '0');
   assert.equal(used.totalDeductions, '0.00');
   assert.equal(used.netSalary, '30000.00');
+});
+
+test('unpaid leave on a weekly off is deducted as Non-CL, while casual leave on that day is not', () => {
+  const unpaidSunday = calculateMonth({
+    year: 2026,
+    month: 6,
+    leaves: [{
+      id: 'sunday-unpaid',
+      type: 'sick',
+      payrollTreatment: 'UNPAID',
+      status: 'approved',
+      startDate: '2026-06-07',
+      endDate: '2026-06-07',
+    }],
+  });
+  assert.equal(unpaidSunday.attendance.nonClUnpaidDays, '1');
+  assert.equal(unpaidSunday.attendance.unpaidLeave, '1');
+  assert.equal(unpaidSunday.totalDeductions, '1000.00');
+  assert.equal(unpaidSunday.netSalary, '29000.00');
+  assert.equal(unpaidSunday.validation.some((item) => item.code === 'LEAVE_ON_NON_WORKING_DAY'), false);
+
+  const casualSunday = calculateMonth({
+    year: 2026,
+    month: 6,
+    leaves: [{
+      id: 'sunday-cl',
+      type: 'casual',
+      payrollTreatment: 'PAID_CL',
+      status: 'approved',
+      startDate: '2026-06-07',
+      endDate: '2026-06-07',
+    }],
+  });
+  assert.equal(casualSunday.attendance.clUsed, '0');
+  assert.equal(casualSunday.attendance.nonClUnpaidDays, '0');
+  assert.equal(casualSunday.netSalary, '30000.00');
+  assert.equal(casualSunday.validation.some((item) => item.code === 'LEAVE_ON_NON_WORKING_DAY'), true);
 });
 
 test('half-day, full-day, paid, and unpaid leave deduct only the unpaid portion', () => {
@@ -458,6 +497,7 @@ test('missing classification, negative net, and pending leave block approval', (
   const missing = calculateMonth({ year: 2026, month: 6, classification: null });
   assert.equal(missing.blocked, true);
   assert.equal(missing.validation.some((item) => item.code === 'MISSING_CLASSIFICATION'), true);
+  assert.equal(missing.attendance.lateDeductionDays, '0');
   assert.equal(missing.attendance.permittedLates, null);
 
   const holidays = datesInMonth(2026, 6).filter((date) => weekday(date) !== 0).slice(0, 8).map((date) => holiday(date));

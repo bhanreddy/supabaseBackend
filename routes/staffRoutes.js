@@ -10,6 +10,16 @@ import {
   updateSchoolScopedAuthEmail
 } from '../utils/schoolEmail.js';
 import { resolveDbRoleCode } from '../utils/roleCodes.js';
+import { publicPayslipAttendance } from '../services/payrollAttendancePolicy.js';
+import { getTodayInSchoolTimezone } from '../services/teacherAvailabilityService.js';
+import {
+  PayrollError,
+  applyStaffLocalityClassification,
+  insertStaffLocalityClassification,
+  payrollMonthStart,
+  readEffectiveLocalityClassification,
+  readLocalityClassificationField,
+} from '../services/teacherPayrollService.js';
 
 const router = express.Router();
 
@@ -128,6 +138,22 @@ function normalizeStaffPayload(body) {
   };
 }
 
+function rejectInvalidLocality(res, classificationField) {
+  if (!classificationField.invalid) return false;
+  res.status(400).json({
+    error: 'VALIDATION_ERROR',
+    code: 'INVALID_CLASSIFICATION',
+    message: 'locality_classification must be LOCAL, NON_LOCAL, or null.',
+  });
+  return true;
+}
+
+function localityErrorResponse(res, error) {
+  if (!(error instanceof PayrollError)) return false;
+  res.status(error.status).json({ error: error.message, code: error.code });
+  return true;
+}
+
 function isAccountsOnlyUser(req) {
   const roles = req.user?.roles || [];
   const elevated = roles.some((role) => ['admin', 'principal'].includes(role));
@@ -215,7 +241,7 @@ function formatStaffPayslipRows(payslips) {
       per_day_salary: result?.perDaySalary || null,
       calendar_days: result?.month?.calendarDays || null,
       employment_days: result?.employment?.eligibleDays || null,
-      attendance: result?.attendance || null,
+      attendance: publicPayslipAttendance(result?.attendance),
       identity: result?.identity || null,
       lines,
     };
@@ -496,6 +522,8 @@ router.get('/:id', requirePermission('staff.view'), asyncHandler(async (req, res
     return res.status(404).json({ error: 'Staff not found' });
   }
 
+  staff.locality_classification = await readEffectiveLocalityClassification(sql, req.schoolId, id);
+
   // Segregation of duties: strip salary unless the caller may view it.
   return sendSuccess(res, req.schoolId, canViewSalary(req) ? staff : stripSalary(staff));
 }));
@@ -505,6 +533,9 @@ router.get('/:id', requirePermission('staff.view'), asyncHandler(async (req, res
  * Create new staff member (and optionally user login)
  */
 router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res) => {
+  const locality = readLocalityClassificationField(req.body);
+  if (rejectInvalidLocality(res, locality)) return;
+
   const staffData = normalizeStaffPayload(req.body);
   const {
     first_name, middle_name, last_name, dob, gender_id,
@@ -612,12 +643,24 @@ router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res
                     `;
       }
 
+      if (locality.value) {
+        await insertStaffLocalityClassification(sql, {
+          schoolId,
+          staffId: staff.id,
+          classification: locality.value,
+          effectiveFrom: joining_date,
+          effectiveTo: null,
+          actorId: req.user?.internal_id || null,
+        });
+      }
+
       return staff;
     });
 
     return sendSuccess(res, req.schoolId, { message: 'Staff created successfully', staff: result }, 201);
   } catch (error) {
     console.error('Error creating staff:', error);
+    if (localityErrorResponse(res, error)) return;
     if (sendSchoolEmailConflict(res, error)) return;
     if (error.message.includes('Supabase Auth Error')) {
       return res.status(400).json({ error: error.message });
@@ -631,6 +674,9 @@ router.post('/', requirePermission('staff.create'), asyncHandler(async (req, res
  * Update staff member
  */
 router.put('/:id', requirePermission('staff.edit'), asyncHandler(async (req, res) => {
+  const locality = readLocalityClassificationField(req.body);
+  if (rejectInvalidLocality(res, locality)) return;
+
   req.schoolId = String(req.user.schoolId);
   const { id } = req.params;
   const {
@@ -718,6 +764,21 @@ router.put('/:id', requirePermission('staff.edit'), asyncHandler(async (req, res
         await sql`INSERT INTO person_contacts (school_id, person_id, contact_type, contact_value, is_primary) 
                   VALUES (${req.schoolId}, ${personId}, 'phone', ${phone}, true)`;
       }
+    }
+
+    if (locality.present) {
+      const today = await getTodayInSchoolTimezone(sql, req.schoolId);
+      const effectiveFrom = payrollMonthStart(today);
+      if (!effectiveFrom) {
+        throw new PayrollError(500, 'Could not resolve the school month for this classification.', 'SCHOOL_DATE_UNAVAILABLE');
+      }
+      await applyStaffLocalityClassification(sql, {
+        schoolId: req.schoolId,
+        staffId: id,
+        actorId: req.user?.internal_id || null,
+        classification: locality.value,
+        effectiveFrom,
+      });
     }
 
     return updatedStaff;
