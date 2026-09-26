@@ -195,17 +195,17 @@ export async function publishClassDiary({
         { message: copy.message, message_te: copy.message },
         { role: 'parent', schoolId, deepLink: '/Screen/diary' },
       );
+      await sql`
+        UPDATE class_diary_uploads
+        SET notification_sent_at = now(), processing_status = ${sendOriginal ? 'original' : 'published'}
+        WHERE id = ${upload.id} AND school_id = ${schoolId} AND notification_sent_at IS NULL
+      `;
+      await sql`
+        UPDATE diary_entries
+        SET notification_sent_at = COALESCE(notification_sent_at, now())
+        WHERE school_id = ${schoolId} AND class_diary_upload_id = ${upload.id}
+      `;
     }
-    await sql`
-      UPDATE class_diary_uploads
-      SET notification_sent_at = now(), processing_status = ${sendOriginal ? 'original' : 'published'}
-      WHERE id = ${upload.id} AND school_id = ${schoolId} AND notification_sent_at IS NULL
-    `;
-    await sql`
-      UPDATE diary_entries
-      SET notification_sent_at = COALESCE(notification_sent_at, now())
-      WHERE school_id = ${schoolId} AND class_diary_upload_id = ${upload.id}
-    `;
   }
 
   await logDiaryAnalytics({

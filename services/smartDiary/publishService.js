@@ -271,31 +271,46 @@ export async function patchDiaryAiFields(schoolId, diaryId, fields = {}, { notif
   return updated;
 }
 
-export async function parentRecipientUserIds(schoolId, classSectionIds) {
+export async function parentRecipientUserIds(schoolId, classSectionIds, db = sql) {
   const ids = [...new Set((classSectionIds || []).filter(Boolean))];
   if (ids.length === 0) return [];
-  const rows = await sql`
+  const rows = await db`
+    WITH enrolled_students AS (
+      SELECT DISTINCT s.id AS student_id, s.person_id
+      FROM student_enrollments se
+      JOIN students s ON s.id = se.student_id
+        AND s.school_id = ${schoolId}
+        AND s.deleted_at IS NULL
+      WHERE se.school_id = ${schoolId}
+        AND se.class_section_id = ANY(${ids})
+        AND se.status = 'active'
+        AND se.deleted_at IS NULL
+        AND se.start_date <= CURRENT_DATE
+        AND (se.end_date IS NULL OR se.end_date >= CURRENT_DATE)
+    ), recipient_people AS (
+      -- Existing parent portal accounts are sometimes linked to a guardian,
+      -- while other families sign in with the student's own account.
+      SELECT person_id FROM enrolled_students
+      UNION
+      SELECT p.person_id
+      FROM enrolled_students enrolled
+      JOIN student_parents sp ON sp.student_id = enrolled.student_id
+        AND sp.school_id = ${schoolId}
+        AND sp.deleted_at IS NULL
+        AND (sp.valid_from IS NULL OR sp.valid_from <= CURRENT_DATE)
+        AND (sp.valid_to IS NULL OR sp.valid_to >= CURRENT_DATE)
+      JOIN parents p ON p.id = sp.parent_id
+        AND p.school_id = ${schoolId}
+        AND p.deleted_at IS NULL
+    )
     SELECT DISTINCT u.id
-    FROM users u
-    JOIN parents p ON u.person_id = p.person_id
-      AND p.school_id = ${schoolId}
-      AND p.deleted_at IS NULL
-    JOIN student_parents sp ON p.id = sp.parent_id
-      AND sp.school_id = ${schoolId}
-      AND sp.deleted_at IS NULL
-    JOIN students s ON sp.student_id = s.id
-      AND s.school_id = ${schoolId}
-      AND s.deleted_at IS NULL
-    JOIN student_enrollments se ON s.id = se.student_id
-      AND se.school_id = ${schoolId}
-      AND se.status = 'active'
-      AND se.deleted_at IS NULL
-    WHERE se.class_section_id = ANY(${ids})
+    FROM recipient_people recipient
+    JOIN users u ON u.person_id = recipient.person_id
       AND u.school_id = ${schoolId}
       AND u.account_status = 'active'
       AND u.deleted_at IS NULL
   `;
-  return rows.map((row) => row.id);
+  return [...new Set(rows.map((row) => row.id))];
 }
 
 export async function maybeNotifyDiaryPublished({
