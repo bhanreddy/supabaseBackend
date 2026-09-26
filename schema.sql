@@ -4368,6 +4368,7 @@ CREATE TABLE IF NOT EXISTS subjects (
     description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
+    is_exam_only BOOLEAN NOT NULL DEFAULT FALSE,
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE
 );
 
@@ -4443,7 +4444,11 @@ CREATE TABLE IF NOT EXISTS exam_subjects (
     deleted_at TIMESTAMPTZ,
     CONSTRAINT chk_marks_valid CHECK (passing_marks <= max_marks AND max_marks > 0),
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-    class_section_id UUID REFERENCES class_sections(id)
+    class_section_id UUID REFERENCES class_sections(id),
+    is_exam_only BOOLEAN NOT NULL DEFAULT FALSE,
+    marks_responsibility TEXT NOT NULL DEFAULT 'subject_teacher',
+    subject_name_snapshot VARCHAR(100),
+    CONSTRAINT chk_exam_subjects_marks_responsibility CHECK (marks_responsibility IN ('subject_teacher', 'class_teacher'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_exam_subjects_school_id ON exam_subjects(school_id);

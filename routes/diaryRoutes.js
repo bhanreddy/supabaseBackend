@@ -42,6 +42,16 @@ async function validateDiaryTarget(schoolId, classSectionId, subjectId) {
   // A null subject is intentional: it represents a class-wide diary entry.
   if (subjectId == null) return { ok: true };
 
+  const [examOnlySubject] = await sql`
+    SELECT id FROM subjects
+    WHERE id = ${subjectId}
+      AND school_id = ${schoolId}
+      AND is_exam_only = TRUE
+  `;
+  if (examOnlySubject) {
+    return { ok: false, status: 400, error: 'Subject is not assigned to this class-section' };
+  }
+
   const [subject] = await sql`
     SELECT s.id
     FROM subjects s

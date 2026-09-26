@@ -207,6 +207,17 @@ router.post('/courses', requirePermission('lms.create'), asyncHandler(async (req
   if (!staff) return res.status(403).json({ error: 'User is not a staff member' });
 
   const isAdmin = req.user?.roles.includes('admin');
+  if (!isAdmin && subject_id) {
+    const [examOnlySubject] = await sql`
+      SELECT id FROM subjects
+      WHERE id = ${subject_id}
+        AND school_id = ${schoolId}
+        AND is_exam_only = TRUE
+    `;
+    if (examOnlySubject) {
+      return res.status(403).json({ error: 'You are not assigned to teach this subject in this class' });
+    }
+  }
   if (!isAdmin) {
     // Must match GET /teachers/me/classes: teachers may appear from class_subjects
     // or only from timetable_slots; LMS picker uses that list, so authorize the same way.

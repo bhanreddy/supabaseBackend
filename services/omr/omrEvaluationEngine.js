@@ -6,6 +6,7 @@
 
 import sql from '../../db.js';
 import { OmrUserError, OMR_USER_MESSAGES } from './omrErrors.js';
+import { authorizeExamOnlyMarkRow, loadMarksActor } from '../examOnlySubjectService.js';
 
 export const MULTIPLE_ANSWER_BEHAVIOR = {
   INVALID: 'invalid',
@@ -308,7 +309,8 @@ export async function finalizeExamResults({
 }) {
   return await sql.begin(async (tx) => {
     const [omrExam] = await tx`
-      SELECT oe.id, oe.exam_subject_id, oe.status, es.exam_id, es.max_marks, e.results_published
+      SELECT oe.id, oe.exam_subject_id, oe.status, es.exam_id, es.max_marks, es.class_id,
+        es.class_section_id, es.is_exam_only, es.marks_responsibility, e.results_published
       FROM omr_exams oe
       JOIN exam_subjects es ON es.id = oe.exam_subject_id AND es.school_id = ${schoolId}
       JOIN exams e ON e.id = es.exam_id AND e.school_id = ${schoolId}
@@ -357,8 +359,32 @@ export async function finalizeExamResults({
       throw new OmrUserError('No evaluated sheets are ready for finalization.', 400, 'NOTHING_TO_FINALIZE', counts);
     }
 
+    let writableScans = scans;
+    if (omrExam.is_exam_only && omrExam.marks_responsibility === 'class_teacher') {
+      const actor = await loadMarksActor(tx, { schoolId, userId });
+      writableScans = [];
+      for (const scan of scans) {
+        const allowed = await authorizeExamOnlyMarkRow(tx, {
+          schoolId,
+          paper: {
+            id: omrExam.exam_subject_id,
+            is_exam_only: true,
+            marks_responsibility: 'class_teacher',
+            class_id: omrExam.class_id,
+            class_section_id: omrExam.class_section_id,
+          },
+          enrollmentId: scan.student_enrollment_id,
+          user: actor || { roles: [] },
+        });
+        if (allowed.ok) writableScans.push(scan);
+      }
+      if (writableScans.length === 0) {
+        throw new OmrUserError('Only the assigned class teacher can enter marks for this subject.', 403, 'FORBIDDEN');
+      }
+    }
+
     let pushedCount = 0;
-    for (const scan of scans) {
+    for (const scan of writableScans) {
       const rawScore = scan.total_score;
       const maxPossible = scan.max_possible_score || 100;
       const targetMax = Number(omrExam.max_marks) || 100;
@@ -392,11 +418,13 @@ export async function finalizeExamResults({
       pushedCount++;
     }
 
-    await tx`
-      UPDATE omr_exams
-      SET status = 'finalized', updated_at = now()
-      WHERE id = ${omrExamId}
-    `;
+    if (writableScans.length === scans.length) {
+      await tx`
+        UPDATE omr_exams
+        SET status = 'finalized', updated_at = now()
+        WHERE id = ${omrExamId}
+      `;
+    }
 
     await tx`
       INSERT INTO omr_audit_logs (

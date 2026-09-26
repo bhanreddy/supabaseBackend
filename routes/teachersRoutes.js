@@ -4,6 +4,10 @@ import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { assertSchoolEmailAvailable } from '../utils/schoolEmail.js';
+import {
+  listClassTeacherSpecialAssignments,
+  mergeMarksAssignments,
+} from '../services/examOnlySubjectService.js';
 
 const router = express.Router();
 
@@ -143,7 +147,12 @@ router.get(
       ORDER BY class_section_id, subject_id, class_name, section_name, subject_name
     `;
 
-    return sendSuccess(res, req.schoolId, assignments);
+    const specials = await listClassTeacherSpecialAssignments(sql, {
+      schoolId,
+      staffId: staff.id,
+    });
+
+    return sendSuccess(res, req.schoolId, mergeMarksAssignments(assignments, specials));
   })
 );
 

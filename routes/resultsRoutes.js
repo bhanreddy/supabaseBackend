@@ -51,6 +51,13 @@ import {
   summarizeStudentMarks,
 } from '../services/marksTotalsService.js';
 import {
+  ExamOnlySubjectError,
+  authorizeExamOnlyMarkRow,
+  loadLegacyExamOnlyMarks,
+  replaceExamOnlySubjects,
+  saveLegacyExamOnlyUpload,
+} from '../services/examOnlySubjectService.js';
+import {
   buildClassMarksWorkbook,
   buildMissingMarksWorkbook,
   buildSchoolMarksWorkbook,
@@ -424,6 +431,7 @@ router.get('/subjects', requireAnyPermission(['academics.view', 'exams.view']), 
     SELECT id, name, name_te, code, description
     FROM subjects
     WHERE school_id = ${req.schoolId}
+      AND COALESCE(is_exam_only, FALSE) = FALSE
     ORDER BY name
   `;
   return sendSuccess(res, req.schoolId, subjects);
@@ -602,9 +610,13 @@ router.get('/exams', requirePermission('exams.view'), asyncHandler(async (req, r
  */
 router.post('/exams', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
   const { name, name_te, academic_year_id, exam_type, start_date, end_date, status } = req.body;
+  const specialSubjects = req.body.special_subjects;
 
   if (!name || !academic_year_id || !exam_type) {
     return res.status(400).json({ error: 'name, academic_year_id, and exam_type are required' });
+  }
+  if (specialSubjects !== undefined && exam_type !== 'special') {
+    return res.status(400).json({ error: 'Special subjects can only be added to Special Exams' });
   }
 
   // Auto-translate if not provided
@@ -616,13 +628,68 @@ router.post('/exams', requirePermission('exams.manage'), asyncHandler(async (req
     } catch (e) {}
   }
 
-  const [exam] = await sql`
-    INSERT INTO exams (school_id, name, name_te, academic_year_id, exam_type, start_date, end_date, status)
-    VALUES (${req.schoolId}, ${name}, ${finalNameTe}, ${academic_year_id}, ${exam_type}, ${start_date ?? null}, ${end_date ?? null}, ${status || 'scheduled'})
-    RETURNING *
-  `;
+  try {
+    const created = await sql.begin(async (tx) => {
+      const [exam] = await tx`
+        INSERT INTO exams (school_id, name, name_te, academic_year_id, exam_type, start_date, end_date, status)
+        VALUES (${req.schoolId}, ${name}, ${finalNameTe}, ${academic_year_id}, ${exam_type}, ${start_date ?? null}, ${end_date ?? null}, ${status || 'scheduled'})
+        RETURNING *
+      `;
+      let special_subjects = [];
+      if (Array.isArray(specialSubjects)) {
+        special_subjects = await replaceExamOnlySubjects(tx, {
+          schoolId: req.schoolId,
+          exam,
+          subjects: specialSubjects,
+        });
+      }
+      return { exam, special_subjects };
+    });
+    return sendSuccess(res, req.schoolId, {
+      message: 'Exam created',
+      exam: created.exam,
+      ...(created.special_subjects.length ? { special_subjects: created.special_subjects } : {}),
+    }, 201);
+  } catch (error) {
+    if (error instanceof ExamOnlySubjectError) {
+      return res.status(error.status).json({ error: error.message, details: error.details });
+    }
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Duplicate special subject for the same class or section' });
+    }
+    throw error;
+  }
+}));
 
-  return sendSuccess(res, req.schoolId, { message: 'Exam created', exam }, 201);
+router.put('/exams/:id/special-subjects', requirePermission('exams.manage'), asyncHandler(async (req, res) => {
+  const [exam] = await sql`
+    SELECT id, exam_type, academic_year_id, results_published
+    FROM exams
+    WHERE id = ${req.params.id}
+      AND school_id = ${req.schoolId}
+      AND deleted_at IS NULL
+  `;
+  if (!exam) return res.status(404).json({ error: 'Exam not found' });
+
+  try {
+    const specialSubjects = await sql.begin(async (tx) => replaceExamOnlySubjects(tx, {
+      schoolId: req.schoolId,
+      exam,
+      subjects: req.body?.subjects ?? req.body?.special_subjects,
+    }));
+    return sendSuccess(res, req.schoolId, {
+      message: 'Special subjects saved',
+      special_subjects: specialSubjects,
+    });
+  } catch (error) {
+    if (error instanceof ExamOnlySubjectError) {
+      return res.status(error.status).json({ error: error.message, details: error.details });
+    }
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Duplicate special subject for the same class or section' });
+    }
+    throw error;
+  }
 }));
 
 /**
@@ -835,7 +902,8 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
 
   // RES4 FIX: Validate exam_subject ownership against both exam_subjects and exams school_id.
   const [examSubject] = await sql`
-    SELECT es.id, es.max_marks, es.exam_id, es.class_id, es.class_section_id, e.school_id, e.results_published
+    SELECT es.id, es.max_marks, es.exam_id, es.class_id, es.class_section_id,
+      es.is_exam_only, es.marks_responsibility, e.school_id, e.results_published
     FROM exam_subjects es
     JOIN exams e ON es.exam_id = e.id
     WHERE es.id = ${exam_subject_id}
@@ -871,6 +939,19 @@ router.post('/marks/upload', requirePermission('marks.enter'), asyncHandler(asyn
     if (!enrollment) {
       results.push({ student_enrollment_id, error: 'Enrollment is not active in this school and exam class/section' });
       continue;
+    }
+
+    if (examSubject.is_exam_only && examSubject.marks_responsibility === 'class_teacher') {
+      const allowed = await authorizeExamOnlyMarkRow(sql, {
+        schoolId: req.schoolId,
+        paper: examSubject,
+        enrollmentId: student_enrollment_id,
+        user: req.user,
+      });
+      if (!allowed.ok) {
+        results.push({ student_enrollment_id, error: allowed.error });
+        continue;
+      }
     }
 
     // Validate marks
@@ -1119,7 +1200,10 @@ router.put('/marks/:id', requirePermission('marks.enter'), asyncHandler(async (r
 
   // RES5 FIX: Ownership check — verify mark belongs to this school via exam_subjects
   const [markCheck] = await sql`
-    SELECT m.id, e.results_published FROM marks m
+    SELECT m.id, m.student_enrollment_id, e.results_published,
+      es.id AS exam_subject_id, es.max_marks, es.is_exam_only, es.marks_responsibility,
+      es.class_id, es.class_section_id
+    FROM marks m
     JOIN exam_subjects es ON m.exam_subject_id = es.id
     JOIN exams e ON e.id = es.exam_id AND e.school_id = ${req.schoolId}
     WHERE m.id = ${id} AND es.school_id = ${req.schoolId}
@@ -1129,6 +1213,25 @@ router.put('/marks/:id', requirePermission('marks.enter'), asyncHandler(async (r
   }
   if (markCheck.results_published) {
     return res.status(409).json({ error: 'Results are published. Ask an admin to unpublish them before changing marks.' });
+  }
+  if (markCheck.is_exam_only && markCheck.marks_responsibility === 'class_teacher') {
+    const allowed = await authorizeExamOnlyMarkRow(sql, {
+      schoolId: req.schoolId,
+      paper: {
+        id: markCheck.exam_subject_id,
+        is_exam_only: markCheck.is_exam_only,
+        marks_responsibility: markCheck.marks_responsibility,
+        class_id: markCheck.class_id,
+        class_section_id: markCheck.class_section_id,
+      },
+      enrollmentId: markCheck.student_enrollment_id,
+      user: req.user,
+    });
+    if (!allowed.ok) return res.status(403).json({ error: allowed.error });
+    const nextMarks = is_absent ? null : Number(marks_obtained);
+    if (!is_absent && (!Number.isFinite(nextMarks) || nextMarks < 0 || nextMarks > Number(markCheck.max_marks))) {
+      return res.status(400).json({ error: `Marks must be between 0 and ${markCheck.max_marks}` });
+    }
   }
 
   const [updated] = await sql`
@@ -2527,6 +2630,7 @@ router.get('/progress-card-assistant/student/:studentId/final-calculations', req
       AND exam.exam_type IN ('fa_results', 'sa_results')
       AND exam.deleted_at IS NULL
     JOIN exam_subjects paper ON paper.exam_id = exam.id
+      AND COALESCE(paper.is_exam_only, FALSE) = FALSE
       AND paper.class_id = ${classSection.class_id}
       AND (paper.class_section_id = ${classSection.id} OR (paper.class_section_id IS NULL AND NOT EXISTS (
         SELECT 1 FROM exam_subjects es2
@@ -2993,6 +3097,18 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
 
   const { class_id, academic_year_id } = classSection;
 
+  const examOnlyRead = await loadLegacyExamOnlyMarks(sql, {
+    schoolId: req.schoolId,
+    classSection: { id: class_section_id, class_id, academic_year_id },
+    examCategory: exam_category,
+    subExam: sub_exam,
+    subjectId: subject_id,
+    user: req.user,
+  });
+  if (examOnlyRead && examOnlyRead.status && examOnlyRead.status !== 200) {
+    return res.status(examOnlyRead.status).json(examOnlyRead.body);
+  }
+
   const attendance = await sql`
     SELECT
       se.student_id,
@@ -3017,6 +3133,17 @@ router.get('/marks', requirePermission('marks.view'), asyncHandler(async (req, r
       AND se.status = 'active'
     GROUP BY se.student_id
   `;
+
+  if (examOnlyRead?.paper) {
+    return sendSuccess(res, req.schoolId, {
+      marks: examOnlyRead.marks,
+      attendance,
+      max_marks: examOnlyRead.maxMarks,
+      consolidated_max_marks: examOnlyRead.maxMarks,
+      assessment_schema: 'consolidated',
+      component_maximums: parseComponentMaximums(),
+    });
+  }
 
   // 2. Find Exam (B2: school_id scoped)
   const [exam] = await sql`
@@ -3121,6 +3248,37 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
 
   if (!['component', 'consolidated'].includes(assessmentSchema)) {
     return res.status(400).json({ error: 'assessment_schema must be component or consolidated' });
+  }
+
+  const [examOnlySubject] = await sql`
+    SELECT id, is_exam_only
+    FROM subjects
+    WHERE id = ${subject_id}
+      AND school_id = ${req.schoolId}
+      AND deleted_at IS NULL
+  `;
+  if (examOnlySubject?.is_exam_only) {
+    const [classSection] = await sql`
+      SELECT cs.id, cs.class_id, cs.academic_year_id
+      FROM class_sections cs
+      WHERE cs.id = ${class_section_id} AND cs.school_id = ${req.schoolId}
+    `;
+    if (!classSection) return res.status(404).json({ error: 'Class section not found' });
+    const outcome = await saveLegacyExamOnlyUpload(sql, {
+      schoolId: req.schoolId,
+      classSection,
+      examCategory: exam_category,
+      subExam: sub_exam,
+      subjectId: subject_id,
+      results,
+      assessmentSchema,
+      user: req.user,
+    });
+    if (!outcome) {
+      return res.status(404).json({ error: 'No special exam paper is configured for this class and subject' });
+    }
+    if (outcome.envelope) return sendSuccess(res, req.schoolId, outcome.body, outcome.status);
+    return res.status(outcome.status).json(outcome.body);
   }
 
   const componentMaximums = parseComponentMaximums(req.body.component_maximums);
@@ -3254,7 +3412,7 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
   let [examSubject] = await sql`
     SELECT id, max_marks, assessment_schema, consolidated_max_marks,
       participation_max_marks, written_work_max_marks,
-      project_work_max_marks, slip_test_max_marks
+      project_work_max_marks, slip_test_max_marks, is_exam_only
     FROM exam_subjects
     WHERE exam_id = ${exam.id}
       AND subject_id = ${subject_id}
@@ -3300,10 +3458,12 @@ router.post('/upload', requirePermission('marks.enter'), asyncHandler(async (req
         project_work_max_marks, slip_test_max_marks
     `;
   } else if (
-    Number(examSubject.max_marks) !== targetMaxMarks ||
-    examSubject.assessment_schema !== assessmentSchema ||
-    Number(examSubject.consolidated_max_marks) !== consolidatedMaxMarks ||
-    componentMaximumsChanged
+    !examSubject.is_exam_only && (
+      Number(examSubject.max_marks) !== targetMaxMarks ||
+      examSubject.assessment_schema !== assessmentSchema ||
+      Number(examSubject.consolidated_max_marks) !== consolidatedMaxMarks ||
+      componentMaximumsChanged
+    )
   ) {
     [examSubject] = await sql`
       UPDATE exam_subjects
@@ -3489,10 +3649,24 @@ router.get('/exams/:id/timetable', requirePermission('exams.view'), asyncHandler
       es.id, es.class_id, es.class_section_id, es.subject_id, es.exam_date::text AS exam_date,
       es.start_time::text AS start_time, es.end_time::text AS end_time,
       es.max_marks, es.passing_marks, es.syllabus,
+      es.is_exam_only, es.marks_responsibility,
       c.name AS class_name,
       sec.name AS section_name,
-      s.name AS subject_name, s.name_te AS subject_name_te,
+      COALESCE(es.subject_name_snapshot, s.name) AS subject_name, s.name_te AS subject_name_te,
       EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id) AS has_marks,
+      CASE
+        WHEN es.is_exam_only AND es.marks_responsibility = 'class_teacher' THEN NOT EXISTS (
+          SELECT 1
+          FROM class_sections teacher_section
+          WHERE teacher_section.school_id = ${req.schoolId}
+            AND teacher_section.academic_year_id = ${exam.academic_year_id}
+            AND teacher_section.deleted_at IS NULL
+            AND teacher_section.class_id = es.class_id
+            AND (es.class_section_id IS NULL OR teacher_section.id = es.class_section_id)
+            AND teacher_section.class_teacher_id IS NULL
+        )
+        ELSE NULL
+      END AS class_teacher_assigned,
       -- Whether a subject teacher is assigned for this class+subject in the
       -- exam's year. Schools may keep that assignment in Academics or only in
       -- the timetable, so the hint must check both sources.
@@ -4163,6 +4337,7 @@ router.get('/exam-timetable/class-subjects', requirePermission('exams.manage'), 
     JOIN subjects sub ON taught.subject_id = sub.id
     WHERE sub.school_id = ${req.schoolId}
       AND sub.deleted_at IS NULL
+      AND COALESCE(sub.is_exam_only, FALSE) = FALSE
     GROUP BY sub.id, sub.name, sub.name_te
     ORDER BY sub.name
   `;

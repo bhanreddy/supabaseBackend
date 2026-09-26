@@ -16,6 +16,10 @@
 
 import sql from '../db.js';
 import { resolveSchoolDay } from './workingDayResolver.js';
+import {
+  loadExamOnlyCoverage,
+  stampUndatedExamOnlyPapers,
+} from './examOnlySubjectService.js';
 
 export class ExamTimetableError extends Error {
   constructor(message, status = 400, details = null) {
@@ -698,6 +702,19 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   const sectionSubjects = new Map();
   let classSubjects = new Map();
   const subjectNames = new Map();
+  const examOnlyPapers = await loadExamOnlyCoverage(db, { schoolId, examId });
+  const examOnlyClassIds = new Set(examOnlyPapers.map((paper) => String(paper.class_id)));
+  const examOnlySectionIds = new Set(
+    examOnlyPapers.filter((paper) => paper.class_section_id).map((paper) => String(paper.class_section_id)),
+  );
+  const examOnlyClassWideIds = new Set(
+    examOnlyPapers.filter((paper) => !paper.class_section_id).map((paper) => String(paper.class_id)),
+  );
+  const sectionHasExamOnly = (sectionId) => {
+    const section = sectionMap.get(String(sectionId));
+    if (!section) return false;
+    return examOnlySectionIds.has(String(sectionId)) || examOnlyClassWideIds.has(String(section.class_id));
+  };
 
   if (params.mode === 'per_section') {
     subjectRows = await db`
@@ -730,6 +747,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
       JOIN subjects sub ON taught.subject_id = sub.id
       WHERE sub.school_id = ${schoolId}
         AND sub.deleted_at IS NULL
+        AND COALESCE(sub.is_exam_only, FALSE) = FALSE
     `;
 
     for (const id of params.class_section_ids) {
@@ -746,7 +764,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
     }
 
     const emptySections = params.class_section_ids.filter(
-      (id) => sectionSubjects.get(id)?.subjects.size === 0
+      (id) => sectionSubjects.get(id)?.subjects.size === 0 && !sectionHasExamOnly(id)
     );
     if (emptySections.length > 0) {
       throw new ExamTimetableError(
@@ -790,6 +808,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
       JOIN subjects sub ON taught.subject_id = sub.id
       WHERE sub.school_id = ${schoolId}
         AND sub.deleted_at IS NULL
+        AND COALESCE(sub.is_exam_only, FALSE) = FALSE
     `;
 
     classSubjects = new Map(params.class_ids.map((id) => [id, new Set()]));
@@ -798,7 +817,9 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
       subjectNames.set(String(row.subject_id), row.subject_name);
     }
 
-    const emptyClasses = params.class_ids.filter((id) => classSubjects.get(id).size === 0);
+    const emptyClasses = params.class_ids.filter(
+      (id) => classSubjects.get(id).size === 0 && !examOnlyClassIds.has(id)
+    );
     if (emptyClasses.length > 0) {
       throw new ExamTimetableError(
         'Some classes have no subjects mapped. Assign subjects in Academics first.',
@@ -814,7 +835,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
   if (params.subject_ids.length > 0) {
     // Explicit ordered selection: only these subjects, in exactly this order.
     subjectOrder = params.subject_ids.filter((id) => unionIds.includes(id));
-    if (subjectOrder.length === 0) {
+    if (subjectOrder.length === 0 && (params.subject_ids.length > 0 || examOnlyPapers.length === 0)) {
       throw new ExamTimetableError('None of the selected subjects are taught in the selected classes or sections');
     }
     const selection = new Set(subjectOrder);
@@ -936,6 +957,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
             OR (es.class_id = ANY(${params.class_ids}) AND es.class_section_id IS NULL)
           )
           AND es.deleted_at IS NULL
+          AND COALESCE(es.is_exam_only, FALSE) = FALSE
           AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
       `;
     } else {
@@ -946,6 +968,7 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
           AND es.school_id = ${schoolId}
           AND es.class_id = ANY(${params.class_ids})
           AND es.deleted_at IS NULL
+          AND COALESCE(es.is_exam_only, FALSE) = FALSE
           AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.exam_subject_id = es.id)
       `;
     }
@@ -988,6 +1011,16 @@ export async function generateExamTimetable({ schoolId, examId, params: rawParam
     if (toInsert.length > 0) {
       await tx`INSERT INTO exam_subjects ${tx(toInsert)}`;
     }
+
+    await stampUndatedExamOnlyPapers(tx, {
+      schoolId,
+      examId,
+      classIds: params.class_ids,
+      classSectionIds: params.class_section_ids,
+      mode: params.mode,
+      dates,
+      sessions: params.sessions,
+    });
 
     // Seating is derived from the schedule — a regenerated schedule invalidates
     // it, so clear it and tell the admin to reallocate. (Inline rather than
