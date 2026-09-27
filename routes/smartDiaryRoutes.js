@@ -11,6 +11,8 @@ import {
 } from '../middleware/diaryUpload.js';
 import { preprocessForOcr, optimizeForParentView } from '../utils/diaryImagePreprocess.js';
 import { uploadDiaryAttachment } from '../utils/diaryAttachmentStorage.js';
+import { isSchoolDiaryImageUrl } from '../utils/diaryStoragePath.js';
+import config from '../config/env.js';
 import { extractTextFromImage } from '../services/ai/ocrService.js';
 import { transcribeAudio } from '../services/ai/speechToTextService.js';
 import { extractDiaryFields } from '../services/ai/diaryExtractionService.js';
@@ -371,7 +373,13 @@ router.post('/publish', requirePermission('diary.create'), asyncHandler(async (r
     return sendError(res, 400, 'Please choose a class.');
   }
 
-  const attachments = Array.isArray(body.attachments) ? body.attachments.filter((url) => typeof url === 'string') : [];
+  if (body.attachments != null && !Array.isArray(body.attachments)) {
+    return sendError(res, 400, 'Invalid diary attachments');
+  }
+  const attachments = body.attachments || [];
+  if (!attachments.every((url) => isSchoolDiaryImageUrl(url, req.schoolId, config.supabase.url))) {
+    return sendError(res, 400, 'Invalid diary attachments');
+  }
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
   const content = String(body.content || composeDiaryContent(extraction, { hasPhoto: attachments.length > 0 })).trim();
   if (!content) {
@@ -635,6 +643,10 @@ router.post('/class-diary/publish', requirePermission('diary.create'), asyncHand
   }
   const imageUrl = typeof body.image_url === 'string' ? body.image_url : '';
   if (!imageUrl) return sendError(res, 400, 'The diary photo is missing. Please capture again.');
+  if (!isSchoolDiaryImageUrl(imageUrl, req.schoolId, config.supabase.url)
+      || (body.source_image_url && !isSchoolDiaryImageUrl(body.source_image_url, req.schoolId, config.supabase.url))) {
+    return sendError(res, 400, 'Invalid diary photo');
+  }
 
   const entryDate = String(body.entry_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
   const result = await publishClassDiary({

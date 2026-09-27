@@ -9,12 +9,16 @@ import { isDiarySyncRequest } from '../utils/diarySync.js';
 import {
   presentDiaryEntriesForReader,
   presentDiaryEntryForReader,
+  filterFamilyDiaryAttachments,
 } from '../utils/diaryPresentation.js';
 import { linkDiaryToSyllabus, validateSyllabusLinks } from '../services/syllabusService.js';
 import { CalendarService } from '../services/calendarService.js';
 import { upsertDiaryEntry, isUuid } from '../services/smartDiary/publishService.js';
 import { purgeTextDiaryOlderThanRetention } from '../services/smartDiary/photoHistory.js';
 import { DIARY_RETENTION_DAYS } from '../utils/diaryRetention.js';
+import { canReadDiaryClass } from '../services/smartDiary/readerAccess.js';
+import { isSchoolDiaryImageUrl } from '../utils/diaryStoragePath.js';
+import config from '../config/env.js';
 
 const router = express.Router();
 
@@ -102,6 +106,10 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
   const offset = (page - 1) * limit;
   const schoolId = req.schoolId;
 
+  if (!(await canReadDiaryClass({ schoolId, personId: req.user.person_id, classSectionId: class_section_id, roles: req.user.roles }))) {
+    return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+  }
+
   logDebug(`[Diary] Fetch Request: class=${class_section_id}, updated_since=${updated_since}, user=${req.user?.id}`);
 
   let entries;
@@ -136,7 +144,7 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
     `;
     logDebug(`[Diary] Sync snapshot found ${entries.length} entries`);
     res.set('Cache-Control', 'no-store');
-    return sendSuccess(res, req.schoolId, entries);
+    return sendSuccess(res, req.schoolId, filterFamilyDiaryAttachments(entries, req.user?.roles, req.schoolId));
   }
 
   if (class_section_id && entry_date) {
@@ -314,7 +322,7 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
   // Staff history currently prefers the Telugu fields whenever they are
   // present. Return the canonical English authoring fields to staff readers;
   // parent/student reads still receive both languages (including sync above).
-  const presentedEntries = presentDiaryEntriesForReader(entries, req.user?.roles);
+  const presentedEntries = presentDiaryEntriesForReader(entries, req.user?.roles, req.schoolId);
   return sendSuccess(res, req.schoolId, presentedEntries);
 }));
 
@@ -335,6 +343,9 @@ router.get('/', requirePermission('diary.view'), asyncHandler(async (req, res) =
  */
 router.get('/sync-state', requirePermission('diary.view'), asyncHandler(async (req, res) => {
   const { class_section_id } = req.query;
+  if (!(await canReadDiaryClass({ schoolId: req.schoolId, personId: req.user.person_id, classSectionId: class_section_id, roles: req.user.roles }))) {
+    return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+  }
   if (!class_section_id) {
     return sendSuccess(res, req.schoolId, { count: 0, last_updated_at: 0 });
   }
@@ -395,11 +406,14 @@ router.get('/:id', requirePermission('diary.view'), asyncHandler(async (req, res
   if (!entry) {
     return res.status(404).json({ error: 'Diary entry not found' });
   }
+  if (!(await canReadDiaryClass({ schoolId, personId: req.user.person_id, classSectionId: entry.class_section_id, roles: req.user.roles }))) {
+    return res.status(404).json({ error: 'Diary entry not found' });
+  }
 
   return sendSuccess(
     res,
     req.schoolId,
-    presentDiaryEntryForReader(entry, req.user?.roles),
+    presentDiaryEntryForReader(entry, req.user?.roles, req.schoolId),
   );
 }));
 
@@ -424,6 +438,10 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
     entry_source,
   } = req.body;
   const schoolId = req.schoolId;
+
+  if (attachments != null && (!Array.isArray(attachments) || !attachments.every((url) => isSchoolDiaryImageUrl(url, schoolId, config.supabase.url)))) {
+    return res.status(400).json({ error: 'Invalid diary attachment' });
+  }
 
   logDebug(`[Diary] Creating entry: class=${class_section_id}, date=${entry_date}, subject=${subject_id}, user=${req.user.internal_id}`);
 
@@ -548,6 +566,10 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
     syllabus_status,
   } = req.body;
   const schoolId = req.schoolId;
+
+  if (attachments != null && (!Array.isArray(attachments) || !attachments.every((url) => isSchoolDiaryImageUrl(url, schoolId, config.supabase.url)))) {
+    return res.status(400).json({ error: 'Invalid diary attachment' });
+  }
 
   // DR3: Scoped ownership check
   const [existing] = await sql`

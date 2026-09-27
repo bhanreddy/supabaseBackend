@@ -1,4 +1,6 @@
 import { publicStructuredFields } from '../services/smartDiary/composeContent.js';
+import { isSchoolDiaryImageUrl } from './diaryStoragePath.js';
+import config from '../config/env.js';
 
 const STAFF_DIARY_ROLES = new Set(['staff', 'teacher', 'principal']);
 
@@ -10,6 +12,28 @@ const STAFF_DIARY_ROLES = new Set(['staff', 'teacher', 'principal']);
  */
 function isStaffReader(roles = []) {
   return roles.some((role) => STAFF_DIARY_ROLES.has(role));
+}
+
+export function filterFamilyDiaryAttachments(entries, roles = [], schoolId, supabaseUrl = config.supabase.url) {
+  if (!Array.isArray(entries)) return entries;
+  if (!roles.includes('student') && !roles.includes('parent')) return entries;
+  if (roles.some((role) => STAFF_DIARY_ROLES.has(role) || role === 'admin')) return entries;
+  return entries.map((entry) => {
+    if (entry.attachments == null) return entry;
+    let attachments = entry.attachments;
+    if (typeof attachments === 'string') {
+      try { attachments = JSON.parse(attachments); } catch { attachments = [attachments]; }
+    }
+    return {
+      ...entry,
+      attachments: (Array.isArray(attachments) ? attachments : [])
+        .filter((item) => isSchoolDiaryImageUrl(
+          typeof item === 'string' ? item : item?.url,
+          schoolId,
+          supabaseUrl,
+        )),
+    };
+  });
 }
 
 function presentOne(entry, staffReader) {
@@ -30,14 +54,14 @@ function presentOne(entry, staffReader) {
   return presented;
 }
 
-export function presentDiaryEntriesForReader(entries, roles = []) {
+export function presentDiaryEntriesForReader(entries, roles = [], schoolId) {
   if (!Array.isArray(entries)) return entries;
   const staffReader = isStaffReader(roles);
-  return entries.map((entry) => presentOne(entry, staffReader));
+  return filterFamilyDiaryAttachments(entries.map((entry) => presentOne(entry, staffReader)), roles, schoolId);
 }
 
-export function presentDiaryEntryForReader(entry, roles = []) {
+export function presentDiaryEntryForReader(entry, roles = [], schoolId) {
   if (!entry) return entry;
-  const [presented] = presentDiaryEntriesForReader([entry], roles);
+  const [presented] = presentDiaryEntriesForReader([entry], roles, schoolId);
   return presented;
 }

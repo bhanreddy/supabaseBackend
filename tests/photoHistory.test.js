@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { diaryStoragePathFromUrl } from '../utils/diaryStoragePath.js';
+import { diaryStoragePathFromUrl, isSchoolDiaryImageUrl } from '../utils/diaryStoragePath.js';
 import { DIARY_PHOTO_RETENTION_DAYS, DIARY_RETENTION_DAYS } from '../utils/diaryRetention.js';
 
 test('extracts supabase public object path from diary attachment URL', () => {
@@ -13,6 +13,17 @@ test('returns null for non-diary urls', () => {
   assert.equal(diaryStoragePathFromUrl('https://cdn.example/photo.jpg'), null);
   assert.equal(diaryStoragePathFromUrl(''), null);
   assert.equal(diaryStoragePathFromUrl(null), null);
+});
+
+test('accepts only this school and storage origin for newly published diary images', () => {
+  const origin = 'https://xyz.supabase.co';
+  const own = `${origin}/storage/v1/object/public/diary-attachments/17/photos/11111111-1111-4111-8111-111111111111.jpg`;
+  assert.equal(isSchoolDiaryImageUrl(own, 17, origin), true);
+  assert.equal(isSchoolDiaryImageUrl(own.replace('/17/', '/18/'), 17, origin), false);
+  assert.equal(isSchoolDiaryImageUrl(own.replace('xyz.supabase.co', 'evil.example'), 17, origin), false);
+  assert.equal(isSchoolDiaryImageUrl(own.replace('/photos/', '/other/'), 17, origin), false);
+  assert.equal(isSchoolDiaryImageUrl(own.replace('/17/photos/', '/17%2F..%2F18/photos/'), 17, origin), false);
+  assert.equal(isSchoolDiaryImageUrl('not-a-url', 17, origin), false);
 });
 
 test('photo diary is retained for one month and text diary for 15 days', () => {
