@@ -1,10 +1,8 @@
 import sql from '../../db.js';
-import { sendNotificationToUsers } from '../notificationService.js';
 import { translateDiaryFields } from '../ai/translationService.js';
 import {
   composeDiaryContent,
   composeDiaryTitle,
-  parentNotificationCopy,
   publicStructuredFields,
 } from './composeContent.js';
 import { isUuid, sanitizeDueDate, sanitizeSource } from './validation.js';
@@ -141,7 +139,6 @@ export async function upsertDiaryEntry({
   syllabusChapterId = null,
   syllabusTopicId = null,
   academicPlanItemId = null,
-  notify = true,
 }) {
   if (submissionId) {
     const existing = await findBySubmissionId(schoolId, submissionId);
@@ -199,6 +196,7 @@ export async function upsertDiaryEntry({
         syllabus_chapter_id = COALESCE(EXCLUDED.syllabus_chapter_id, diary_entries.syllabus_chapter_id),
         syllabus_topic_id = COALESCE(EXCLUDED.syllabus_topic_id, diary_entries.syllabus_topic_id),
         academic_plan_item_id = COALESCE(EXCLUDED.academic_plan_item_id, diary_entries.academic_plan_item_id),
+        notification_sent_at = NULL,
         deleted_at = NULL,
         updated_at = now()
       RETURNING *, (xmax = 0) AS _was_insert
@@ -225,7 +223,7 @@ export async function upsertDiaryEntry({
   }
 }
 
-export async function patchDiaryAiFields(schoolId, diaryId, fields = {}, { notify = false } = {}) {
+export async function patchDiaryAiFields(schoolId, diaryId, fields = {}) {
   const [existing] = await sql`
     SELECT * FROM diary_entries WHERE id = ${diaryId} AND school_id = ${schoolId}
   `;
@@ -255,19 +253,13 @@ export async function patchDiaryAiFields(schoolId, diaryId, fields = {}, { notif
       detected_language = COALESCE(${fields.detectedLanguage || null}, detected_language),
       processing_metadata = COALESCE(${fields.processingMetadata ? JSON.stringify(fields.processingMetadata) : null}, processing_metadata),
       homework_due_date = COALESCE(${fields.homeworkDueDate || null}, homework_due_date),
+      notification_sent_at = NULL,
       updated_at = now()
     WHERE id = ${diaryId} AND school_id = ${schoolId}
     RETURNING *
   `;
 
-  if (notify === true) {
-    await maybeNotifyDiaryPublished({
-      schoolId,
-      entry: updated,
-      fields,
-      force: false,
-    });
-  }
+  // OCR/content updates are collected by the daily 5:30 PM IST digest.
   return updated;
 }
 
@@ -313,64 +305,6 @@ export async function parentRecipientUserIds(schoolId, classSectionIds, db = sql
   return [...new Set(rows.map((row) => row.id))];
 }
 
-export async function maybeNotifyDiaryPublished({
-  schoolId,
-  entry,
-  fields = {},
-  classSectionIds = null,
-  force = false,
-}) {
-  if (!entry) return { sent: false, reason: 'missing_entry' };
-  if (!force && entry.notification_sent_at) return { sent: false, reason: 'already_sent' };
-
-  const copy = parentNotificationCopy(fields, {
-    subject_name: fields.subject || fields.subject_name,
-    hasPhoto: Array.isArray(entry.attachments)
-      ? entry.attachments.length > 0
-      : Boolean(fields.hasPhoto),
-  });
-  const recipients = await parentRecipientUserIds(
-    schoolId,
-    classSectionIds || [entry.class_section_id],
-  );
-  if (recipients.length === 0) {
-    await markNotificationSent(schoolId, [entry.id]);
-    return { sent: false, reason: 'no_recipients' };
-  }
-
-  await sendNotificationToUsers(
-    recipients,
-    'DIARY_UPDATED',
-    { message: `${copy.title}. ${copy.message}`, message_te: copy.message },
-    { role: 'parent', schoolId, deepLink: '/Screen/diary' },
-  );
-  await markNotificationSent(schoolId, classSectionIds ? null : [entry.id], classSectionIds, entry.entry_date, entry.created_by);
-  return { sent: true, recipients: recipients.length };
-}
-
-async function markNotificationSent(schoolId, entryIds, classSectionIds, entryDate, createdBy) {
-  if (Array.isArray(entryIds) && entryIds.length > 0) {
-    await sql`
-      UPDATE diary_entries
-      SET notification_sent_at = COALESCE(notification_sent_at, now())
-      WHERE school_id = ${schoolId}
-        AND id = ANY(${entryIds})
-    `;
-    return;
-  }
-  if (classSectionIds?.length && entryDate && createdBy) {
-    await sql`
-      UPDATE diary_entries
-      SET notification_sent_at = COALESCE(notification_sent_at, now())
-      WHERE school_id = ${schoolId}
-        AND created_by = ${createdBy}
-        AND entry_date = ${entryDate}
-        AND class_section_id = ANY(${classSectionIds})
-        AND notification_sent_at IS NULL
-    `;
-  }
-}
-
 export async function publishDiaryTargets({
   schoolId,
   userInternalId,
@@ -381,7 +315,6 @@ export async function publishDiaryTargets({
 }) {
   const isAdmin = roles.includes('admin') || roles.includes('principal');
   const results = [];
-  const publishedSectionIds = [];
 
   for (const target of targets) {
     const classSectionId = target.class_section_id;
@@ -444,7 +377,6 @@ export async function publishDiaryTargets({
       templateId: shared.template_id,
       submissionId,
       processingMetadata: shared.processing_metadata,
-      notify: false,
     });
 
     results.push({
@@ -453,27 +385,10 @@ export async function publishDiaryTargets({
       createdNew,
       duplicate,
     });
-    publishedSectionIds.push(classSectionId);
   }
 
-  const first = results.find((row) => row.id);
-  if (first && shared.notify !== false) {
-    const [entry] = await sql`
-      SELECT * FROM diary_entries WHERE id = ${first.id} AND school_id = ${schoolId}
-    `;
-    await maybeNotifyDiaryPublished({
-      schoolId,
-      entry,
-      fields: {
-        ...(shared.extraction || {}),
-        subject_name: shared.subject_name,
-        hasPhoto: (shared.attachments || []).length > 0,
-      },
-      classSectionIds: [...new Set(publishedSectionIds)],
-      force: false,
-    });
-  }
-
+  // Publishing makes diary entries visible immediately; parent push alerts
+  // belong exclusively to the scheduled daily digest.
   return results;
 }
 

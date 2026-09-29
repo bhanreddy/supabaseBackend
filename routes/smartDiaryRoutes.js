@@ -421,7 +421,6 @@ router.post('/publish', requirePermission('diary.create'), asyncHandler(async (r
         detectedLanguage: body.detected_language,
       }),
       extraction,
-      notify: body.notify !== false,
       submission_id: body.submission_id,
     },
   });
@@ -505,7 +504,6 @@ router.post('/copy', requirePermission('diary.create'), asyncHandler(async (req,
       entry_source: 'COPIED',
       source_diary_id: source.id,
       processing_metadata: source.processing_metadata,
-      notify: true,
     },
   });
   return sendSuccess(res, req.schoolId, { message: 'Diary copied.', results });
@@ -681,7 +679,7 @@ router.post('/class-diary/publish', requirePermission('diary.create'), asyncHand
 async function runBackgroundExtraction({ schoolId, teacherId, diaryId, attachments, context }) {
   const url = (attachments || []).find((item) => typeof item === 'string' && /^https?:\/\//i.test(item));
   if (!url) {
-    await patchDiaryAiFields(schoolId, diaryId, { ocrStatus: 'skipped', aiStatus: 'skipped' }, { notify: false });
+    await patchDiaryAiFields(schoolId, diaryId, { ocrStatus: 'skipped', aiStatus: 'skipped' });
     return;
   }
 
@@ -724,7 +722,7 @@ async function runBackgroundExtraction({ schoolId, teacherId, diaryId, attachmen
   }
 
   if (!rawText) {
-    await patchDiaryAiFields(schoolId, diaryId, { ocrStatus, aiStatus: 'skipped' }, { notify: false });
+    await patchDiaryAiFields(schoolId, diaryId, { ocrStatus, aiStatus: 'skipped' });
     return;
   }
 
@@ -741,7 +739,7 @@ async function runBackgroundExtraction({ schoolId, teacherId, diaryId, attachmen
     detectedLanguage: extraction.detectedLanguage,
     homeworkDueDate: extraction.dueDate || null,
     processingMetadata: buildProcessingMetadata(extraction, { entrySource: 'PHOTO' }),
-  }, { notify: false });
+  });
 }
 
 export default router;

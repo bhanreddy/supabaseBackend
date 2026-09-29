@@ -1,8 +1,7 @@
 import sql from '../../db.js';
 import { composeDiaryContent, composeDiaryTitle } from './composeContent.js';
 import { isUuid, sanitizeDueDate, sanitizeSource } from './validation.js';
-import { upsertDiaryEntry, parentRecipientUserIds, logDiaryAnalytics } from './publishService.js';
-import { sendNotificationToUsers } from '../notificationService.js';
+import { upsertDiaryEntry, logDiaryAnalytics } from './publishService.js';
 import { matchSubjectName } from './subjectMatch.js';
 import { loadClassSubjects } from './classTeacherService.js';
 
@@ -185,28 +184,8 @@ export async function publishClassDiary({
   }
 
   const created = results.filter((row) => row.id);
-  if (created.length && !upload.notification_sent_at) {
-    const copy = classDiaryNotificationCopy(section?.class_name, section?.section_name);
-    const recipients = await parentRecipientUserIds(schoolId, [classSectionId]);
-    if (recipients.length) {
-      await sendNotificationToUsers(
-        recipients,
-        'DIARY_UPDATED',
-        { message: copy.message, message_te: copy.message },
-        { role: 'parent', schoolId, deepLink: '/Screen/diary' },
-      );
-      await sql`
-        UPDATE class_diary_uploads
-        SET notification_sent_at = now(), processing_status = ${sendOriginal ? 'original' : 'published'}
-        WHERE id = ${upload.id} AND school_id = ${schoolId} AND notification_sent_at IS NULL
-      `;
-      await sql`
-        UPDATE diary_entries
-        SET notification_sent_at = COALESCE(notification_sent_at, now())
-        WHERE school_id = ${schoolId} AND class_diary_upload_id = ${upload.id}
-      `;
-    }
-  }
+  // Keep entries eligible for the daily digest; uploading a class photo or
+  // publishing extracted subjects must never send an immediate parent alert.
 
   await logDiaryAnalytics({
     schoolId,

@@ -24,8 +24,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== DIARY / HOMEWORK =====
     DIARY_UPDATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'diary_alert',
+        sound: 'diary_alert.wav',
         titleTemplate: '📓 Diary Update',
         bodyTemplate: '✏️ {{message}}',
         titleTemplate_te: '📓 డైరీ నవీకరణ',
@@ -737,8 +737,10 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     CALENDAR_EVENT_CANCELLED: {
-        channelId: 'emergency',
-        sound: 'emergency.wav',
+        // Calendar cancellations (including exams) use the same general alert
+        // as other calendar updates, rather than the complaint/emergency sound.
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
         titleTemplate: '❌ Event Cancelled: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '❌ ఈవెంట్ రద్దు చేయబడింది: {{title}}',

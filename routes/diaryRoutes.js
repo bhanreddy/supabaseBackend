@@ -476,7 +476,6 @@ router.post('/', requirePermission('diary.create'), asyncHandler(async (req, res
       inputLanguage: input_language,
       entrySource: entry_source || 'MANUAL',
       submissionId: submission_id || null,
-      notify: false,
       syllabusChapterId: syllabus_chapter_id || null,
       syllabusTopicId: syllabus_topic_id || null,
       academicPlanItemId: academic_plan_item_id || null,
@@ -644,6 +643,7 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
         attachments = ${sql_attachments},
         syllabus_chapter_id = COALESCE(${syllabus_chapter_id || null}, syllabus_chapter_id),
         syllabus_topic_id = COALESCE(${syllabus_topic_id || null}, syllabus_topic_id),
+        notification_sent_at = NULL,
         updated_at = now()
       WHERE id = ${id}
       AND school_id = ${req.schoolId}

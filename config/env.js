@@ -1,4 +1,5 @@
 import 'dotenv/config'; // Required to load .env
+import { DAILY_DIARY_DIGEST_SCHEDULE } from '../services/diaryNotificationPolicy.js';
 
 const required = (key, defaultValue = undefined) => {
     // || handles both undefined and empty strings ''
@@ -31,12 +32,6 @@ const parseCsv = (value) =>
 
 const nodeEnv = required('NODE_ENV', 'development');
 const isProduction = nodeEnv === 'production';
-const diaryDigestHour = boundedNumber(
-    'DIARY_DIGEST_HOUR',
-    optional('DIARY_DIGEST_HOUR', '17'),
-    0,
-    23,
-);
 
 /**
  * pg-boss needs a SESSION-mode connection (LISTEN/NOTIFY, advisory locks,
@@ -150,9 +145,7 @@ const config = {
     },
     diaryDigestJobs: {
         enabled: optional('DIARY_DIGEST_ENABLED', 'true') !== 'false',
-        cutoffHour: diaryDigestHour,
-        cron: optional('DIARY_DIGEST_CRON', `0 ${diaryDigestHour} * * *`),
-        timezone: optional('DIARY_DIGEST_TIMEZONE', 'Asia/Kolkata'),
+        ...DAILY_DIARY_DIGEST_SCHEDULE,
     },
 };
 

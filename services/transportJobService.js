@@ -79,6 +79,7 @@ export async function startTransportJobs() {
       const result = await sendDailyDiaryDigests({
         timezone: config.diaryDigestJobs.timezone,
         cutoffHour: config.diaryDigestJobs.cutoffHour,
+        cutoffMinute: config.diaryDigestJobs.cutoffMinute,
       });
       logger.info(result, 'Daily diary digest completed');
     });
@@ -100,6 +101,7 @@ export async function startTransportJobs() {
         cron: config.diaryDigestJobs.cron,
         timezone: config.diaryDigestJobs.timezone,
         cutoffHour: config.diaryDigestJobs.cutoffHour,
+        cutoffMinute: config.diaryDigestJobs.cutoffMinute,
       },
       'pg-boss daily diary digest scheduled',
     );
