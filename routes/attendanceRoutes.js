@@ -654,6 +654,72 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 /**
+ * DELETE /attendance/day
+ * Soft-delete every attendance row for one class on one calendar day
+ * (both morning and afternoon). Used when a day was marked by mistake,
+ * for example on a general holiday.
+ * Query: class_section_id, date (YYYY-MM-DD)
+ */
+router.delete('/day', requireAuth, asyncHandler(async (req, res) => {
+  const class_section_id = String(req.query.class_section_id || '');
+  const date = String(req.query.date || '');
+  const isAdmin = req.user?.roles.includes('admin');
+
+  if (!class_section_id || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'class_section_id and date (YYYY-MM-DD) are required' });
+  }
+
+  if (!isAdmin) {
+    const [staff] = await sql`SELECT id FROM staff WHERE person_id = ${req.user.person_id} AND school_id = ${req.schoolId}`;
+    if (!staff) {
+      return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+    const hasPermanentPermission = req.user.permissions.includes('attendance.mark');
+    const dayOfWeek = await timetableDayForDate(req.schoolId, date);
+    const morningOk = await isAuthorizedForSession(sql, {
+      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId,
+      session: 'morning', dayOfWeek, date,
+    });
+    const afternoonOk = morningOk ? false : await isAuthorizedForSession(sql, {
+      staffId: staff.id, classSectionId: class_section_id, schoolId: req.schoolId,
+      session: 'afternoon', dayOfWeek, date,
+    });
+    if (!hasPermanentPermission && !morningOk && !afternoonOk) {
+      return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+    if (!morningOk && !afternoonOk) {
+      return res.status(403).json({ error: 'Only a teacher of this class can clear attendance for this day' });
+    }
+  }
+
+  const removed = await sql`
+    UPDATE daily_attendance da
+    SET deleted_at = NOW(), updated_at = NOW()
+    FROM student_enrollments se
+    WHERE da.student_enrollment_id = se.id
+      AND da.school_id = ${req.schoolId}
+      AND da.attendance_date = ${date}::date
+      AND da.deleted_at IS NULL
+      AND se.class_section_id = ${class_section_id}
+      AND se.school_id = ${req.schoolId}
+    RETURNING da.id, se.student_id
+  `;
+
+  for (const row of removed) {
+    emitSchoolEvent(AUTOMATION_EVENTS.STUDENT_ATTENDANCE_RISK_CHANGED, {
+      schoolId: req.schoolId,
+      studentId: row.student_id,
+    });
+  }
+
+  return sendSuccess(res, req.schoolId, {
+    message: 'Attendance cleared for this day',
+    date,
+    count: removed.length,
+  });
+}));
+
+/**
  * PUT /attendance/:id
  * Update single attendance record
  */

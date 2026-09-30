@@ -201,7 +201,7 @@ export async function assemblePayrollInput(db, schoolId, staffId, year, month, p
     LIMIT 1
   `;
   const leaves = user ? await db`
-    SELECT id, leave_type, start_date, end_date, status, payroll_treatment
+    SELECT id, leave_type, start_date, end_date, status, payroll_treatment, half_day
     FROM leave_applications
     WHERE school_id = ${schoolId} AND applicant_id = ${user.id}
       AND end_date >= ${bounds.start} AND start_date <= ${bounds.end}
@@ -255,6 +255,7 @@ export async function assemblePayrollInput(db, schoolId, staffId, year, month, p
       status: leave.status,
       startDate: isoDate(leave.start_date),
       endDate: isoDate(leave.end_date),
+      halfDay: Boolean(leave.half_day),
     })),
     adjustments: adjustments.map((adjustment) => ({
       id: adjustment.id,

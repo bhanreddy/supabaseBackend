@@ -93,7 +93,8 @@ function daysForRequestInMonth(leave, calculation, year, month) {
   const start = leaveStart > bounds.start ? leaveStart : bounds.start;
   const end = leaveEnd < bounds.end ? leaveEnd : bounds.end;
   const categories = new Map((calculation.days || []).map((day) => [day.date, day.category]));
-  return eachDateInclusive(start, end).filter((date) => categories.get(date) === 'pending_leave').length;
+  const days = eachDateInclusive(start, end).filter((date) => categories.get(date) === 'pending_leave').length;
+  return leave.half_day ? days * 0.5 : days;
 }
 
 /**

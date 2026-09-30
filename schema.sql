@@ -3078,7 +3078,7 @@ BEGIN
       'staff.create', 'staff.edit', 'staff.delete', 'dashboard.view', 'academics.view',
       'students.view', 'students.create', 'students.edit', 'students.delete',
       'certificates.issue', 'hostel.view', 'hostel.allocate',
-      'exams.view', 'exams.manage'
+      'exams.view', 'exams.manage', 'leaves.view', 'leaves.approve'
     )
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp
@@ -4676,9 +4676,11 @@ CREATE TABLE IF NOT EXISTS leave_applications (
     review_remarks TEXT,
     review_remarks_te TEXT,
     payroll_treatment TEXT CHECK (payroll_treatment IS NULL OR payroll_treatment IN ('PAID_CL', 'PAID_LEAVE', 'UNPAID')),
+    half_day BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_leave_dates CHECK (end_date >= start_date),
+    CONSTRAINT chk_leave_half_day_single_date CHECK (half_day = false OR start_date = end_date),
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE
 );
 

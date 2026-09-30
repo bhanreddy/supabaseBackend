@@ -31,7 +31,7 @@ router.get('/', requirePermission('leaves.view'), asyncHandler(async (req, res) 
   if (isAdmin) {
     leaves = await sql`
       SELECT
-        la.id, la.leave_type, la.start_date, la.end_date, la.reason, la.reason_te, la.status,
+        la.id, la.leave_type, la.start_date, la.end_date, la.half_day, la.reason, la.reason_te, la.status,
         la.review_remarks, la.review_remarks_te, la.created_at, la.payroll_treatment,
         applicant.display_name as applicant_name,
         staff_member.id AS staff_id,
@@ -63,7 +63,7 @@ router.get('/', requirePermission('leaves.view'), asyncHandler(async (req, res) 
   } else {
     leaves = await sql`
       SELECT
-        la.id, la.leave_type, la.start_date, la.end_date, la.reason, la.reason_te, la.status,
+        la.id, la.leave_type, la.start_date, la.end_date, la.half_day, la.reason, la.reason_te, la.status,
         la.review_remarks, la.review_remarks_te, la.created_at, la.reviewed_at, la.payroll_treatment,
         reviewer.display_name as reviewed_by_name
       FROM leave_applications la
@@ -125,7 +125,8 @@ router.get('/:id', requirePermission('leaves.view'), asyncHandler(async (req, re
  * POST /leaves — Apply for leave
  */
 router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res) => {
-  const { leave_type, start_date, end_date, reason } = req.body;
+  const { leave_type, start_date, end_date, reason, half_day } = req.body;
+  const isHalfDay = half_day === true || half_day === 'true';
   const schoolId = req.schoolId;
 
   if (!leave_type || !start_date || !end_date || !reason) {
@@ -135,6 +136,10 @@ router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res
   const validTypes = ['casual', 'sick', 'earned', 'maternity', 'paternity', 'unpaid', 'other'];
   if (!validTypes.includes(leave_type)) {
     return res.status(400).json({ error: `leave_type must be one of: ${validTypes.join(', ')}` });
+  }
+
+  if (isHalfDay && String(start_date).slice(0, 10) !== String(end_date).slice(0, 10)) {
+    return res.status(400).json({ error: 'Half-day leave must start and end on the same date' });
   }
 
   const overlapping = await sql`
@@ -155,8 +160,8 @@ router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res
   } catch (e) {}
 
   const [leave] = await sql`
-    INSERT INTO leave_applications (school_id, applicant_id, leave_type, start_date, end_date, reason, reason_te)
-    VALUES (${schoolId}, ${req.user.internal_id}, ${leave_type}, ${start_date}, ${end_date}, ${reason}, ${reason_te})
+    INSERT INTO leave_applications (school_id, applicant_id, leave_type, start_date, end_date, half_day, reason, reason_te)
+    VALUES (${schoolId}, ${req.user.internal_id}, ${leave_type}, ${start_date}, ${end_date}, ${isHalfDay}, ${reason}, ${reason_te})
     RETURNING *
   `;
 
@@ -168,7 +173,7 @@ router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res
         FROM users u
         JOIN user_roles ur ON u.id = ur.user_id
         JOIN roles r ON ur.role_id = r.id
-        WHERE r.code = 'admin'
+        WHERE r.code IN ('admin', 'accounts')
           AND u.account_status = 'active'
           AND u.school_id = ${schoolId}
       `;
