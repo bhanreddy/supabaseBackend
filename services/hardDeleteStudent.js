@@ -460,13 +460,20 @@ async function runDeleteTransaction(tx, schoolId, studentId, confirmFeeDeletion)
       RETURNING da.id
     ) SELECT count(*)::int AS count FROM deleted`);
 
-  await del('marks', `
-    WITH deleted AS (
-      DELETE FROM public.marks m
-      USING public.student_enrollments se, target_students ts
-      WHERE m.student_enrollment_id = se.id AND se.student_id = ts.id AND m.school_id = ${schoolId}
-      RETURNING m.id
-    ) SELECT count(*)::int AS count FROM deleted`);
+  // Published exams lock mark deletes. This wipe is an authorized student purge,
+  // so the lock is lifted only for this statement and restored immediately.
+  await tx`ALTER TABLE public.marks DISABLE TRIGGER trg_lock_published_result_marks`;
+  try {
+    await del('marks', `
+      WITH deleted AS (
+        DELETE FROM public.marks m
+        USING public.student_enrollments se, target_students ts
+        WHERE m.student_enrollment_id = se.id AND se.student_id = ts.id AND m.school_id = ${schoolId}
+        RETURNING m.id
+      ) SELECT count(*)::int AS count FROM deleted`);
+  } finally {
+    await tx`ALTER TABLE public.marks ENABLE TRIGGER trg_lock_published_result_marks`;
+  }
 
   await del('student_enrollments', `
     WITH deleted AS (
@@ -665,6 +672,60 @@ async function runDeleteTransaction(tx, schoolId, studentId, confirmFeeDeletion)
       DELETE FROM public.audit_logs al USING target_users tu
       WHERE al.user_id = tu.id RETURNING al.id
     ) SELECT count(*)::int AS count FROM deleted`);
+
+  // Tables added after this wipe was written still point at students with
+  // RESTRICT / NO ACTION. The ones that actually block deletes today are
+  // transport_trip_roster, exam_hall_ticket_batch_students, and
+  // automation_execution_logs. Clear every remaining FK from the catalog so
+  // the next table does not fail the same way.
+  const blockingRefs = await tx`
+    SELECT src.relname AS table_name,
+           att.attname AS column_name,
+           att.attnotnull AS not_null
+    FROM pg_constraint con
+    JOIN pg_class src ON src.oid = con.conrelid
+    JOIN pg_class dst ON dst.oid = con.confrelid
+    JOIN pg_namespace n ON n.oid = src.relnamespace
+    JOIN pg_namespace dn ON dn.oid = dst.relnamespace
+    JOIN LATERAL unnest(con.conkey) AS ck(attnum) ON true
+    JOIN pg_attribute att ON att.attrelid = src.oid AND att.attnum = ck.attnum
+    WHERE con.contype = 'f'
+      AND dn.nspname = 'public'
+      AND dst.relname = 'students'
+      AND n.nspname = 'public'
+      AND con.confdeltype IN ('a', 'r')
+  `;
+
+  const ident = (name) => {
+    if (!/^[a-z_][a-z0-9_]*$/i.test(name)) {
+      throw new Error(`Unexpected identifier on a student foreign key: ${name}`);
+    }
+    return `"${name}"`;
+  };
+
+  for (const ref of blockingRefs) {
+    const table = ident(ref.table_name);
+    const column = ident(ref.column_name);
+    const label = `student_ref_${ref.table_name}`;
+    if (ref.not_null) {
+      await del(label, `
+        WITH deleted AS (
+          DELETE FROM public.${table} t
+          USING target_students ts
+          WHERE t.${column} = ts.id
+          RETURNING 1
+        ) SELECT count(*)::int AS count FROM deleted`);
+    } else {
+      const updated = await tx.unsafe(`
+        UPDATE public.${table} t
+        SET ${column} = NULL
+        FROM target_students ts
+        WHERE t.${column} = ts.id
+        RETURNING 1
+      `);
+      stats[label] = updated.length;
+    }
+  }
 
   // ── Core identities (order matters for FKs) ─────────────────────────────────
   await del('students', `

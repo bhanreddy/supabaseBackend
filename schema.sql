@@ -3078,7 +3078,7 @@ BEGIN
       'staff.create', 'staff.edit', 'staff.delete', 'dashboard.view', 'academics.view',
       'students.view', 'students.create', 'students.edit', 'students.delete',
       'certificates.issue', 'hostel.view', 'hostel.allocate',
-      'exams.view', 'exams.manage', 'leaves.view', 'leaves.approve'
+      'exams.view', 'exams.manage', 'leaves.view', 'leaves.apply'
     )
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions rp

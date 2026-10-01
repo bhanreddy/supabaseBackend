@@ -14,7 +14,7 @@ ALTER TABLE leave_applications
 INSERT INTO role_permissions (school_id, role_id, permission_id)
 SELECT r.school_id, r.id, p.id
 FROM roles r
-JOIN permissions p ON p.school_id = r.school_id AND p.code IN ('leaves.view', 'leaves.approve')
+JOIN permissions p ON p.school_id = r.school_id AND p.code IN ('leaves.view', 'leaves.apply')
 WHERE r.code = 'accounts'
   AND NOT EXISTS (
     SELECT 1 FROM role_permissions rp

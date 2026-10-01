@@ -173,7 +173,7 @@ router.post('/', requirePermission('leaves.apply'), asyncHandler(async (req, res
         FROM users u
         JOIN user_roles ur ON u.id = ur.user_id
         JOIN roles r ON ur.role_id = r.id
-        WHERE r.code IN ('admin', 'accounts')
+        WHERE r.code = 'admin'
           AND u.account_status = 'active'
           AND u.school_id = ${schoolId}
       `;

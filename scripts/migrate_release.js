@@ -47,6 +47,7 @@ const leavePayrollRecalculationMigrationName = '20260925_leave_payroll_recalcula
 const payrollAttendanceSummaryMigrationName = '20260925_payroll_manual_attendance_summary.sql';
 const examOnlySpecialSubjectsMigrationName = '20260926_exam_only_special_subjects.sql';
 const accountsLeaveHalfDayMigrationName = '20260930_accounts_leave_half_day.sql';
+const accountsLeaveApplyOnlyMigrationName = '20260930_accounts_leave_apply_only.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -241,6 +242,7 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, payrollAttendanceSummaryMigrationName, 4540925);
   await applyNamedSqlMigration(db, examOnlySpecialSubjectsMigrationName, 4550926);
   await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
+  await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -507,6 +509,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, payrollAttendanceSummaryMigrationName, 4540925);
       await applyNamedSqlMigration(db, examOnlySpecialSubjectsMigrationName, 4550926);
       await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
+      await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);
