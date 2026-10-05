@@ -446,3 +446,22 @@ test('marks result classification distinguishes pass, fail, absence and incomple
   });
   assert.equal(classifyMarksResult(papers, [subject('eng', 18)]).result_status, 'Incomplete');
 });
+
+test('class and accounts Excel exports calculate Social component totals rather than cached consolidated marks', () => {
+  const paper = { exam_subject_id: 'social', subject_name: 'Social', assessment_schema: 'component', max_marks: 50,
+    passing_marks: 18, participation_max_marks: 10, written_work_max_marks: 10, project_work_max_marks: 10, slip_test_max_marks: 20 };
+  const student = { student_name: 'Student', rank: 1, subjects: [{ exam_subject_id: 'social', max_marks: 50, passing_marks: 18,
+    mark_id: 'm-social', marks_obtained: 17.5, consolidated_marks_obtained: 17.5,
+    participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 17.5 }] };
+  const classSection = { class_name: '6', section_name: 'A' };
+  const options = { schoolName: 'School', exam: { name: 'FA-1' }, papers: [paper], students: [student], classSection };
+  const classWorkbook = XLSX.read(buildClassMarksWorkbook(options), { type: 'buffer' });
+  const schoolWorkbook = XLSX.read(buildSchoolMarksWorkbook({ ...options, sections: [options] }), { type: 'buffer' });
+  for (const sheet of [classWorkbook.Sheets['Class Marks'], schoolWorkbook.Sheets['6-A']]) {
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    assert.deepEqual(rows[7].slice(4, 13), [10, 10, 10, 17.5, 47.5, 'A1', 47.5, 50, 95]);
+  }
+  assert.equal(classifyMarksResult([paper], student.subjects).result_status, 'Pass');
+  assert.equal(classifyMarksResult([paper], [{ ...student.subjects[0], participation_marks: null,
+    written_work_marks: null, project_work_marks: null, slip_test_marks: null }]).result_status, 'Incomplete');
+});

@@ -53,3 +53,6 @@ dumps/
 # macOS AppleDouble files
 ._*
 **/._*
+
+# Staged narrated tour audio (generate, review, then publish the manifest).
+.tour-audio/

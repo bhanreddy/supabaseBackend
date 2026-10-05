@@ -24,6 +24,8 @@
  * Percentage = Total Obtained / Total Maximum * 100, computed from the
  * unrounded sums and rounded only once, at the end. Subject percentages are
  * never averaged.
+ * Component papers obtain their score from the four component fields, never
+ * from a cached marks_obtained value left behind by a consolidated upload.
  */
 
 /** Marks are DECIMAL(5,2); summing in hundredths keeps the arithmetic exact. */
@@ -68,7 +70,33 @@ export function subjectMaximum(subject) {
 }
 
 export function subjectObtained(subject) {
+  if (subject?.assessment_schema === 'component') {
+    const values = ['participation_marks', 'written_work_marks', 'project_work_marks', 'slip_test_marks']
+      .map((field) => subject[field]);
+    const numbers = values.map(finiteNumber);
+    // Individual component absences are stored as null and contribute zero;
+    // an entirely empty component row must not fall back to a stale total.
+    if (numbers.every((value) => value === null)) return null;
+    if (values.some((value, index) => value != null && value !== '' && numbers[index] === null)) return null;
+    return fromHundredths(numbers.reduce((total, value) => total + (value === null ? 0 : toHundredths(value)), 0));
+  }
   return finiteNumber(subject?.marks_obtained);
+}
+
+/** Resolve paper schema before deriving totals, grades, filters or display cells. */
+export function normalizeAssessmentSubjects(papers = [], subjects = []) {
+  const identity = (row) => row?.exam_subject_id ?? row?.subject_id;
+  const paperById = new Map(papers.filter((paper) => identity(paper) != null)
+    .map((paper) => [String(identity(paper)), paper]));
+  return subjects.map((subject) => {
+    const paper = paperById.get(String(identity(subject)));
+    const resolved = {
+      ...subject,
+      assessment_schema: paper?.assessment_schema ?? subject.assessment_schema,
+      max_marks: paper?.max_marks ?? subject.max_marks,
+    };
+    return { ...resolved, marks_obtained: subjectObtained(resolved) };
+  });
 }
 
 export function markEntryStatus(subject) {
@@ -143,7 +171,7 @@ function uniqueSubjects(subjects) {
  * @param {Array} [input.subjects] the student's rows, one per paper
  */
 export function summarizeStudentMarks({ papers = [], subjects = [] } = {}) {
-  const rows = uniqueSubjects(subjects);
+  const rows = normalizeAssessmentSubjects(papers, uniqueSubjects(subjects));
   const contributions = rows.map(subjectContribution);
   const counted = contributions.filter((contribution) => contribution.counted);
 

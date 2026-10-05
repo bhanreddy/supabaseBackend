@@ -47,6 +47,8 @@ import {
 } from '../services/finalResultCalculationService.js';
 import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
 import {
+  normalizeAssessmentSubjects,
+  subjectObtained,
   subjectPercentage,
   summarizeStudentMarks,
 } from '../services/marksTotalsService.js';
@@ -63,6 +65,8 @@ import {
   buildSchoolMarksWorkbook,
   classifyMarksResult,
 } from '../utils/resultWorkbooks.js';
+import { buildAssessmentMarksPrint } from '../utils/assessmentMarksPrint.js';
+import { prepareSummativeMarksSection, summativeFormativeKeys, usesSummativeMarksRegister } from '../services/summativeMarksPrintService.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1860,9 +1864,11 @@ router.get('/progress-card-assistant/exams/:examId/export', requireAnyPermission
     slip_test_max_marks: Number(paper.slip_test_max_marks || 20),
   }));
   const students = [...studentMap.values()].map((student) => {
-    const totals = summarizeStudentMarks({ papers: normalizedPapers, subjects: student.subjects });
+    const subjects = normalizeAssessmentSubjects(normalizedPapers, student.subjects);
+    const totals = summarizeStudentMarks({ papers: normalizedPapers, subjects });
     return {
       ...student,
+      subjects,
       total_obtained: totals.total_obtained,
       total_max: totals.total_max,
       percentage: totals.percentage,
@@ -1955,7 +1961,7 @@ router.get('/accounts/marks-export/context', requireAuth, requireRole('accounts'
 
 /**
  * GET /results/accounts/exams/:examId/marks/export
- * School-wide Excel register: overview plus one sheet for every class-section.
+ * School-wide Excel workbook or printable assessment registers for every class-section.
  */
 router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('accounts', 'admin', 'principal'), asyncHandler(async (req, res) => {
   const { examId } = req.params;
@@ -1965,6 +1971,8 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
   const resultStatus = typeof req.query.result_status === 'string'
     ? req.query.result_status.trim().toLowerCase()
     : 'all';
+  const format = req.query.format || 'xlsx';
+  if (!['xlsx', 'print'].includes(format)) return res.status(400).json({ error: 'Invalid format' });
   if (classId && !UUID_RE.test(classId)) return res.status(400).json({ error: 'Invalid class_id' });
   if (sectionId && !UUID_RE.test(sectionId)) return res.status(400).json({ error: 'Invalid section_id' });
   if (!['all', 'pass', 'fail', 'absent', 'incomplete'].includes(resultStatus)) {
@@ -2023,7 +2031,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
     `,
     sql`
       SELECT
-        paper.id AS exam_subject_id, paper.class_id, paper.class_section_id, paper.assessment_schema,
+        paper.id AS exam_subject_id, paper.subject_id, paper.class_id, paper.class_section_id, paper.assessment_schema,
         paper.max_marks, paper.passing_marks,
         paper.participation_max_marks, paper.written_work_max_marks,
         paper.project_work_max_marks, paper.slip_test_max_marks,
@@ -2190,10 +2198,12 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       classSection.id
     );
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
-      const totals = summarizeStudentMarks({ papers: sectionPapers, subjects: student.subjects });
-      const classification = classifyMarksResult(sectionPapers, student.subjects);
+      const subjects = normalizeAssessmentSubjects(sectionPapers, student.subjects);
+      const totals = summarizeStudentMarks({ papers: sectionPapers, subjects });
+      const classification = classifyMarksResult(sectionPapers, subjects);
       return {
         ...student,
+        subjects,
         total_obtained: totals.total_obtained,
         total_max: totals.total_max,
         percentage: totals.percentage,
@@ -2219,7 +2229,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       classSection,
       teacherName: classSection.teacher_name,
       papers: sectionPapers,
-      students: filteredStudents,
+      students: format === 'print' && usesSummativeMarksRegister(exam, classSection) ? rankedStudents : filteredStudents,
     };
   });
 
@@ -2234,6 +2244,57 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
     sectionId ? `Section: ${selectedSection || classSections[0]?.section_name || ''}` : 'All sections',
     `Result: ${resultLabel}`,
   ].join(' · ');
+
+  if (format === 'print') {
+    if (!['fa_results', 'sa_results'].includes(exam.exam_type)) {
+      return res.status(400).json({ error: 'Assessment print formats are available for formative and summative assessments' });
+    }
+    let printSections = exportSections;
+    const summativeSections = exportSections.filter((section) => usesSummativeMarksRegister(exam, section.classSection));
+    if (summativeSections.length) {
+      try { summativeFormativeKeys(exam); } catch (error) { return res.status(400).json({ error: error.message }); }
+      const sectionIds = summativeSections.map((section) => section.classSection.id);
+      const formativeRows = await sql`
+        SELECT enrollment.class_section_id, enrollment.student_id,
+          paper.subject_id, paper.id AS exam_subject_id, paper.max_marks, paper.assessment_schema,
+          formative.name AS exam_name, formative.exam_type,
+          mark.id AS mark_id, mark.marks_obtained, mark.is_absent,
+          mark.participation_marks, mark.written_work_marks, mark.project_work_marks, mark.slip_test_marks
+        FROM student_enrollments enrollment
+        JOIN class_sections class_section ON class_section.id = enrollment.class_section_id
+          AND class_section.school_id = ${req.schoolId} AND class_section.deleted_at IS NULL
+        JOIN students student ON student.id = enrollment.student_id
+          AND student.school_id = ${req.schoolId} AND student.deleted_at IS NULL
+          AND student.status_id = ${ACTIVE_STUDENT_STATUS_ID}
+        JOIN exams formative ON formative.academic_year_id = ${exam.academic_year_id}
+          AND formative.school_id = ${req.schoolId} AND formative.exam_type = 'fa_results'
+          AND formative.deleted_at IS NULL
+        JOIN exam_subjects paper ON paper.exam_id = formative.id AND paper.class_id = class_section.class_id
+          AND paper.school_id = ${req.schoolId} AND paper.deleted_at IS NULL
+          AND (paper.class_section_id = class_section.id OR (paper.class_section_id IS NULL AND NOT EXISTS (
+            SELECT 1 FROM exam_subjects override_paper
+            WHERE override_paper.exam_id = formative.id AND override_paper.subject_id = paper.subject_id
+              AND override_paper.class_section_id = class_section.id
+              AND override_paper.school_id = ${req.schoolId} AND override_paper.deleted_at IS NULL
+          )))
+        LEFT JOIN marks mark ON mark.exam_subject_id = paper.id AND mark.student_enrollment_id = enrollment.id
+          AND mark.school_id = ${req.schoolId}
+        WHERE enrollment.school_id = ${req.schoolId} AND enrollment.academic_year_id = ${exam.academic_year_id}
+          AND enrollment.status = 'active' AND enrollment.deleted_at IS NULL
+          AND enrollment.class_section_id = ANY(${sql.array(sectionIds)}::uuid[])
+        ORDER BY formative.start_date DESC NULLS LAST, formative.created_at DESC, formative.id DESC
+      `;
+      try {
+        printSections = exportSections.map((section) => usesSummativeMarksRegister(exam, section.classSection)
+          ? prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultStatus) : section);
+      } catch (error) { return res.status(409).json({ error: error.message }); }
+    }
+    return sendSuccess(res, req.schoolId, buildAssessmentMarksPrint({
+      schoolName: school?.name,
+      exam,
+      sections: printSections,
+    }));
+  }
 
   const workbook = buildSchoolMarksWorkbook({
     schoolName: school?.name,
@@ -2367,7 +2428,7 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
   const rawSubjects = await sql`
     SELECT
       subject.id AS subject_id, subject.name AS subject_name,
-      paper.assessment_schema, paper.max_marks, paper.consolidated_max_marks,
+      paper.id AS exam_subject_id, paper.assessment_schema, paper.max_marks, paper.consolidated_max_marks,
       paper.participation_max_marks, paper.written_work_max_marks,
       paper.project_work_max_marks, paper.slip_test_max_marks,
       mark.id AS mark_id, mark.marks_obtained, mark.consolidated_marks_obtained,
@@ -2396,13 +2457,7 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
   const numberOrNull = (value) => value == null ? null : Number(value);
   const enteredRawSubjects = filterEnteredProgressReportSubjects(rawSubjects);
   const subjects = enteredRawSubjects.map((subject) => {
-    const componentTotal = [
-      subject.participation_marks,
-      subject.written_work_marks,
-      subject.project_work_marks,
-      subject.slip_test_marks,
-    ].reduce((total, value) => total + Number(value || 0), 0);
-    const obtained = numberOrNull(subject.marks_obtained);
+    const obtained = subjectObtained(subject);
     const maximum = Number(subject.max_marks || 0);
     const componentMaximums = componentMaximumsFromRow(subject);
     return {
@@ -2416,14 +2471,14 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
       project_work_marks: numberOrNull(subject.project_work_marks),
       slip_test_marks: numberOrNull(subject.slip_test_marks),
       component_maximums: componentMaximums,
-      component_total: subject.mark_id ? componentTotal : null,
+      component_total: subject.mark_id && subject.assessment_schema === 'component' ? (subject.is_absent ? 0 : obtained) : null,
       weightage_20: subject.mark_id && subject.assessment_schema === 'component'
-        ? componentWeightage20(componentTotal, componentMaximums)
+        && (subject.is_absent || obtained != null) ? componentWeightage20(subject.is_absent ? 0 : obtained, componentMaximums)
         : null,
       percentage: subject.mark_id
         ? subjectPercentage(subject.is_absent ? 0 : obtained, maximum)
         : null,
-      entry_status: subject.is_absent ? 'absent' : subject.mark_id ? 'complete' : 'missing',
+      entry_status: subject.is_absent ? 'absent' : subject.mark_id && obtained != null ? 'complete' : 'missing',
     };
   });
 
@@ -2432,8 +2487,9 @@ router.get('/progress-card-assistant/student/:studentId', requireAnyPermission([
   const cohortRows = await sql`
     SELECT
       enrolled_student.id AS student_id, enrolled_student.admission_no,
-      paper.id AS exam_subject_id, paper.max_marks,
-      mark.id AS mark_id, mark.marks_obtained, mark.is_absent
+      paper.id AS exam_subject_id, paper.max_marks, paper.assessment_schema,
+      mark.id AS mark_id, mark.marks_obtained, mark.is_absent,
+      mark.participation_marks, mark.written_work_marks, mark.project_work_marks, mark.slip_test_marks
     FROM student_enrollments enrollment
     JOIN students enrolled_student ON enrolled_student.id = enrollment.student_id
       AND enrolled_student.school_id = ${req.schoolId}

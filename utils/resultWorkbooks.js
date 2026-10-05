@@ -4,6 +4,7 @@ import { gradeForFinalPercentage } from '../services/finalResultCalculationServi
 import {
   examTotalMaximum,
   marksEntryStatusLabel,
+  normalizeAssessmentSubjects,
   subjectPercentage,
   summarizeStudentMarks,
 } from '../services/marksTotalsService.js';
@@ -31,8 +32,10 @@ const gradeValue = (subject) => {
 };
 
 export function classifyMarksResult(papers = [], subjects = []) {
+  subjects = normalizeAssessmentSubjects(papers, subjects);
   const entered = subjects.filter((subject) => subject.mark_id);
-  const incomplete = papers.length === 0 || entered.length < papers.length;
+  const incomplete = papers.length === 0 || entered.length < papers.length
+    || entered.some((subject) => !subject.is_absent && subject.marks_obtained == null);
   const hasAbsence = entered.some((subject) => subject.is_absent);
   const hasFailedSubject = entered.some((subject) =>
     !subject.is_absent && safeNumber(subject.marks_obtained) < safeNumber(subject.passing_marks),
@@ -307,7 +310,8 @@ const classMarksWorksheet = ({
   const topHeader = allColumns.map((column) => column.top);
   const subHeader = allColumns.map((column) => column.sub);
   const dataRows = students.map((student, index) => {
-    const subjectByPaper = new Map((student.subjects || []).map((subject) => [String(subject.exam_subject_id), subject]));
+    const subjectByPaper = new Map(normalizeAssessmentSubjects(papers, student.subjects || [])
+      .map((subject) => [String(subject.exam_subject_id), subject]));
     const subjectCells = papers.flatMap((paper) => {
       const subject = subjectByPaper.get(String(paper.exam_subject_id));
       if (paper.assessment_schema === 'component') {
