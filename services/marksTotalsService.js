@@ -1,4 +1,4 @@
-import { selectScienceAlternative } from './scienceSubjectSelection.js';
+import { hasScienceAlternatives, scienceAlternativeKind, selectScienceAlternative } from './scienceSubjectSelection.js';
 
 /**
  * The single source of truth for progress-report marks totals.
@@ -121,6 +121,32 @@ export function selectScoringSubjects(papers = [], subjects = []) {
     subjects: papers.length ? rows.filter((row) => !excluded.has(subjectIdentity(row)))
       : selectScienceAlternative(rows, marksAvailability),
   };
+}
+
+/** Hide an unused EVS/Science alternative across the cohort, while preserving every entered value. */
+export function displayAssessmentPapers(papers = [], students = []) {
+  if (!hasScienceAlternatives(papers) || !students.length) return papers;
+  const entered = new Set();
+  const containsValue = (value) => value != null && value !== '';
+  for (const student of students) {
+    for (const row of normalizeAssessmentSubjects(papers, student.subjects || [])) {
+      if (!hasSavedMark(row)) continue;
+      const fields = row.assessment_schema === 'component'
+        ? ['participation_marks', 'written_work_marks', 'project_work_marks', 'slip_test_marks']
+        : ['marks_obtained'];
+      if (isAbsent(row) || fields.some((field) => containsValue(row[field]))) entered.add(subjectIdentity(row));
+    }
+    // A summative row can display its FA contribution even before the exam
+    // mark is entered. Preserve that column as well.
+    for (const row of student.summative_subjects || []) {
+      if (row.exam_absent || containsValue(row.exam_marks) || containsValue(row.formative_contribution)) {
+        entered.add(subjectIdentity(row));
+      }
+    }
+  }
+  const alternatives = papers.filter((paper) => scienceAlternativeKind(paper.subject_name));
+  if (!alternatives.some((paper) => entered.has(subjectIdentity(paper)))) return papers;
+  return papers.filter((paper) => !scienceAlternativeKind(paper.subject_name) || entered.has(subjectIdentity(paper)));
 }
 
 export function markEntryStatus(subject) {

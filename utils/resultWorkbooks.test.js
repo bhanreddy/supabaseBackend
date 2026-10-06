@@ -63,6 +63,45 @@ test('Excel maximum headings and per-student maxima follow the selected alternat
   assert.deepEqual(rows[8].slice(8, 11), [45, 50, 90]);
 });
 
+test('Excel removes an empty EVS/Science column per class and keeps marks, totals, merges and filters aligned', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({
+    exam_subject_id: name, subject_name: name, assessment_schema: 'consolidated', max_marks: 25,
+  }));
+  for (const active of ['Science', 'EVS']) {
+    const section = { classSection: { class_name: '4', section_name: 'A' }, papers, students: [{
+      student_name: 'Student', rank: 26, result_status: 'Pass', subjects: papers.map((paper) => ({
+        exam_subject_id: paper.exam_subject_id, mark_id: ['Science', 'EVS'].includes(paper.subject_name) && paper.subject_name !== active ? null : paper.exam_subject_id,
+        marks_obtained: ['Science', 'EVS'].includes(paper.subject_name) && paper.subject_name !== active ? null : 14,
+      })),
+    }] };
+    const books = [
+      [XLSX.read(buildClassMarksWorkbook(section), { type: 'buffer', cellStyles: true }), 'Class Marks'],
+      [XLSX.read(buildSchoolMarksWorkbook({ sections: [section] }), { type: 'buffer', cellStyles: true }), '4-A'],
+    ];
+    for (const [book, name] of books) {
+      const sheet = book.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      assert.ok(rows[5].includes(active));
+      assert.ok(!rows[5].includes(active === 'EVS' ? 'Science' : 'EVS'));
+      assert.deepEqual(rows[7].slice(16), [84, 150, 56, 26, 'Pass', 'Complete']);
+      assert.equal(sheet['!cols'].length, 22);
+      assert.equal(sheet['!autofilter'].ref, 'A7:V8');
+      assert.ok(sheet['!merges'].some((merge) => merge.s.r === 5 && merge.s.c === 16 && merge.e.c === 21));
+    }
+  }
+});
+
+test('filtered Excel retains columns used elsewhere in the class cohort', () => {
+  const papers = [{ exam_subject_id: 'sci', subject_name: 'Science', max_marks: 25 }, { exam_subject_id: 'evs', subject_name: 'EVS', max_marks: 25 }];
+  const section = { classSection: { class_name: '4', section_name: 'A' }, papers, displayPapers: papers,
+    students: [{ student_name: 'Filtered', subjects: [{ exam_subject_id: 'evs', mark_id: 'evs', marks_obtained: 20 }] }] };
+  const book = XLSX.read(buildSchoolMarksWorkbook({ sections: [section] }), { type: 'buffer' });
+  const rows = XLSX.utils.sheet_to_json(book.Sheets['4-A'], { header: 1 });
+  assert.equal(rows[5][4], 'Science');
+  assert.equal(rows[5][6], 'EVS');
+  assert.deepEqual(rows[7].slice(8, 11), [20, 25, 80]);
+});
+
 test('missing marks export includes assigned and unassigned class-subject gaps', () => {
   const readiness = {
     missing_entries: 3,

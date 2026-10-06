@@ -2,6 +2,7 @@ import XLSX from 'xlsx';
 
 import { gradeForFinalPercentage } from '../services/finalResultCalculationService.js';
 import {
+  displayAssessmentPapers,
   examMaximumForStudents,
   marksEntryStatusLabel,
   normalizeAssessmentSubjects,
@@ -272,16 +273,18 @@ const classMarksWorksheet = ({
   classSection,
   papers = [],
   students = [],
+  displayPapers,
   rankingMethod,
   filterLabel,
 }) => {
+  const visiblePapers = displayPapers ?? displayAssessmentPapers(papers, students);
   const baseColumns = [
     { top: 'S.No.', sub: '', width: 8 },
     { top: 'Student Name', sub: '', width: 28 },
     { top: 'Admission No.', sub: '', width: 16 },
     { top: 'Roll No.', sub: '', width: 10 },
   ];
-  const paperColumns = papers.flatMap((paper) => {
+  const paperColumns = visiblePapers.flatMap((paper) => {
     if (paper.assessment_schema === 'component') {
       return [
         { top: paper.subject_name, sub: `Participation /${safeNumber(paper.participation_max_marks)}`, key: 'participation_marks', width: 15 },
@@ -314,7 +317,7 @@ const classMarksWorksheet = ({
   const dataRows = students.map((student, index) => {
     const subjectByPaper = new Map(normalizeAssessmentSubjects(papers, student.subjects || [])
       .map((subject) => [String(subject.exam_subject_id), subject]));
-    const subjectCells = papers.flatMap((paper) => {
+    const subjectCells = visiblePapers.flatMap((paper) => {
       const subject = subjectByPaper.get(String(paper.exam_subject_id));
       if (paper.assessment_schema === 'component') {
         return [
@@ -351,7 +354,7 @@ const classMarksWorksheet = ({
     [`${schoolName || 'School'} — ${exam?.name || 'Class Marks'}`],
     ['Class Teacher', teacherName || ''],
     ['Class', `${classSection?.class_name || ''}-${classSection?.section_name || ''}`, 'Academic Year', classSection?.academic_year || ''],
-    ['Ranking Algorithm', rankingLabel, 'Exam Maximum Marks', examMaximum, ...(scienceAlternativeNote(papers) ? [scienceAlternativeNote(papers)] : [])],
+    ['Ranking Algorithm', rankingLabel, 'Exam Maximum Marks', examMaximum, ...(scienceAlternativeNote(visiblePapers) ? [scienceAlternativeNote(visiblePapers)] : [])],
     filterLabel ? ['Export Filters', filterLabel] : [],
     topHeader,
     subHeader,
@@ -363,7 +366,7 @@ const classMarksWorksheet = ({
     merges.push({ s: { r: 5, c: col }, e: { r: 6, c: col } });
   }
   let paperStart = baseColumns.length;
-  for (const paper of papers) {
+  for (const paper of visiblePapers) {
     const width = paper.assessment_schema === 'component' ? 6 : 2;
     merges.push({ s: { r: 5, c: paperStart }, e: { r: 5, c: paperStart + width - 1 } });
     paperStart += width;
@@ -471,6 +474,7 @@ export function buildSchoolMarksWorkbook({
       exam,
       classSection: section.classSection,
       papers: section.papers,
+      displayPapers: section.displayPapers,
       students: section.students,
       rankingMethod,
       filterLabel,

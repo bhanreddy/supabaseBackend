@@ -47,6 +47,7 @@ import {
 } from '../services/finalResultCalculationService.js';
 import { filterEnteredProgressReportSubjects } from '../services/progressReportService.js';
 import {
+  displayAssessmentPapers,
   normalizeAssessmentSubjects,
   subjectObtained,
   subjectPercentage,
@@ -2229,6 +2230,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       classSection,
       teacherName: classSection.teacher_name,
       papers: sectionPapers,
+      displayPapers: displayAssessmentPapers(sectionPapers, rankedStudents),
       students: format === 'print' && usesSummativeMarksRegister(exam, classSection) ? rankedStudents : filteredStudents,
     };
   });

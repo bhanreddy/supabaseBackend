@@ -1,5 +1,5 @@
 import { canonicalFinalSourceKey } from './finalResultCalculationService.js';
-import { normalizeAssessmentSubjects, subjectContribution } from './marksTotalsService.js';
+import { displayAssessmentPapers, normalizeAssessmentSubjects, subjectContribution } from './marksTotalsService.js';
 import { rankResultRows } from './resultRankingService.js';
 import { selectScienceAlternative } from './scienceSubjectSelection.js';
 
@@ -116,6 +116,7 @@ export function prepareSummativeMarksSection(section, exam, formativeRows, ranki
     ...section,
     summative: true,
     formative_keys: keys,
+    displayPapers: displayAssessmentPapers(papers, students),
     students: students.map((student) => ({ ...student, rank: ranks.get(String(student.student_id)) ?? null }))
       .filter((student) => matchesResultFilter(student, resultFilter)),
   };

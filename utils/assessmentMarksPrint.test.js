@@ -216,8 +216,8 @@ test('Science entered with unused EVS prints a complete 150/150 row and overall 
   assert.match(result.html, /<th>150<\/th><th>GRADE<\/th>/);
   assert.match(result.html, /<td>150<\/td><td>A1<\/td><td>1<\/td><td>100<\/td>/);
   assert.doesNotMatch(result.html, /150\*|marks not entered/);
-  assert.match(result.html, /<th colspan="2">EVS<\/th>/);
-  assert.match(result.html, /EVS\/Science: only one counts in totals/);
+  assert.doesNotMatch(result.html, /<th colspan="2">EVS<\/th>/);
+  assert.match(result.html, /<th colspan="2">SCIENCE<\/th>/);
 });
 
 test('EVS-only and both-entered consolidated reports keep marks visible and count one alternative', () => {
@@ -243,11 +243,43 @@ test('component overall GPA counts the selected Science/EVS group exactly once',
   assert.doesNotMatch(onlyEvs.html, /marks not entered/);
 });
 
-test('summative totals, GPA and ranks ignore unused EVS while preserving both configured columns', () => {
+test('summative totals, GPA and ranks ignore unused EVS and hide its empty column', () => {
   const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({ ...paper(name, name, 80), subject_id: name }));
   const actualPapers = papers.filter((item) => item.subject_name !== 'EVS');
   const result = summativeReport(papers, actualPapers.map((item) => mark(item, 70)), formativeSources(actualPapers));
-  assert.match(result.html, /<th colspan="5">EVS<\/th>/);
+  assert.doesNotMatch(result.html, /<th colspan="5">EVS<\/th>/);
   assert.match(result.html, /<td>528<\/td><td>88<\/td><td>A2<\/td><td>9<\/td><td>1<\/td>/);
   assert.doesNotMatch(result.html, /required FA\/exam marks not entered/);
+});
+
+test('the screenshot preview hides empty Science when EVS has entries, keeping the existing totals and ranks', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => paper(name, name, 25));
+  const subjects = papers.map((item) => item.subject_name === 'Science'
+    ? { exam_subject_id: item.exam_subject_id, mark_id: null, marks_obtained: null }
+    : mark(item, 14));
+  const result = report(papers, [{ student_name: 'EVS Student', rank: 26, subjects }]);
+  assert.doesNotMatch(result.html, /<th colspan="2">SCIENCE<\/th>/);
+  assert.match(result.html, /<th colspan="2">EVS<\/th>/);
+  assert.match(result.html, /<td>84<\/td><td>C1<\/td><td>26<\/td><td>56<\/td>/);
+  assert.equal((result.html.match(/<td(?: class="student-name")?>/g) || []).length, 18);
+});
+
+test('all printed pages use the same columns when Science and EVS are entered by different students', () => {
+  const papers = [paper('sci', 'Science', 25), paper('evs', 'EVS', 25)];
+  const students = Array.from({ length: 31 }, (_, index) => ({
+    student_name: `Student ${index}`, subjects: [mark(index === 30 ? papers[0] : papers[1], 25)], rank: 1,
+  }));
+  const result = report(papers, students);
+  assert.equal(result.page_count, 2);
+  assert.equal((result.html.match(/<th colspan="2">SCIENCE<\/th>/g) || []).length, 2);
+  assert.equal((result.html.match(/<th colspan="2">EVS<\/th>/g) || []).length, 2);
+});
+
+test('a filtered preview preserves the columns selected from the whole class cohort', () => {
+  const papers = [paper('sci', 'Science', 25), paper('evs', 'EVS', 25)];
+  const result = buildAssessmentMarksPrint({ exam: { name: 'FA-1', exam_type: 'fa_results' }, sections: [{
+    papers, displayPapers: papers, students: [{ student_name: 'Filtered EVS student', subjects: [mark(papers[1], 25)] }],
+  }] });
+  assert.match(result.html, /<th colspan="2">SCIENCE<\/th>/);
+  assert.match(result.html, /<th colspan="2">EVS<\/th>/);
 });

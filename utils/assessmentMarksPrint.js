@@ -1,5 +1,5 @@
 import { canonicalFinalSourceKey } from '../services/finalResultCalculationService.js';
-import { examMaximumForStudents, examTotalMaximum, normalizeAssessmentSubjects, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
+import { displayAssessmentPapers, examMaximumForStudents, examTotalMaximum, normalizeAssessmentSubjects, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
 import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
 import { componentMaximumsFromRow } from './componentMaximums.js';
 
@@ -239,8 +239,9 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
       ...student, subjects: normalizeAssessmentSubjects(papers, student.subjects || []),
     }));
     const summative = section.summative === true;
-    const component = summative || papers.some((paper) => paper.assessment_schema === 'component');
-    const groups = paperGroups(papers, summative ? false : component, summative);
+    const displayPapers = section.displayPapers ?? displayAssessmentPapers(papers, students);
+    const component = summative || displayPapers.some((paper) => paper.assessment_schema === 'component');
+    const groups = paperGroups(displayPapers, summative ? false : component, summative);
     const maximum = examMaximumForStudents(papers, students);
     const studentPages = paginateStudents(students, component);
     const pageCount = studentPages.length;
@@ -266,7 +267,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
         : !summarizeStudentMarks({ papers, subjects: student.subjects }).is_complete);
       const absent = pageStudents.some((student) => summative ? student.has_absence
         : selectScoringSubjects(papers, student.subjects).subjects.some((subject) => subject.is_absent));
-      const alternativeNote = scienceAlternativeNote(papers);
+      const alternativeNote = scienceAlternativeNote(displayPapers);
       const missingLegend = summative
         ? '— = required FA/exam marks not entered; combined totals, grade, GPA and rank await complete marks.'
         : '— = marks not entered. * = total and percentage include entered papers only; overall grade/GPA awaits complete marks.';

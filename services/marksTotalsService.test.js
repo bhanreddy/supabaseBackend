@@ -4,6 +4,7 @@ import { rankResultRows } from './resultRankingService.js';
 
 import {
   MARK_ENTRY_STATUS,
+  displayAssessmentPapers,
   examTotalMaximum,
   marksEntryStatusLabel,
   normalizeAssessmentSubjects,
@@ -25,6 +26,25 @@ const notEntered = (id, maxMarks) => ({
 });
 
 describe('marks totals service', () => {
+  it('display selection keeps zeroes, absences and partial components, and hides only the wholly unused alternative', () => {
+    const papers = [{ ...paper('sci', 25), subject_name: 'Science' }, { ...paper('evs', 25), subject_name: 'EVS' }, { ...paper('math', 25), subject_name: 'Math' }];
+    for (const row of [graded('evs', 25, 0), absent('evs', 25)]) {
+      assert.deepEqual(displayAssessmentPapers(papers, [{ subjects: [row] }]).map((item) => item.subject_name), ['EVS', 'Math']);
+    }
+    const componentPapers = papers.map((item) => ({ ...item, assessment_schema: 'component' }));
+    const componentRows = [graded('sci', 25, 25), { ...graded('evs', 25, 12), written_work_marks: 0 }];
+    assert.deepEqual(displayAssessmentPapers(componentPapers, [{ subjects: componentRows }]).map((item) => item.subject_name), ['EVS', 'Math']);
+    assert.deepEqual(displayAssessmentPapers(papers, []).map((item) => item.subject_name), ['Science', 'EVS', 'Math']);
+    assert.deepEqual(displayAssessmentPapers(papers, [{ subjects: [] }]).map((item) => item.subject_name), ['Science', 'EVS', 'Math']);
+  });
+
+  it('display selection preserves FA-only summative contributions and does not hide required subjects outside the alternatives', () => {
+    const papers = [{ ...paper('sci', 80), subject_name: 'Science' }, { ...paper('evs', 80), subject_name: 'EVS' }, { ...paper('eng', 80), subject_name: 'English' }];
+    const students = [{ subjects: [graded('evs', 80, 70)], summative_subjects: [{ exam_subject_id: 'sci', exam_marks: null, formative_contribution: 0 }] }];
+    assert.deepEqual(displayAssessmentPapers(papers, students), papers);
+    assert.deepEqual(displayAssessmentPapers([papers[0], papers[2]], [{ subjects: [] }]), [papers[0], papers[2]]);
+  });
+
   it('Science and EVS share one paper slot, so the screenshot cohort is complete at 150/150', () => {
     const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({
       ...paper(name, 25), subject_name: name,
