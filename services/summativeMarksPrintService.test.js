@@ -185,3 +185,28 @@ test('the combined Science pass threshold uses its configured maximum when exam 
   assert.equal(result.percentage, 30);
   assert.equal(result.result_status, 'Fail');
 });
+
+test('summative totals and cohort ranks count entered Science or EVS once and preserve both results', () => {
+  const papers = [paper('English'), paper('Science'), paper('EVS')];
+  const scienceOnly = student('science', papers.filter((item) => item.subject_name !== 'EVS'));
+  const evsOnly = student('evs', papers.filter((item) => item.subject_name !== 'Science'));
+  const both = student('both', papers);
+  both.subjects[2].marks_obtained = 80;
+  const rows = [
+    ...sources('science', papers.filter((item) => item.subject_name !== 'EVS')),
+    ...sources('evs', papers.filter((item) => item.subject_name !== 'Science')),
+    ...sources('both', papers),
+  ];
+  const result = prepareSummativeMarksSection(section(papers, [scienceOnly, evsOnly, both]), exam, rows);
+  for (const child of result.students) {
+    assert.equal(child.total_obtained, 176);
+    assert.equal(child.total_max, 200);
+    assert.equal(child.percentage, 88);
+    assert.equal(child.is_complete, true);
+    assert.equal(child.rank, 1);
+    assert.equal(child.result_status, 'Pass');
+  }
+  const evsResult = result.students[2].summative_subjects.find((item) => item.subject_name === 'EVS');
+  assert.equal(evsResult.total, 98);
+  assert.equal(evsResult.counts_in_total, false);
+});

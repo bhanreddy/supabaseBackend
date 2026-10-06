@@ -2,12 +2,14 @@ import XLSX from 'xlsx';
 
 import { gradeForFinalPercentage } from '../services/finalResultCalculationService.js';
 import {
-  examTotalMaximum,
+  examMaximumForStudents,
   marksEntryStatusLabel,
   normalizeAssessmentSubjects,
+  selectScoringSubjects,
   subjectPercentage,
   summarizeStudentMarks,
 } from '../services/marksTotalsService.js';
+import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
 
 const safeNumber = (value) => {
   const number = Number(value);
@@ -32,7 +34,7 @@ const gradeValue = (subject) => {
 };
 
 export function classifyMarksResult(papers = [], subjects = []) {
-  subjects = normalizeAssessmentSubjects(papers, subjects);
+  ({ papers, subjects } = selectScoringSubjects(papers, subjects));
   const entered = subjects.filter((subject) => subject.mark_id);
   const incomplete = papers.length === 0 || entered.length < papers.length
     || entered.some((subject) => !subject.is_absent && subject.marks_obtained == null);
@@ -295,7 +297,7 @@ const classMarksWorksheet = ({
       { top: paper.subject_name, sub: 'Grade', key: 'grade', width: 10 },
     ];
   });
-  const examMaximum = examTotalMaximum(papers);
+  const examMaximum = examMaximumForStudents(papers, students);
   // Obtained and Maximum are separate numeric columns: a single "Total /300"
   // header cannot describe a student whose marks are only partly entered.
   const summaryColumns = [
@@ -349,7 +351,7 @@ const classMarksWorksheet = ({
     [`${schoolName || 'School'} — ${exam?.name || 'Class Marks'}`],
     ['Class Teacher', teacherName || ''],
     ['Class', `${classSection?.class_name || ''}-${classSection?.section_name || ''}`, 'Academic Year', classSection?.academic_year || ''],
-    ['Ranking Algorithm', rankingLabel, 'Exam Maximum Marks', examMaximum],
+    ['Ranking Algorithm', rankingLabel, 'Exam Maximum Marks', examMaximum, ...(scienceAlternativeNote(papers) ? [scienceAlternativeNote(papers)] : [])],
     filterLabel ? ['Export Filters', filterLabel] : [],
     topHeader,
     subHeader,
@@ -431,8 +433,8 @@ export function buildSchoolMarksWorkbook({
       section.classSection?.section_name || '',
       section.teacherName || '',
       students.length,
-      papers.length,
-      examTotalMaximum(papers),
+      summarizeStudentMarks({ papers, subjects: [] }).subject_count,
+      examMaximumForStudents(papers, students),
       completeStudents,
       students.length - completeStudents,
     ];

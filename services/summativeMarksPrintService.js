@@ -1,6 +1,7 @@
 import { canonicalFinalSourceKey } from './finalResultCalculationService.js';
 import { normalizeAssessmentSubjects, subjectContribution } from './marksTotalsService.js';
 import { rankResultRows } from './resultRankingService.js';
+import { selectScienceAlternative } from './scienceSubjectSelection.js';
 
 const round = (value) => Number(value.toFixed(2));
 
@@ -35,6 +36,7 @@ export function calculateSummativePrintSubject(paper, mark, fa1, fa2, weight = 2
   const complete = exam !== null && formative !== null;
   return {
     exam_subject_id: paper.exam_subject_id,
+    subject_name: paper.subject_name,
     exam_marks: exam?.obtained ?? null,
     exam_absent: Boolean(mark?.is_absent),
     formative_contribution: formative,
@@ -84,24 +86,26 @@ export function prepareSummativeMarksSection(section, exam, formativeRows, ranki
       sources.get(`${student.student_id}:${paper.subject_id}:${keys[1]}`),
       hasSplitScience && [physics, biology].includes(paper) ? 10 : 20,
     ));
-    const complete = results.length > 0 && results.every((result) => result.is_complete);
-    const total = complete ? round(results.reduce((sum, result) => sum + result.total, 0)) : null;
-    const maximum = results.reduce((sum, result) => sum + result.maximum, 0);
-    const hasExamAbsence = results.some((result) => result.exam_absent);
-    const scienceResults = hasSplitScience ? results.filter((result) =>
+    const countedResults = selectScienceAlternative(results, (result) => result.exam_marks == null ? 0
+      : result.exam_absent ? 1 : 2);
+    const complete = countedResults.length > 0 && countedResults.every((result) => result.is_complete);
+    const total = complete ? round(countedResults.reduce((sum, result) => sum + result.total, 0)) : null;
+    const maximum = countedResults.reduce((sum, result) => sum + result.maximum, 0);
+    const hasExamAbsence = countedResults.some((result) => result.exam_absent);
+    const scienceResults = hasSplitScience ? countedResults.filter((result) =>
       [physics.exam_subject_id, biology.exam_subject_id].includes(result.exam_subject_id)) : [];
-    const hasFailedSubject = results.some((result) => !scienceResults.includes(result)
+    const hasFailedSubject = countedResults.some((result) => !scienceResults.includes(result)
       && result.total / result.maximum * 100 < 35)
       || (hasSplitScience && scienceResults.reduce((sum, result) => sum + result.total, 0)
         / scienceResults.reduce((sum, result) => sum + result.maximum, 0) * 100 < 35);
     return {
       ...student,
-      summative_subjects: results,
+      summative_subjects: results.map((result) => ({ ...result, counts_in_total: countedResults.includes(result) })),
       total_obtained: total,
       total_max: maximum,
       percentage: complete ? round(total / maximum * 100) : null,
       is_complete: complete,
-      has_absence: results.some((result) => result.exam_absent || result.formative_absent),
+      has_absence: countedResults.some((result) => result.exam_absent || result.formative_absent),
       result_status: !complete ? 'Incomplete' : hasExamAbsence ? 'Fail (Absent)'
         : hasFailedSubject ? 'Fail' : 'Pass',
     };

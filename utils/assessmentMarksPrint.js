@@ -1,5 +1,6 @@
 import { canonicalFinalSourceKey } from '../services/finalResultCalculationService.js';
-import { examTotalMaximum, normalizeAssessmentSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
+import { examMaximumForStudents, examTotalMaximum, normalizeAssessmentSubjects, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
+import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
 import { componentMaximumsFromRow } from './componentMaximums.js';
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -98,7 +99,7 @@ function summativeStudentRow(student, index, groups) {
     const complete = marks.every((mark) => mark?.is_complete);
     const total = complete ? round(marks.reduce((sum, mark) => sum + mark.total, 0)) : null;
     const maximum = marks.reduce((sum, mark) => sum + (mark?.maximum || 0), 0);
-    return { marks, total, percentage: subjectPercentage(total, maximum) };
+    return { marks, total, percentage: subjectPercentage(total, maximum), counts: marks.some((mark) => mark?.counts_in_total !== false) };
   });
   const cells = groups.map((group, groupIndex) => {
     const result = results[groupIndex];
@@ -107,8 +108,9 @@ function summativeStudentRow(student, index, groups) {
       + (group.papers.length === 2 ? td(result.total) : '')
       + td(sampleAssessmentGrade(result.percentage)) + td(sampleSummativeGradePoint(result.percentage));
   }).join('');
+  const countedResults = results.filter((result) => result.counts);
   const gpa = student.is_complete
-    ? round(results.reduce((sum, result) => sum + sampleSummativeGradePoint(result.percentage), 0) / results.length, 1) : null;
+    ? round(countedResults.reduce((sum, result) => sum + sampleSummativeGradePoint(result.percentage), 0) / countedResults.length, 1) : null;
   const summary = [student.total_obtained, student.percentage,
     student.is_complete ? sampleAssessmentGrade(student.percentage) : null, gpa, student.rank];
   return `<tr>${td(index + 1)}${td(student.student_name, 'student-name')}${cells}${summary.map((value) => td(value)).join('')}</tr>`;
@@ -189,7 +191,9 @@ function studentRow(student, index, groups, papers, component) {
   }).join('');
   const totals = summarizeStudentMarks({ papers, subjects: student.subjects });
   const grade = totals.is_complete ? sampleAssessmentGrade(totals.percentage) : null;
-  const gpa = totals.is_complete ? round(results.reduce((total, result) => total + sampleComponentGradePoint(result.percentage), 0) / results.length, 1) : null;
+  const scoringPapers = selectScoringSubjects(papers, student.subjects).papers;
+  const countedResults = results.filter((_, index) => groups[index].papers.some((paper) => scoringPapers.includes(paper)));
+  const gpa = totals.is_complete ? round(countedResults.reduce((total, result) => total + sampleComponentGradePoint(result.percentage), 0) / countedResults.length, 1) : null;
   const total = totals.total_obtained == null ? null : `${totals.total_obtained}${totals.is_complete ? '' : '*'}`;
   const summary = component
     ? [total, totals.percentage, student.rank, grade, gpa]
@@ -237,7 +241,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
     const summative = section.summative === true;
     const component = summative || papers.some((paper) => paper.assessment_schema === 'component');
     const groups = paperGroups(papers, summative ? false : component, summative);
-    const maximum = examTotalMaximum(papers);
+    const maximum = examMaximumForStudents(papers, students);
     const studentPages = paginateStudents(students, component);
     const pageCount = studentPages.length;
     studentCount += students.length;
@@ -261,7 +265,8 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
       const incomplete = pageStudents.some((student) => summative ? !student.is_complete
         : !summarizeStudentMarks({ papers, subjects: student.subjects }).is_complete);
       const absent = pageStudents.some((student) => summative ? student.has_absence
-        : (student.subjects || []).some((subject) => subject.is_absent));
+        : selectScoringSubjects(papers, student.subjects).subjects.some((subject) => subject.is_absent));
+      const alternativeNote = scienceAlternativeNote(papers);
       const missingLegend = summative
         ? '— = required FA/exam marks not entered; combined totals, grade, GPA and rank await complete marks.'
         : '— = marks not entered. * = total and percentage include entered papers only; overall grade/GPA awaits complete marks.';
@@ -274,7 +279,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
           ? summativeStudentRow(student, start + index, groups)
           : studentRow(student, start + index, groups, papers, component)).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
         </tbody></table>
-        ${incomplete || absent ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}</div>` : ''}
+        ${incomplete || absent || alternativeNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}</div>` : ''}
         ${pageCount > 1 ? `<div class="page-number">${pageIndex + 1} / ${pageCount}</div>` : ''}
         </section>`);
       start += pageStudents.length;

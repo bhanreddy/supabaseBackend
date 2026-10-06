@@ -11,6 +11,58 @@ import {
 } from './resultWorkbooks.js';
 import { summarizeStudentMarks } from '../services/marksTotalsService.js';
 
+test('class and accounts Excel keep both Science/EVS columns, count one, and classify unused alternatives as complete', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({
+    exam_subject_id: name, subject_name: name, max_marks: 25, assessment_schema: 'consolidated',
+  }));
+  const marks = (names, score = 25) => names.map((name) => ({
+    exam_subject_id: name, mark_id: `m-${name}`, marks_obtained: score, max_marks: 25, passing_marks: 8,
+  }));
+  const subjects = [
+    marks(papers.filter((paper) => paper.subject_name !== 'EVS').map((paper) => paper.subject_name)),
+    marks(papers.filter((paper) => paper.subject_name !== 'Science').map((paper) => paper.subject_name)),
+    marks(papers.map((paper) => paper.subject_name)).map((row) => row.exam_subject_id === 'Science' ? { ...row, marks_obtained: 20 } : row),
+  ];
+  const section = { classSection: { class_name: '4', section_name: 'C' }, papers,
+    students: subjects.map((rows, index) => ({ student_name: `Student ${index}`, rank: index === 2 ? 3 : 1,
+      subjects: rows, ...classifyMarksResult(papers, rows) })) };
+  const classBook = XLSX.read(buildClassMarksWorkbook({ ...section, exam: { name: 'FA-1' } }), { type: 'buffer' });
+  const schoolBook = XLSX.read(buildSchoolMarksWorkbook({ sections: [section], exam: { name: 'FA-1' } }), { type: 'buffer' });
+  for (const [book, name] of [[classBook, 'Class Marks'], [schoolBook, '4-C']]) {
+    const rows = XLSX.utils.sheet_to_json(book.Sheets[name], { header: 1, defval: '' });
+    assert.equal(rows[3][3], 150);
+    assert.equal(rows[5][12], 'Science');
+    assert.equal(rows[5][16], 'EVS');
+    assert.deepEqual(rows[7].slice(18), [150, 150, 100, 1, 'Pass', 'Complete']);
+    assert.deepEqual(rows[8].slice(18), [150, 150, 100, 1, 'Pass', 'Complete']);
+    assert.deepEqual(rows[9].slice(18), [145, 150, 96.67, 3, 'Pass', 'Complete']);
+    assert.equal(rows[9][12], 20);
+    assert.equal(rows[9][16], 25);
+  }
+  const overview = XLSX.utils.sheet_to_json(schoolBook.Sheets.Overview, { header: 1 });
+  assert.deepEqual(overview[5].slice(4), [3, 6, 150, 3, 0]);
+});
+
+test('an unused EVS absence does not fail Science results, and entered alternatives determine incomplete and failing results', () => {
+  const papers = [{ exam_subject_id: 'sci', subject_name: 'Science', max_marks: 25 }, { exam_subject_id: 'evs', subject_name: 'EVS', max_marks: 25 }];
+  const science = { exam_subject_id: 'sci', mark_id: 'science', max_marks: 25, marks_obtained: 20, passing_marks: 8 };
+  const evs = { exam_subject_id: 'evs', mark_id: 'evs', max_marks: 25, marks_obtained: null, is_absent: true, passing_marks: 8 };
+  assert.deepEqual(classifyMarksResult(papers, [science, evs]), { has_absence: false, result_status: 'Pass' });
+  assert.equal(classifyMarksResult(papers, [{ ...science, marks_obtained: 5 }, { ...evs, is_absent: false, marks_obtained: 25 }]).result_status, 'Fail');
+  assert.equal(classifyMarksResult(papers, []).result_status, 'Incomplete');
+  assert.deepEqual(classifyMarksResult(papers, [evs]), { has_absence: true, result_status: 'Fail (Absent)' });
+});
+
+test('Excel maximum headings and per-student maxima follow the selected alternative when EVS and Science differ', () => {
+  const papers = [{ exam_subject_id: 'sci', subject_name: 'Science', max_marks: 25 }, { exam_subject_id: 'evs', subject_name: 'EVS', max_marks: 50 }];
+  const students = ['sci', 'evs'].map((id) => ({ student_name: id, subjects: [{ exam_subject_id: id, mark_id: id,
+    marks_obtained: id === 'sci' ? 20 : 45, max_marks: id === 'sci' ? 25 : 50 }] }));
+  const rows = XLSX.utils.sheet_to_json(XLSX.read(buildClassMarksWorkbook({ papers, students }), { type: 'buffer' }).Sheets['Class Marks'], { header: 1 });
+  assert.equal(rows[3][3], '25 / 50');
+  assert.deepEqual(rows[7].slice(8, 11), [20, 25, 80]);
+  assert.deepEqual(rows[8].slice(8, 11), [45, 50, 90]);
+});
+
 test('missing marks export includes assigned and unassigned class-subject gaps', () => {
   const readiness = {
     missing_entries: 3,

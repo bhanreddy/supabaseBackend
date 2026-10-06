@@ -25,6 +25,74 @@ const notEntered = (id, maxMarks) => ({
 });
 
 describe('marks totals service', () => {
+  it('Science and EVS share one paper slot, so the screenshot cohort is complete at 150/150', () => {
+    const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({
+      ...paper(name, 25), subject_name: name,
+    }));
+    for (const enteredAlternative of ['Science', 'EVS']) {
+      const subjects = papers.filter((item) => !['Science', 'EVS'].includes(item.subject_name) || item.subject_name === enteredAlternative)
+        .map((item) => graded(item.exam_subject_id, 25, 25));
+      const totals = summarizeStudentMarks({ papers, subjects });
+      assert.deepEqual([totals.total_obtained, totals.total_max, totals.exam_total_max, totals.percentage], [150, 150, 150, 100]);
+      assert.deepEqual([totals.subject_count, totals.entered_subjects, totals.counted_subjects, totals.missing_subjects], [6, 6, 6, 0]);
+      assert.equal(totals.is_complete, true);
+      assert.equal(marksEntryStatusLabel(totals, papers.length), 'Complete');
+      assert.equal(examTotalMaximum(papers), 150);
+    }
+  });
+
+  it('both entered Science and EVS retain their values but count Science once, independent of row order or score', () => {
+    const papers = [{ ...paper('sci', 25), subject_name: 'Science' }, { ...paper('evs', 25), subject_name: 'EVS' }];
+    const subjects = [graded('sci', 25, 15), graded('evs', 25, 25)];
+    for (const order of [papers, [...papers].reverse()]) {
+      const totals = summarizeStudentMarks({ papers: order, subjects });
+      assert.equal(totals.total_obtained, 15);
+      assert.equal(totals.total_max, 25);
+      assert.equal(totals.percentage, 60);
+      assert.equal(totals.is_complete, true);
+    }
+    assert.deepEqual(subjects.map((subject) => subject.marks_obtained), [15, 25]);
+  });
+
+  it('EVS aliases, saved zeroes and absences select an entered alternative without turning a missing paper into zero', () => {
+    for (const name of ['EVS', 'E.V.S.', 'Environmental Studies', 'Environmental Science']) {
+      const papers = [{ ...paper('sci', 25), subject_name: 'General Science' }, { ...paper('evs', 50), subject_name: name }];
+      const zero = summarizeStudentMarks({ papers, subjects: [graded('evs', 50, 0)] });
+      assert.deepEqual([zero.total_obtained, zero.total_max, zero.exam_total_max, zero.is_complete], [0, 50, 50, true]);
+      const absence = summarizeStudentMarks({ papers, subjects: [absent('evs', 50)] });
+      assert.deepEqual([absence.total_obtained, absence.total_max, absence.absent_subjects, absence.is_complete], [0, 50, 1, true]);
+      const entered = summarizeStudentMarks({ papers, subjects: [absent('sci', 25), graded('evs', 50, 40)] });
+      assert.deepEqual([entered.total_obtained, entered.total_max, entered.absent_subjects, entered.is_complete], [40, 50, 0, true]);
+      const missing = summarizeStudentMarks({ papers, subjects: [] });
+      assert.equal(missing.is_complete, false);
+      assert.equal(missing.missing_subjects, 1);
+      assert.equal(missing.total_obtained, null);
+    }
+  });
+
+  it('component EVS totals come from the components when the unused Science row has a stale cached score', () => {
+    const papers = [{ ...paper('sci', 50), subject_name: 'Science', assessment_schema: 'component' },
+      { ...paper('evs', 50), subject_name: 'EVS', assessment_schema: 'component' }];
+    const subjects = [graded('sci', 50, 50), { ...graded('evs', 50, 17.5),
+      participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 17.5 }];
+    const totals = summarizeStudentMarks({ papers, subjects });
+    assert.equal(totals.total_obtained, 47.5);
+    assert.equal(totals.percentage, 95);
+    assert.equal(totals.is_complete, true);
+    assert.equal(totals.subject_count, 1);
+  });
+
+  it('Physics, Biology and Social remain independent and only missing required papers mark a row incomplete', () => {
+    const papers = ['Science', 'EVS', 'Physics', 'Biology', 'Social'].map((name) => ({ ...paper(name, 25), subject_name: name }));
+    const subjects = papers.filter((item) => item.subject_name !== 'EVS').map((item) => graded(item.exam_subject_id, 25, 20));
+    const totals = summarizeStudentMarks({ papers, subjects });
+    assert.deepEqual([totals.total_obtained, totals.total_max, totals.subject_count, totals.is_complete], [80, 100, 4, true]);
+    const partial = summarizeStudentMarks({ papers, subjects: subjects.filter((subject) => subject.exam_subject_id !== 'Social') });
+    assert.equal(partial.is_complete, false);
+    assert.equal(partial.missing_subjects, 1);
+    assert.equal(marksEntryStatusLabel(partial, papers.length), '3/4 entered');
+  });
+
   it('sums Social components and uses that score for grand totals and class ranking', () => {
     const papers = [{ ...paper('soc', 50), assessment_schema: 'component' }, { ...paper('eng', 25), assessment_schema: 'consolidated' }];
     const subjects = [{ ...graded('soc', 50, 17.5), consolidated_marks_obtained: 17.5,

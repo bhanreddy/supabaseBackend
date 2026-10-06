@@ -208,3 +208,46 @@ test('summative print accepts 100-mark English and displays the actual maximum a
   assert.match(result.html, /<td>90<\/td><td>18<\/td><td>108<\/td><td>A2<\/td><td>9<\/td>/);
   assert.match(result.html, /<td>108<\/td><td>90<\/td><td>A2<\/td><td>9<\/td><td>1<\/td>/);
 });
+
+test('Science entered with unused EVS prints a complete 150/150 row and overall grade, without a partial-total marker', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => paper(name, name, 25));
+  const result = report(papers, [{ student_name: 'AVUTLAKSHARA', rank: 1,
+    subjects: papers.filter((item) => item.subject_name !== 'EVS').map((item) => mark(item, 25)) }]);
+  assert.match(result.html, /<th>150<\/th><th>GRADE<\/th>/);
+  assert.match(result.html, /<td>150<\/td><td>A1<\/td><td>1<\/td><td>100<\/td>/);
+  assert.doesNotMatch(result.html, /150\*|marks not entered/);
+  assert.match(result.html, /<th colspan="2">EVS<\/th>/);
+  assert.match(result.html, /EVS\/Science: only one counts in totals/);
+});
+
+test('EVS-only and both-entered consolidated reports keep marks visible and count one alternative', () => {
+  const papers = [paper('sci', 'Science', 25), paper('evs', 'EVS', 50)];
+  const result = report(papers, [
+    { student_name: 'EVS only', rank: 1, subjects: [mark(papers[1], 45)] },
+    { student_name: 'Both entered', rank: 2, subjects: [mark(papers[0], 20), mark(papers[1], 50)] },
+  ]);
+  assert.match(result.html, /<th>25 \/ 50<\/th><th>GRADE<\/th>/);
+  assert.match(result.html, /<td>45<\/td><td>A2<\/td><td>45<\/td><td>A2<\/td><td>1<\/td><td>90<\/td>/);
+  assert.match(result.html, /<td>20<\/td><td>B1<\/td><td>50<\/td><td>A1<\/td><td>20<\/td><td>B1<\/td><td>2<\/td><td>80<\/td>/);
+});
+
+test('component overall GPA counts the selected Science/EVS group exactly once', () => {
+  const papers = [paper('sci', 'Science', 50, 'component'), paper('evs', 'EVS', 50, 'component')];
+  const marks = [mark(papers[0], 45, { participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 15 }),
+    mark(papers[1], 50, { participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 20 })];
+  const result = report(papers, [{ student_name: 'Both component', rank: 1, subjects: marks }]);
+  assert.match(result.html, /<td>50<\/td><td>20<\/td><td>10<\/td>/);
+  assert.match(result.html, /<td>45<\/td><td>90<\/td><td>1<\/td><td>A2<\/td><td>9<\/td>/);
+  const onlyEvs = report(papers, [{ student_name: 'Only EVS', rank: 1, subjects: [marks[1]] }]);
+  assert.match(onlyEvs.html, /<td>50<\/td><td>100<\/td><td>1<\/td><td>A1<\/td><td>10<\/td>/);
+  assert.doesNotMatch(onlyEvs.html, /marks not entered/);
+});
+
+test('summative totals, GPA and ranks ignore unused EVS while preserving both configured columns', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Math', 'Science', 'Social', 'EVS'].map((name) => ({ ...paper(name, name, 80), subject_id: name }));
+  const actualPapers = papers.filter((item) => item.subject_name !== 'EVS');
+  const result = summativeReport(papers, actualPapers.map((item) => mark(item, 70)), formativeSources(actualPapers));
+  assert.match(result.html, /<th colspan="5">EVS<\/th>/);
+  assert.match(result.html, /<td>528<\/td><td>88<\/td><td>A2<\/td><td>9<\/td><td>1<\/td>/);
+  assert.doesNotMatch(result.html, /required FA\/exam marks not entered/);
+});

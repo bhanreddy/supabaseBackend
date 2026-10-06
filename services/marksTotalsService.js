@@ -1,3 +1,5 @@
+import { selectScienceAlternative } from './scienceSubjectSelection.js';
+
 /**
  * The single source of truth for progress-report marks totals.
  *
@@ -26,6 +28,8 @@
  * never averaged.
  * Component papers obtain their score from the four component fields, never
  * from a cached marks_obtained value left behind by a consolidated upload.
+ * EVS and Science occupy one subject slot: preserve both entries for display,
+ * but count only the entered alternative in totals and completeness.
  */
 
 /** Marks are DECIMAL(5,2); summing in hundredths keeps the arithmetic exact. */
@@ -94,9 +98,29 @@ export function normalizeAssessmentSubjects(papers = [], subjects = []) {
       ...subject,
       assessment_schema: paper?.assessment_schema ?? subject.assessment_schema,
       max_marks: paper?.max_marks ?? subject.max_marks,
+      subject_name: paper?.subject_name ?? subject.subject_name,
     };
     return { ...resolved, marks_obtained: subjectObtained(resolved) };
   });
+}
+
+const subjectIdentity = (row) => String(row?.exam_subject_id ?? row?.subject_id ?? row?.subject_name);
+const marksAvailability = (row) => {
+  const contribution = subjectContribution(row);
+  return !contribution.counted ? 0 : contribution.status === MARK_ENTRY_STATUS.ABSENT ? 1 : 2;
+};
+
+/** The original marks stay available to display; only these rows enter overall results. */
+export function selectScoringSubjects(papers = [], subjects = []) {
+  const rows = normalizeAssessmentSubjects(papers, uniqueSubjects(subjects));
+  const byPaper = new Map(rows.map((row) => [subjectIdentity(row), row]));
+  const selectedPapers = selectScienceAlternative(papers, (paper) => marksAvailability(byPaper.get(subjectIdentity(paper))));
+  const excluded = new Set(papers.filter((paper) => !selectedPapers.includes(paper)).map(subjectIdentity));
+  return {
+    papers: selectedPapers,
+    subjects: papers.length ? rows.filter((row) => !excluded.has(subjectIdentity(row)))
+      : selectScienceAlternative(rows, marksAvailability),
+  };
 }
 
 export function markEntryStatus(subject) {
@@ -142,7 +166,7 @@ export function subjectPercentage(obtained, maximum) {
 /** Full configured maximum for an exam, used for headers and completeness. */
 export function examTotalMaximum(papers = []) {
   if (!Array.isArray(papers)) return 0;
-  const scaled = papers.reduce((total, paper) => {
+  const scaled = selectScienceAlternative(papers).reduce((total, paper) => {
     const maximum = subjectMaximum(paper);
     return maximum !== null && maximum > 0 ? total + toHundredths(maximum) : total;
   }, 0);
@@ -171,7 +195,8 @@ function uniqueSubjects(subjects) {
  * @param {Array} [input.subjects] the student's rows, one per paper
  */
 export function summarizeStudentMarks({ papers = [], subjects = [] } = {}) {
-  const rows = normalizeAssessmentSubjects(papers, uniqueSubjects(subjects));
+  const selected = selectScoringSubjects(papers, subjects);
+  const rows = selected.subjects;
   const contributions = rows.map(subjectContribution);
   const counted = contributions.filter((contribution) => contribution.counted);
 
@@ -190,13 +215,13 @@ export function summarizeStudentMarks({ papers = [], subjects = [] } = {}) {
   const unassessableSubjects = contributions.filter((contribution) =>
     contribution.exclusion_reason === MARK_EXCLUSION_REASON.NO_MAXIMUM_CONFIGURED,
   ).length;
-  const subjectCount = Array.isArray(papers) && papers.length > 0 ? papers.length : rows.length;
+  const subjectCount = selected.papers.length > 0 ? selected.papers.length : rows.length;
 
   return {
     total_obtained: totalObtained,
     total_max: totalMax,
     percentage: totalObtained === null ? null : subjectPercentage(totalObtained, totalMax),
-    exam_total_max: examTotalMaximum(papers),
+    exam_total_max: examTotalMaximum(selected.papers),
     subject_count: subjectCount,
     entered_subjects: enteredSubjects,
     counted_subjects: counted.length,
@@ -211,12 +236,20 @@ export function summarizeStudentMarks({ papers = [], subjects = [] } = {}) {
   };
 }
 
+/** Class headings follow the selected alternatives, including differing EVS/Science maxima. */
+export function examMaximumForStudents(papers = [], students = []) {
+  const maximums = [...new Set(students.map((student) =>
+    summarizeStudentMarks({ papers, subjects: student.subjects }).exam_total_max))].sort((a, b) => a - b);
+  return maximums.length > 1 ? maximums.join(' / ') : maximums[0] ?? examTotalMaximum(papers);
+}
+
 /** Human-readable entry status for report headers and Excel registers. */
 export function marksEntryStatusLabel(summary, paperCount) {
   if (!paperCount) return 'No exam papers configured';
-  const base = summary.entered_subjects >= paperCount
+  const expected = summary.subject_count ?? paperCount;
+  const base = summary.entered_subjects >= expected
     ? 'Complete'
-    : `${summary.entered_subjects}/${paperCount} entered`;
+    : `${summary.entered_subjects}/${expected} entered`;
   return summary.unassessable_subjects > 0
     ? `${base} · ${summary.unassessable_subjects} without maximum marks`
     : base;
