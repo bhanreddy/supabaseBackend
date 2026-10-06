@@ -1,6 +1,7 @@
 import { canonicalFinalSourceKey } from '../services/finalResultCalculationService.js';
 import { displayAssessmentPapers, examMaximumForStudents, examTotalMaximum, normalizeAssessmentSubjects, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
 import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
+import { isSecondaryAssessmentClass } from '../services/summativeMarksPrintService.js';
 import { componentMaximumsFromRow } from './componentMaximums.js';
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -138,7 +139,7 @@ function componentHeaders(group, rowspan) {
     .replaceAll('&lt;br&gt;', '<br>');
 }
 
-function tableHeader(groups, maximum, component) {
+function tableHeader(groups, maximum, component, componentGradeMode) {
   if (!component) {
     return `<tr>${th('S NO', 'rowspan="2"')}${th('STUDENT NAME', 'rowspan="2" class="student-name"')}
       ${groups.map((group) => th(group.name, 'colspan="2"')).join('')}
@@ -148,15 +149,20 @@ function tableHeader(groups, maximum, component) {
   const split = groups.some((group) => group.papers.length === 2);
   const rows = split ? 3 : 2;
   const base = `<th rowspan="${rows}">R<br>N<br>O</th>` + th('STUDENT NAME', `rowspan="${rows}" class="student-name"`);
-  const first = groups.map((group) => th(group.name, `colspan="${group.component ? group.papers.length * 5 + (group.papers.length === 2 ? 3 : 2) : 2}"`)).join('');
+  const first = groups.map((group) => th(group.name, `colspan="${group.component ? group.papers.length * 5 + (group.papers.length === 2 ? 3 : 2) + (componentGradeMode === 'add' ? 1 : 0) : 2}"`)).join('');
   const summary = ['Total', '%', 'RANK', 'Grade', 'GPA'].map((label) => th(label, `rowspan="${rows}"${label === 'Grade' ? ' class="vertical"' : ''}`)).join('');
+  const resultHeaders = (rowspan) => (componentGradeMode === 'replace'
+    ? th('GRADE', `rowspan="${rowspan}" class="vertical"`)
+    : th('20%', `rowspan="${rowspan}"`))
+    + (componentGradeMode === 'add' ? th('GRADE', `rowspan="${rowspan}" class="vertical"`) : '')
+    + th(componentGradeMode ? 'GPA' : 'G/GPA', `rowspan="${rowspan}" class="vertical"`);
   const detail = groups.map((group) => {
     if (!group.component) return th(group.maximum, `rowspan="${rows - 1}"`) + th('GRADE', `rowspan="${rows - 1}"`);
     if (group.papers.length === 2) {
       return th('Physical Science', 'colspan="5"') + th('Biological Science', 'colspan="5"')
-        + th('Total', 'rowspan="2" class="vertical"') + th('20%', 'rowspan="2"') + th('G/GPA', 'rowspan="2" class="vertical"');
+        + th('Total', 'rowspan="2" class="vertical"') + resultHeaders(2);
     }
-    return componentHeaders(group, rows - 1) + th('20%', `rowspan="${rows - 1}"`) + th('G/GPA', `rowspan="${rows - 1}" class="vertical"`);
+    return componentHeaders(group, rows - 1) + resultHeaders(rows - 1);
   }).join('');
   const last = split ? `<tr>${groups.filter((group) => group.papers.length === 2).map((group) => componentHeaders(group, 1)).join('')}</tr>` : '';
   return `<tr>${base}${first}${summary}</tr><tr>${detail}</tr>${last}`;
@@ -171,7 +177,7 @@ function groupResult(group, subjects) {
   return { marks, complete, absent, obtained, percentage };
 }
 
-function studentRow(student, index, groups, papers, component) {
+function studentRow(student, index, groups, papers, component, componentGradeMode) {
   const subjects = new Map((student.subjects || []).map((subject) => [String(subject.exam_subject_id), subject]));
   const results = groups.map((group) => groupResult(group, subjects));
   const cells = groups.map((group, groupIndex) => {
@@ -185,8 +191,11 @@ function studentRow(student, index, groups, papers, component) {
       return ['participation_marks', 'written_work_marks', 'project_work_marks', 'slip_test_marks', 'marks_obtained']
         .map((field) => td(value(field))).join('');
     }).join('');
+    const grade = result.complete
+      ? result.absent && group.papers.length === 1 ? 'AB' : sampleAssessmentGrade(result.percentage) : null;
     return components + (group.papers.length === 2 ? td(result.obtained) : '')
-      + td(result.percentage == null ? null : round(result.percentage / 5))
+      + td(componentGradeMode === 'replace' ? grade : result.percentage == null ? null : round(result.percentage / 5))
+      + (componentGradeMode === 'add' ? td(grade) : '')
       + td(sampleComponentGradePoint(result.percentage));
   }).join('');
   const totals = summarizeStudentMarks({ papers, subjects: student.subjects });
@@ -239,6 +248,8 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
       ...student, subjects: normalizeAssessmentSubjects(papers, student.subjects || []),
     }));
     const summative = section.summative === true;
+    const componentGradeMode = exam?.exam_type === 'fa_results' && isSecondaryAssessmentClass(section.classSection)
+      ? 'replace' : exam?.exam_type === 'sa_results' ? 'add' : null;
     const displayPapers = section.displayPapers ?? displayAssessmentPapers(papers, students);
     const component = summative || displayPapers.some((paper) => paper.assessment_schema === 'component');
     const groups = paperGroups(displayPapers, summative ? false : component, summative);
@@ -255,7 +266,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
       const paperWidths = groups.flatMap((group) => summative
         ? [...group.papers.flatMap(() => [1.5, 2, 1.5]), ...(group.papers.length === 2 ? [2] : []), 1, 1]
         : group.component
-        ? [...group.papers.flatMap(() => [1, 1, 1, 1, 1.5]), ...(group.papers.length === 2 ? [1.5] : []), 1.5, 1]
+        ? [...group.papers.flatMap(() => [1, componentGradeMode === 'add' ? 1.2 : 1, 1, 1, 1.5]), ...(group.papers.length === 2 ? [1.5] : []), 1.5, ...(componentGradeMode === 'add' ? [1] : []), 1]
         : [1.5, 1]);
       const summaryWidths = summative ? [2.3, 2, 2, 1.5, 1.8] : component ? [2, 2, 1.8, 1.3, 1.5] : [1.8, 1, 1, 1.8];
       const numericWidths = [...paperWidths, ...summaryWidths];
@@ -275,10 +286,10 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
         <header><h1>${escapeHtml(String(schoolName || 'School').toUpperCase())}</h1><h2>${escapeHtml(assessmentTitle(exam, component))}</h2>
         <div class="metadata"><span>${component ? 'Name of the Class Teacher' : 'CLASS TEACHER NAME'} : ${escapeHtml(section.teacherName || '')}</span><span>${component ? 'Class/Sec' : 'CLASS'}: ${escapeHtml(section.classSection?.class_name)} - ${escapeHtml(section.classSection?.section_name)}</span></div></header>
         <table><colgroup><col class="number-col"><col class="name-col">${widths}</colgroup>
-        <thead>${summative ? summativeTableHeader(groups, section.formative_keys) : tableHeader(groups, maximum, component)}</thead><tbody>
+        <thead>${summative ? summativeTableHeader(groups, section.formative_keys) : tableHeader(groups, maximum, component, componentGradeMode)}</thead><tbody>
         ${pageStudents.length ? pageStudents.map((student, index) => summative
           ? summativeStudentRow(student, start + index, groups)
-          : studentRow(student, start + index, groups, papers, component)).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
+          : studentRow(student, start + index, groups, papers, component, componentGradeMode)).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
         </tbody></table>
         ${incomplete || absent || alternativeNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}</div>` : ''}
         ${pageCount > 1 ? `<div class="page-number">${pageIndex + 1} / ${pageCount}</div>` : ''}

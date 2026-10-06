@@ -1,4 +1,5 @@
 import express from 'express';
+import { getArrearsTransactions } from '../services/arrearsCollectionService.js';
 import sql from '../db.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
@@ -1515,7 +1516,7 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
         return res.status(400).json({ error: 'from_date must be on or before to_date.' });
     }
 
-    const [schoolFeeRows, transportRows] = await Promise.all([
+    const [schoolFeeRows, transportRows, arrearsRows] = await Promise.all([
         sql`
             SELECT
                 t.id,
@@ -1628,9 +1629,10 @@ router.get('/collection-receipts/export', requirePermission('fees.view'), asyncH
               ${transportCollectionActiveFilter}
             ORDER BY tfp.paid_at ASC
         `,
+        getArrearsTransactions(sql, { schoolId, fromDate, toDate, dateOnly: true }),
     ]);
 
-    const rows = [...(schoolFeeRows || []), ...(transportRows || [])]
+    const rows = [...(schoolFeeRows || []), ...(transportRows || []), ...arrearsRows]
         .sort((a, b) => new Date(a.paid_at).getTime() - new Date(b.paid_at).getTime());
 
     const [school] = await sql`
@@ -1668,6 +1670,7 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
         [defaulterCount],
         recentTransactions,
         recentTransportTransactions,
+        recentArrearsTransactions,
     ] = await Promise.all([
         sql`
             SELECT
@@ -1685,6 +1688,11 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 WHERE tfp.paid_at::DATE = ${targetDate}::DATE
                   AND tfp.school_id = ${schoolId}
                   ${transportCollectionActiveFilter}
+              ), 0) +
+              COALESCE((
+                SELECT SUM(dp.amount) FROM defaulter_payments dp
+                WHERE dp.school_id = ${schoolId}
+                  AND dp.paid_at::DATE = ${targetDate}::DATE
               ), 0) AS total
         `,
         sql`
@@ -1703,6 +1711,11 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 WHERE date_trunc('month', tfp.paid_at) = date_trunc('month', ${targetDate}::DATE)
                   AND tfp.school_id = ${schoolId}
                   ${transportCollectionActiveFilter}
+              ), 0) +
+              COALESCE((
+                SELECT SUM(dp.amount) FROM defaulter_payments dp
+                WHERE dp.school_id = ${schoolId}
+                  AND date_trunc('month', dp.paid_at) = date_trunc('month', ${targetDate}::DATE)
               ), 0) AS total
         `,
         sql`
@@ -1719,6 +1732,10 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
                 FROM transport_fee_payments tfp
                 WHERE tfp.school_id = ${schoolId}
                   ${transportCollectionActiveFilter}
+              ), 0) +
+              COALESCE((
+                SELECT SUM(dp.amount) FROM defaulter_payments dp
+                WHERE dp.school_id = ${schoolId}
               ), 0) AS total
         `,
         sql`
@@ -1881,9 +1898,10 @@ router.get('/finance-stats', requirePermission('fees.view'), asyncHandler(async 
             ORDER BY tfp.paid_at DESC
             LIMIT 1000
         `,
+        getArrearsTransactions(sql, { schoolId, date: targetDate, limit: 1000 }),
     ]);
 
-    const allRecentTransactions = [...(recentTransactions || []), ...(recentTransportTransactions || [])]
+    const allRecentTransactions = [...(recentTransactions || []), ...(recentTransportTransactions || []), ...recentArrearsTransactions]
         .sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime())
         .slice(0, 1000);
 

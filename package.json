@@ -22,6 +22,7 @@
     "migrate:release": "node scripts/migrate_release.js",
     "migrate:batch2": "node scripts/run_batch2_migrations.js",
     "migrate:batch3": "node scripts/run_batch3_migrations.js",
+    "test:arrears": "node --experimental-test-module-mocks --test tests/arrearsCollections.integration.js",
     "test:transport": "node scripts/verify_transport_repair.mjs",
     "tour:check": "node scripts/build_tour_audio.mjs --check",
     "tour:generate": "node scripts/build_tour_audio.mjs --generate",

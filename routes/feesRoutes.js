@@ -1,4 +1,5 @@
 import express from 'express';
+import { getArrearsTransactions, getArrearsCollectionSummary, getArrearsReceiptItems } from '../services/arrearsCollectionService.js';
 import sql from '../db.js';
 import { requirePermission, requireAuth, requireAnyPermission } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
@@ -1471,7 +1472,7 @@ router.get('/receipts', requirePermission('fees.view'), asyncHandler(async (req,
   if (student_id) {
     receipts = await sql`
       SELECT 
-        r.id, r.receipt_no, r.total_amount, r.issued_at, r.remarks,
+        r.id, r.receipt_no, r.total_amount, r.issued_at, r.remarks, r.payment_type,
         s.admission_no, p.display_name as student_name,
         enroll.class_name, enroll.section_name,
         issuer.display_name as issued_by_name
@@ -1501,11 +1502,14 @@ router.get('/receipts', requirePermission('fees.view'), asyncHandler(async (req,
         r.id, r.receipt_no, r.total_amount, r.issued_at,
         r.payment_type,
         s.admission_no, p.display_name as student_name,
-        x.payment_method,
-        COALESCE(r.fee_type, x.fee_type, 'tuition') as fee_type
+        COALESCE(dp.payment_method, x.payment_method) as payment_method,
+        CASE WHEN r.payment_type = 'arrears' THEN 'Arrears — ' || dd.due_academic_year
+          ELSE COALESCE(r.fee_type, x.fee_type, 'tuition') END as fee_type
       FROM receipts r
       JOIN students s ON r.student_id = s.id AND s.school_id = ${req.schoolId}
       JOIN persons p ON s.person_id = p.id
+      LEFT JOIN defaulter_payments dp ON dp.id = r.defaulter_payment_id AND dp.school_id = ${req.schoolId}
+      LEFT JOIN defaulter_dues dd ON dd.id = dp.defaulter_due_id AND dd.school_id = ${req.schoolId}
       LEFT JOIN LATERAL (
         SELECT t.payment_method, ft.name as fee_type
         FROM receipt_items ri
@@ -1540,7 +1544,7 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
       r.id, r.receipt_no, r.student_id, r.total_amount,
       r.issued_at, r.issued_by, r.remarks, r.created_at,
       r.fee_type as receipt_fee_type,
-      r.transport_payment_id,
+      r.transport_payment_id, r.payment_type, r.defaulter_payment_id,
       s.admission_no, p.display_name as student_name,
       enroll.class_name, enroll.section_name,
       father_info.father_name, father_info.father_mobile,
@@ -1593,7 +1597,7 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
   }
 
   // Tuition receipts are populated via receipt_items → fee_transactions.
-  // Transport collect writes receipts.transport_payment_id but no receipt_items.
+  // Transport and arrears receipts link directly to their respective ledgers.
   let items = await sql`
     SELECT 
       ri.amount,
@@ -1607,6 +1611,10 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
     WHERE ri.receipt_id = ${id}
       AND ri.school_id = ${req.schoolId}
   `;
+
+  if (items.length === 0 && receipt.defaulter_payment_id) {
+    items = await getArrearsReceiptItems(sql, req.schoolId, receipt.defaulter_payment_id);
+  }
 
   if (items.length === 0 && receipt.transport_payment_id) {
     items = await sql`
@@ -1656,6 +1664,7 @@ router.get('/receipts/:id', requirePermission('fees.view'), asyncHandler(async (
   const {
     receipt_fee_type: _receiptFeeType,
     transport_payment_id: _transportPaymentId,
+    defaulter_payment_id: _defaulterPaymentId,
     ...receiptPublic
   } = receipt;
 
@@ -1674,6 +1683,10 @@ router.get('/collectors', requirePermission('fees.view'), asyncHandler(async (re
       FROM fee_transactions t
       WHERE t.school_id = ${req.schoolId}
         AND t.received_by IS NOT NULL
+      UNION
+      SELECT DISTINCT dp.received_by as user_id
+      FROM defaulter_payments dp
+      WHERE dp.school_id = ${req.schoolId} AND dp.received_by IS NOT NULL
       UNION
       SELECT ur.user_id
       FROM user_roles ur
@@ -1700,6 +1713,10 @@ router.get('/transactions/:id/receipt-no', requireAnyPermission(['fees.view', 'f
     JOIN receipts r ON r.id = ri.receipt_id AND r.school_id = ${req.schoolId}
     WHERE ri.fee_transaction_id = ${id}
       AND ri.school_id = ${req.schoolId}
+    UNION ALL
+    SELECT r.receipt_no
+    FROM receipts r
+    WHERE r.defaulter_payment_id = ${id} AND r.school_id = ${req.schoolId}
     LIMIT 1
   `;
   return sendSuccess(res, req.schoolId, { receipt_no: row?.receipt_no ?? null });
@@ -1707,7 +1724,7 @@ router.get('/transactions/:id/receipt-no', requireAnyPermission(['fees.view', 'f
 
 /**
  * GET /fees/transactions
- * List fee + transport payment transactions (merged, newest first).
+ * List tuition, transport and arrears payments (merged, newest first).
  */
 router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (req, res) => {
   const { from_date, to_date, payment_method, received_by, page = 1, limit = 50 } = req.query;
@@ -1719,7 +1736,7 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
   const receivedByFilter = received_by ? sql`AND t.received_by = ${received_by}` : sql``;
   const transportReceivedByFilter = received_by ? sql`AND tfp.received_by = ${received_by}` : sql``;
 
-  const [transactions, transportTransactions] = await Promise.all([
+  const [transactions, transportTransactions, arrearsTransactions] = await Promise.all([
     sql`
       SELECT
         t.id, t.amount, t.payment_method, t.transaction_ref, t.paid_at, t.remarks,
@@ -1924,9 +1941,13 @@ router.get('/transactions', requirePermission('fees.view'), asyncHandler(async (
       ORDER BY tfp.paid_at DESC
       LIMIT ${fetchLimit}
     `,
+    getArrearsTransactions(sql, {
+      schoolId: req.schoolId, fromDate: from_date, toDate: to_date,
+      paymentMethod: payment_method, receivedBy: received_by, limit: fetchLimit,
+    }),
   ]);
 
-  const merged = [...transactions, ...transportTransactions].sort(
+  const merged = [...transactions, ...transportTransactions, ...arrearsTransactions].sort(
     (a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime()
   );
 
@@ -2148,7 +2169,11 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     ORDER BY tfp.paid_at DESC
   `;
 
-  const allTransactions = [...transactions, ...transportTransactions]
+  const [arrearsTransactions, arrearsSummary] = await Promise.all([
+    getArrearsTransactions(sql, { schoolId: req.schoolId, receivedBy: collectorId, today: true }),
+    getArrearsCollectionSummary(sql, { schoolId: req.schoolId, receivedBy: collectorId, today: true }),
+  ]);
+  const allTransactions = [...transactions, ...transportTransactions, ...arrearsTransactions]
     .sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime());
   const byPaymentMethod = await sql`
     SELECT
@@ -2183,7 +2208,7 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
   `;
 
   const paymentMethodMap = new Map();
-  for (const row of [...byPaymentMethod, ...transportByPaymentMethod]) {
+  for (const row of [...byPaymentMethod, ...transportByPaymentMethod, ...arrearsSummary.rows]) {
     const key = row.payment_method;
     const current = paymentMethodMap.get(key) || { payment_method: key, transaction_count: 0, total_amount: 0 };
     current.transaction_count += Number(row.transaction_count || 0);
@@ -2225,8 +2250,8 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
     date: todayRow?.today,
     collector_id: collectorId,
     transactions: allTransactions,
-    total_transactions: Number(totals?.total_transactions || 0) + Number(transportTotals?.total_transactions || 0),
-    total_collected: Number(totals?.total_collected || 0) + Number(transportTotals?.total_collected || 0),
+    total_transactions: Number(totals?.total_transactions || 0) + Number(transportTotals?.total_transactions || 0) + arrearsSummary.total_transactions,
+    total_collected: Number(totals?.total_collected || 0) + Number(transportTotals?.total_collected || 0) + arrearsSummary.total_collected,
     by_payment_method: combinedByPaymentMethod,
   });
 }));
@@ -2235,16 +2260,23 @@ router.get('/today-collection', requirePermission('fees.view'), asyncHandler(asy
 
 /**
  * GET /fees/collection-summary
- * Get daily/monthly collection summary (tuition + transport).
+ * Get daily/monthly collection summary (tuition, transport and arrears).
  */
 router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(async (req, res) => {
   const { date, from_date, to_date, group_by = 'day', received_by } = req.query;
   const receivedByFilter = received_by ? sql`AND t.received_by = ${received_by}` : sql``;
   const transportReceivedByFilter = received_by ? sql`AND tfp.received_by = ${received_by}` : sql``;
 
+  const arrearsSummary = await getArrearsCollectionSummary(sql, {
+    schoolId: req.schoolId, receivedBy: received_by, groupBy: group_by,
+    ...(date ? { date } : from_date && to_date
+      ? { fromDate: from_date, toDate: to_date }
+      : { date: new Date().toISOString().split('T')[0] }),
+  });
+
   const mergePaymentMethodRows = (tuitionRows, transportRows) => {
     const map = new Map();
-    for (const row of [...tuitionRows, ...transportRows]) {
+    for (const row of [...tuitionRows, ...transportRows, ...arrearsSummary.rows]) {
       const key = row.payment_method;
       const current = map.get(key) || { payment_method: key, transaction_count: 0, total_amount: 0 };
       current.transaction_count += Number(row.transaction_count || 0);
@@ -2256,7 +2288,7 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
 
   const mergePeriodRows = (tuitionRows, transportRows) => {
     const map = new Map();
-    for (const row of [...tuitionRows, ...transportRows]) {
+    for (const row of [...tuitionRows, ...transportRows, ...arrearsSummary.rows]) {
       const key = String(row.period);
       const current = map.get(key) || { period: row.period, transaction_count: 0, total_amount: 0 };
       current.transaction_count += Number(row.transaction_count || 0);
@@ -2321,8 +2353,8 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
     return sendSuccess(res, req.schoolId, {
       date,
       by_payment_method: mergePaymentMethodRows(summary, transportSummary),
-      total_transactions: Number(total[0]?.total_transactions || 0) + Number(transportTotal[0]?.total_transactions || 0),
-      total_collected: Number(total[0]?.total_collected || 0) + Number(transportTotal[0]?.total_collected || 0),
+      total_transactions: Number(total[0]?.total_transactions || 0) + Number(transportTotal[0]?.total_transactions || 0) + arrearsSummary.total_transactions,
+      total_collected: Number(total[0]?.total_collected || 0) + Number(transportTotal[0]?.total_collected || 0) + arrearsSummary.total_collected,
     });
   } else if (from_date && to_date) {
     let summary;
@@ -2415,8 +2447,8 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
 
     return sendSuccess(res, req.schoolId, {
       periods: mergePeriodRows(summary, transportSummary),
-      total_transactions: Number(rangeTotal?.total_transactions || 0) + Number(transportRangeTotal?.total_transactions || 0),
-      total_collected: Number(rangeTotal?.total_collected || 0) + Number(transportRangeTotal?.total_collected || 0),
+      total_transactions: Number(rangeTotal?.total_transactions || 0) + Number(transportRangeTotal?.total_transactions || 0) + arrearsSummary.total_transactions,
+      total_collected: Number(rangeTotal?.total_collected || 0) + Number(transportRangeTotal?.total_collected || 0) + arrearsSummary.total_collected,
     });
   } else {
     const today = new Date().toISOString().split('T')[0];
@@ -2446,8 +2478,8 @@ router.get('/collection-summary', requirePermission('fees.view'), asyncHandler(a
 
     return sendSuccess(res, req.schoolId, {
       date: today,
-      total_transactions: Number(tuitionToday?.total_transactions || 0) + Number(transportToday?.total_transactions || 0),
-      total_collected: Number(tuitionToday?.total_collected || 0) + Number(transportToday?.total_collected || 0),
+      total_transactions: Number(tuitionToday?.total_transactions || 0) + Number(transportToday?.total_transactions || 0) + arrearsSummary.total_transactions,
+      total_collected: Number(tuitionToday?.total_collected || 0) + Number(transportToday?.total_collected || 0) + arrearsSummary.total_collected,
     });
   }
 }));
@@ -2650,9 +2682,15 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
     `
   ]);
 
-  stats.collected_total = Number(totalCollected[0]?.total || 0);
+  const [[arrearsTotal], recentArrearsTransactions] = await Promise.all([
+    sql`SELECT COALESCE(SUM(amount), 0) AS total FROM defaulter_payments WHERE school_id = ${schoolId}`,
+    getArrearsTransactions(sql, { schoolId, limit: 5 }),
+  ]);
+  stats.collected_total = Number(totalCollected[0]?.total || 0) + Number(arrearsTotal?.total || 0);
   stats.defaulter_count = Number(defaulterCount[0]?.count || 0);
-  stats.recent_transactions = recentTransactions || [];
+  stats.recent_transactions = [...(recentTransactions || []), ...recentArrearsTransactions.map((row) => ({
+    ...row, collected_at: row.paid_at,
+  }))].sort((a, b) => new Date(b.collected_at).getTime() - new Date(a.collected_at).getTime()).slice(0, 5);
 
   // Conditional stats computation
   if (config.total_collection_month) {
@@ -2672,6 +2710,10 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
           WHERE date_trunc('month', tfp.paid_at) = date_trunc('month', CURRENT_DATE)
             AND tfp.school_id = ${schoolId}
             ${transportCollectionActiveFilter}
+        ), 0) +
+        COALESCE((
+          SELECT SUM(dp.amount) FROM defaulter_payments dp
+          WHERE dp.school_id = ${schoolId} AND date_trunc('month', dp.paid_at) = date_trunc('month', CURRENT_DATE)
         ), 0) AS total
     `;
     stats.total_collection_month = Number(monthlyStats[0]?.total || 0);
@@ -2694,6 +2736,10 @@ router.get('/dashboard-stats', requirePermission('fees.view'), asyncHandler(asyn
           WHERE tfp.paid_at::date = CURRENT_DATE
             AND tfp.school_id = ${schoolId}
             ${transportCollectionActiveFilter}
+        ), 0) +
+        COALESCE((
+          SELECT SUM(dp.amount) FROM defaulter_payments dp
+          WHERE dp.school_id = ${schoolId} AND dp.paid_at::date = CURRENT_DATE
         ), 0) AS total
     `;
     stats.todays_collection = Number(todayStats[0]?.total || 0);

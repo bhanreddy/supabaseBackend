@@ -5,12 +5,15 @@ import { selectScienceAlternative } from './scienceSubjectSelection.js';
 
 const round = (value) => Number(value.toFixed(2));
 
-export function usesSummativeMarksRegister(exam, classSection) {
-  if (exam?.exam_type !== 'sa_results') return false;
+export function isSecondaryAssessmentClass(classSection) {
   const name = String(classSection?.class_name || '').toUpperCase().replace(/CLASS|GRADE|STANDARD|STD|\s|[.-]/g, '');
   const romans = { VI: 6, VII: 7, VIII: 8, IX: 9, X: 10 };
   const number = romans[name] ?? Number(name.replace(/(?:ST|ND|RD|TH)$/, ''));
   return number >= 6 && number <= 10;
+}
+
+export function usesSummativeMarksRegister(exam, classSection) {
+  return exam?.exam_type === 'sa_results' && isSecondaryAssessmentClass(classSection);
 }
 
 export function summativeFormativeKeys(exam) {

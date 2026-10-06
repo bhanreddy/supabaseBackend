@@ -11,10 +11,10 @@ const mark = (paper, score, extra = {}) => ({
   exam_subject_id: paper.exam_subject_id, max_marks: paper.max_marks,
   mark_id: `mark-${paper.exam_subject_id}`, marks_obtained: score, ...extra,
 });
-const report = (papers, students, examType = 'fa_results') => buildAssessmentMarksPrint({
+const report = (papers, students, examType = 'fa_results', className = '4th') => buildAssessmentMarksPrint({
   schoolName: 'GEETHANJALI HIGH SCHOOL (E/M) - MADDUR',
   exam: { name: examType === 'fa_results' ? 'FA-1' : 'SA-1', exam_type: examType },
-  sections: [{ classSection: { class_name: '4th', section_name: 'A' }, teacherName: 'BHANU LATHA', papers, students }],
+  sections: [{ classSection: { class_name: className, section_name: 'A' }, teacherName: 'BHANU LATHA', papers, students }],
 });
 
 test('sample grades include A2 and the photographed low-score boundaries', () => {
@@ -62,6 +62,63 @@ test('component register prints raw marks, 20% weightage and average grade point
   assert.match(result.html, /<td>48.5<\/td><td>19.4<\/td><td>10<\/td>/);
   assert.match(result.html, /<td>47.5<\/td><td>19<\/td><td>9<\/td>/);
   assert.match(result.html, /<td>96<\/td><td>96<\/td><td>2<\/td><td>A1<\/td><td>9.5<\/td>/);
+});
+
+test('Classes 6–10 FA replaces only the weightage cell with the sample subject grade', () => {
+  const papers = [paper('soc', 'Social', 50, 'component')];
+  const students = [{ student_name: 'Student', rank: 1, subjects: [mark(papers[0], 17.5, {
+    participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 14,
+  })] }];
+  for (const className of ['6', '7th', 'Class 8', 'Grade 9', '10th', 'VI', 'VII', 'VIII', 'IX', 'X']) {
+    const result = report(papers, students, 'fa_results', className);
+    assert.match(result.html, /<th colspan="7">Social<\/th>/);
+    assert.match(result.html, /<th rowspan="1" class="vertical">GRADE<\/th><th rowspan="1" class="vertical">GPA<\/th>/);
+    assert.match(result.html, /<td>44<\/td><td>A2<\/td><td>9<\/td>/);
+    assert.doesNotMatch(result.html, /20%|<td>17.6<\/td>/);
+    assert.match(result.html, /<td>44<\/td><td>88<\/td><td>1<\/td><td>A2<\/td><td>9<\/td>/);
+  }
+  for (const className of ['5', '11']) {
+    assert.match(report(papers, students, 'fa_results', className).html, /<td>44<\/td><td>17.6<\/td><td>9<\/td>/);
+  }
+});
+
+test('secondary FA grades distinguish saved zero, absent and missing component marks', () => {
+  const papers = [paper('eng', 'English', 50, 'component')];
+  const subjects = [mark(papers[0], 0, { participation_marks: 0, written_work_marks: 0, project_work_marks: 0, slip_test_marks: 0 }),
+    mark(papers[0], null, { is_absent: true }), null];
+  const rows = subjects.map((subject, index) => ({ student_name: `Student ${index}`, subjects: subject ? [subject] : [] }));
+  const result = report(papers, rows, 'fa_results', '6');
+  assert.match(result.html, /(?:<td>0<\/td>){5}<td>D2<\/td><td>4<\/td>/);
+  assert.match(result.html, /(?:<td>AB<\/td>){6}<td>4<\/td>/);
+  assert.match(result.html, /(?:<td>—<\/td>){7}/);
+});
+
+test('secondary FA split Science replaces weightage with a grade of the combined component total', () => {
+  const papers = ['Physics', 'Biology'].map((name) => paper(name, name, 25, 'component'));
+  const subjects = papers.map((item) => mark(item, 5, {
+    participation_marks: 5, written_work_marks: 5, project_work_marks: 5, slip_test_marks: 5,
+  }));
+  const result = report(papers, [{ student_name: 'Student', subjects }], 'fa_results', '8th');
+  assert.match(result.html, /<th colspan="13">Science<\/th>/);
+  assert.match(result.html, /<th rowspan="2" class="vertical">GRADE<\/th>/);
+  assert.match(result.html, /<td>40<\/td><td>B1<\/td><td>8<\/td>/);
+  assert.doesNotMatch(result.html, /20%/);
+});
+
+test('component SA adds missing subject grades while retaining its contribution and Science grouping', () => {
+  const papers = [paper('eng', 'English', 50, 'component'), ...['Physics', 'Biology'].map((name) => paper(name, name, 25, 'component'))];
+  const subjects = papers.map((item) => mark(item, 0, {
+    participation_marks: item.max_marks / 5, written_work_marks: item.max_marks / 5,
+    project_work_marks: item.max_marks / 5, slip_test_marks: item.max_marks * 2 / 5,
+  }));
+  const result = report(papers, [{ student_name: 'Student', subjects }], 'sa_results');
+  assert.match(result.html, /<th colspan="8">English<\/th>/);
+  assert.match(result.html, /<th colspan="14">Science<\/th>/);
+  assert.match(result.html, /<th rowspan="2">20%<\/th><th rowspan="2" class="vertical">GRADE<\/th><th rowspan="2" class="vertical">GPA<\/th>/);
+  assert.equal((result.html.match(/<td>50<\/td><td>20<\/td><td>A1<\/td><td>10<\/td>/g) || []).length, 2);
+  const bodyRow = result.html.match(/<tbody>\s*(<tr>.*?<\/tr>)/s)[1];
+  assert.equal((bodyRow.match(/<td\b/g) || []).length, 29);
+  assert.equal((result.html.match(/<col\b/g) || []).length, 29);
 });
 
 test('higher-class format combines Physical Science and Biology in a Science group', () => {
