@@ -1,7 +1,8 @@
 import { canonicalFinalSourceKey } from './finalResultCalculationService.js';
-import { displayAssessmentPapers, normalizeAssessmentSubjects, subjectContribution } from './marksTotalsService.js';
+import { displayAssessmentPapers, subjectContribution } from './marksTotalsService.js';
 import { rankResultRows } from './resultRankingService.js';
 import { selectScienceAlternative } from './scienceSubjectSelection.js';
+import { assessmentPrintSubjects } from './assessmentPrintMarksService.js';
 
 const round = (value) => Number(value.toFixed(2));
 
@@ -66,7 +67,7 @@ function matchesResultFilter(student, filter) {
 }
 
 /** All cohort students enter ranking before filtering. Source rows must be newest-exam first. */
-export function prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultFilter = 'all') {
+export function prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultFilter = 'all', marksMode = 'original') {
   const keys = summativeFormativeKeys(exam);
   const papers = section.papers || [];
   const physics = papers.find((paper) => isScienceHalf(paper.subject_name, true));
@@ -78,10 +79,10 @@ export function prepareSummativeMarksSection(section, exam, formativeRows, ranki
     const sourceKey = canonicalFinalSourceKey(row.exam_type, row.exam_name);
     if (!keys.includes(sourceKey)) continue;
     const key = `${row.student_id}:${row.subject_id}:${sourceKey}`;
-    if (!sources.has(key)) sources.set(key, row);
+    if (!sources.has(key)) sources.set(key, assessmentPrintSubjects([row], [row], marksMode)[0]);
   }
   const students = (section.students || []).map((student) => {
-    const marks = new Map(normalizeAssessmentSubjects(papers, student.subjects || [])
+    const marks = new Map(assessmentPrintSubjects(papers, student.subjects || [], marksMode)
       .map((mark) => [String(mark.exam_subject_id), mark]));
     const results = papers.map((paper) => calculateSummativePrintSubject(
       paper, marks.get(String(paper.exam_subject_id)),

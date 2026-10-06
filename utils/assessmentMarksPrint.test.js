@@ -201,6 +201,37 @@ test('component rows with no component values do not reuse a saved consolidated 
   assert.match(result.html, /overall grade\/GPA awaits complete marks/);
 });
 
+test('passing print adjusts only Slip Test and recalculates subject total, sample grade and grand total', () => {
+  const papers = [paper('soc', 'Social', 50, 'component')];
+  const subjects = [mark(papers[0], 50, { participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 1 })];
+  const input = { exam: { name: 'FA-1', exam_type: 'fa_results' }, sections: [{
+    classSection: { class_name: '8', section_name: 'A' }, papers, students: [{ student_name: 'Student', subjects, rank: 1 }],
+  }] };
+  const before = structuredClone(input);
+  const original = buildAssessmentMarksPrint(input);
+  const adjusted = buildAssessmentMarksPrint({ ...input, marksMode: 'passing_criteria' });
+  assert.match(original.html, /<td>1<\/td><td>31<\/td><td>B2<\/td><td>6<\/td>/);
+  assert.match(adjusted.html, /<td>10<\/td><td>10<\/td><td>10<\/td><td>7.2<\/td><td>37.2<\/td><td>B1<\/td><td>7<\/td>/);
+  assert.match(adjusted.html, /<td>37.2<\/td><td>74.4<\/td><td>1<\/td><td>B1<\/td><td>7<\/td>/);
+  assert.match(adjusted.html, /Passing criteria \(36%\)/);
+  assert.equal(adjusted.marks_mode, 'passing_criteria');
+  assert.doesNotMatch(original.html, /Passing criteria \(36%\)/);
+  assert.deepEqual(buildAssessmentMarksPrint(input), original);
+  assert.deepEqual(input, before);
+});
+
+test('passing consolidated print uses each configured maximum and keeps missing and absent cells', () => {
+  const papers = [paper('tel', 'Telugu', 25), paper('eng', 'English', 100), paper('soc', 'Social', 25), paper('sci', 'Science', 25)];
+  const result = buildAssessmentMarksPrint({ exam: { name: 'FA-1', exam_type: 'fa_results' }, marksMode: 'passing_criteria', sections: [{
+    classSection: { class_name: '4' }, papers, students: [{ student_name: 'Student', subjects: [
+      mark(papers[0], 0), mark(papers[1], 30), mark(papers[2], null, { is_absent: true }),
+    ] }],
+  }] });
+  assert.match(result.html, /<td>9<\/td><td>D1<\/td><td>36<\/td><td>D1<\/td>/);
+  assert.match(result.html, /<td>—<\/td><td>—<\/td><td>AB<\/td><td>AB<\/td>/);
+  assert.match(result.html, /<td>45\*<\/td><td>—<\/td><td>—<\/td><td>30<\/td>/);
+});
+
 const summativeReport = (papers, subjects, formativeRows, name = 'SA-1') => {
   const exam = { name, exam_type: 'sa_results' };
   const prepared = prepareSummativeMarksSection({

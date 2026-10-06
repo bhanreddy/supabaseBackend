@@ -1,7 +1,8 @@
 import { canonicalFinalSourceKey } from '../services/finalResultCalculationService.js';
-import { displayAssessmentPapers, examMaximumForStudents, examTotalMaximum, normalizeAssessmentSubjects, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
+import { displayAssessmentPapers, examMaximumForStudents, examTotalMaximum, selectScoringSubjects, subjectPercentage, summarizeStudentMarks } from '../services/marksTotalsService.js';
 import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
 import { isSecondaryAssessmentClass } from '../services/summativeMarksPrintService.js';
+import { assessmentPrintSubjects } from '../services/assessmentPrintMarksService.js';
 import { componentMaximumsFromRow } from './componentMaximums.js';
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -239,13 +240,13 @@ function paginateStudents(students, component) {
 }
 
 /** Printable A4 landscape registers, with explicit page breaks and repeated headings. */
-export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
+export function buildAssessmentMarksPrint({ schoolName, exam, sections = [], marksMode = 'original' }) {
   const pages = [];
   let studentCount = 0;
   for (const section of sections) {
     const papers = section.papers || [];
     const students = (section.students || []).map((student) => ({
-      ...student, subjects: normalizeAssessmentSubjects(papers, student.subjects || []),
+      ...student, subjects: assessmentPrintSubjects(papers, student.subjects || [], marksMode),
     }));
     const summative = section.summative === true;
     const componentGradeMode = exam?.exam_type === 'fa_results' && isSecondaryAssessmentClass(section.classSection)
@@ -279,6 +280,8 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
       const absent = pageStudents.some((student) => summative ? student.has_absence
         : selectScoringSubjects(papers, student.subjects).subjects.some((subject) => subject.is_absent));
       const alternativeNote = scienceAlternativeNote(displayPapers);
+      const passingNote = marksMode === 'passing_criteria'
+        ? 'Passing criteria (36%): entered Slip Test/direct marks below 36% are adjusted for this print only.' : '';
       const missingLegend = summative
         ? '— = required FA/exam marks not entered; combined totals, grade, GPA and rank await complete marks.'
         : '— = marks not entered. * = total and percentage include entered papers only; overall grade/GPA awaits complete marks.';
@@ -291,7 +294,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
           ? summativeStudentRow(student, start + index, groups)
           : studentRow(student, start + index, groups, papers, component, componentGradeMode)).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
         </tbody></table>
-        ${incomplete || absent || alternativeNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}</div>` : ''}
+        ${incomplete || absent || alternativeNote || passingNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}${passingNote ? ` ${escapeHtml(passingNote)}` : ''}</div>` : ''}
         ${pageCount > 1 ? `<div class="page-number">${pageIndex + 1} / ${pageCount}</div>` : ''}
         </section>`);
       start += pageStudents.length;
@@ -300,6 +303,7 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [] }) {
   return {
     page_count: pages.length,
     student_count: studentCount,
+    marks_mode: marksMode,
     html: `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
       <title>${escapeHtml(exam?.name)} - Marks List</title><style>
       @page { size: A4 landscape; margin: 8mm; }

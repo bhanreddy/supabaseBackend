@@ -67,6 +67,7 @@ import {
   classifyMarksResult,
 } from '../utils/resultWorkbooks.js';
 import { buildAssessmentMarksPrint } from '../utils/assessmentMarksPrint.js';
+import { ASSESSMENT_PRINT_MARKS_MODES, assessmentPrintSubjects } from '../services/assessmentPrintMarksService.js';
 import { prepareSummativeMarksSection, summativeFormativeKeys, usesSummativeMarksRegister } from '../services/summativeMarksPrintService.js';
 
 const router = express.Router();
@@ -1974,6 +1975,8 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
     : 'all';
   const format = req.query.format || 'xlsx';
   if (!['xlsx', 'print'].includes(format)) return res.status(400).json({ error: 'Invalid format' });
+  const marksMode = format === 'print' ? req.query.marks_mode ?? 'original' : 'original';
+  if (!ASSESSMENT_PRINT_MARKS_MODES.includes(marksMode)) return res.status(400).json({ error: 'Invalid marks_mode' });
   if (classId && !UUID_RE.test(classId)) return res.status(400).json({ error: 'Invalid class_id' });
   if (sectionId && !UUID_RE.test(sectionId)) return res.status(400).json({ error: 'Invalid section_id' });
   if (!['all', 'pass', 'fail', 'absent', 'incomplete'].includes(resultStatus)) {
@@ -2199,7 +2202,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       classSection.id
     );
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
-      const subjects = normalizeAssessmentSubjects(sectionPapers, student.subjects);
+      const subjects = assessmentPrintSubjects(sectionPapers, student.subjects, marksMode);
       const totals = summarizeStudentMarks({ papers: sectionPapers, subjects });
       const classification = classifyMarksResult(sectionPapers, subjects);
       return {
@@ -2259,6 +2262,8 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       const formativeRows = await sql`
         SELECT enrollment.class_section_id, enrollment.student_id,
           paper.subject_id, paper.id AS exam_subject_id, paper.max_marks, paper.assessment_schema,
+          paper.participation_max_marks, paper.written_work_max_marks,
+          paper.project_work_max_marks, paper.slip_test_max_marks,
           formative.name AS exam_name, formative.exam_type,
           mark.id AS mark_id, mark.marks_obtained, mark.is_absent,
           mark.participation_marks, mark.written_work_marks, mark.project_work_marks, mark.slip_test_marks
@@ -2288,13 +2293,14 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       `;
       try {
         printSections = exportSections.map((section) => usesSummativeMarksRegister(exam, section.classSection)
-          ? prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultStatus) : section);
+          ? prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultStatus, marksMode) : section);
       } catch (error) { return res.status(409).json({ error: error.message }); }
     }
     return sendSuccess(res, req.schoolId, buildAssessmentMarksPrint({
       schoolName: school?.name,
       exam,
       sections: printSections,
+      marksMode,
     }));
   }
 

@@ -50,6 +50,36 @@ test('70 out of 80 remains 70, and the combined FA totals contribute 18 out of 2
   assert.equal(result.is_complete, true);
 });
 
+test('passing print recomputes exam score, FA contribution, totals and cohort ranks without changing saved sources', () => {
+  const papers = [paper()];
+  const children = [student('one', papers, 0), student('two', papers, 10)];
+  const rows = children.flatMap(child => sources(child.student_id, papers, 0));
+  const input = structuredClone({ papers, children, rows });
+  const original = prepareSummativeMarksSection(section(papers, children), exam, rows);
+  const adjusted = prepareSummativeMarksSection(section(papers, children), exam, rows, 'competition', 'all', 'passing_criteria');
+  assert.deepEqual(original.students.map(child => child.rank), [2, 1]);
+  for (const child of adjusted.students) {
+    assert.equal(child.summative_subjects[0].exam_marks, 28.8);
+    assert.equal(child.summative_subjects[0].formative_contribution, 7.2);
+    assert.equal(child.total_obtained, 36);
+    assert.equal(child.percentage, 36);
+    assert.equal(child.rank, 1);
+  }
+  assert.deepEqual({ papers, children, rows }, input);
+});
+
+test('passing SA print uses each FA component Slip Test maximum when deriving the 20% contribution', () => {
+  const papers = [paper()];
+  const child = student('one', papers, 20);
+  const rows = sources('one', papers, 0, 25, { assessment_schema: 'component', slip_test_max_marks: 10,
+    participation_marks: 5, written_work_marks: 5, project_work_marks: 5, slip_test_marks: 1 });
+  const result = prepareSummativeMarksSection(section(papers, [child]), exam, rows, 'competition', 'all', 'passing_criteria').students[0];
+  assert.equal(result.summative_subjects[0].formative_contribution, 14.88);
+  assert.equal(result.summative_subjects[0].exam_marks, 28.8);
+  assert.equal(result.total_obtained, 43.68);
+  assert.equal(rows[0].slip_test_marks, 1);
+});
+
 test('component FA sums and consolidated FA totals follow the same formula despite stale cached marks', () => {
   const direct = calculateSummativePrintSubject(paper(), saved(70, 80), saved(47.5), saved(47.5));
   const components = calculateSummativePrintSubject(paper(), saved(70, 80), component(), component());
