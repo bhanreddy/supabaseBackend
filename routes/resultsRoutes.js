@@ -68,7 +68,8 @@ import {
 } from '../utils/resultWorkbooks.js';
 import { buildAssessmentMarksPrint } from '../utils/assessmentMarksPrint.js';
 import { ASSESSMENT_PRINT_MARKS_MODES, assessmentPrintSubjects } from '../services/assessmentPrintMarksService.js';
-import { prepareSummativeMarksSection, summativeFormativeKeys, usesSummativeMarksRegister } from '../services/summativeMarksPrintService.js';
+import { resolveFormativePrintPapers } from '../services/assessmentPrintPapersService.js';
+import { isSecondaryAssessmentClass, prepareSummativeMarksSection, summativeFormativeKeys, usesSummativeMarksRegister } from '../services/summativeMarksPrintService.js';
 
 const router = express.Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -2198,7 +2199,7 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
 
   const rankingMethod = await getRequestedRankingMethod(req);
   const exportSections = classSections.map((classSection) => {
-    const sectionPapers = selectEffectiveSectionPapers(
+    let sectionPapers = selectEffectiveSectionPapers(
       papersByClass.get(String(classSection.class_id)) || [],
       classSection.id
     );
@@ -2212,6 +2213,10 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
           attendance_percentage: attendanceByStudent.get(`${classSection.id}:${student.student_id}`) ?? null,
         })),
       };
+    }
+    if (format === 'print' && exam.exam_type === 'fa_results' && isSecondaryAssessmentClass(classSection)) {
+      sectionPapers = resolveFormativePrintPapers(sectionPapers,
+        [...(studentsBySection.get(String(classSection.id)) || new Map()).values()]);
     }
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
       const subjects = assessmentPrintSubjects(sectionPapers, student.subjects, marksMode);

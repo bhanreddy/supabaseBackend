@@ -15,10 +15,12 @@ export function minimumPassingPrintMark(maximum) {
 /** Build disposable print rows; never mutate a saved mark or paper. */
 export function assessmentPrintSubjects(papers = [], subjects = [], marksMode = 'original') {
   const normalized = normalizeAssessmentSubjects(papers, subjects);
-  if (marksMode !== 'passing_criteria') return normalized;
   const identity = (row) => String(row.exam_subject_id ?? row.subject_id);
   const byId = new Map(papers.map((paper) => [identity(paper), paper]));
   return normalized.map((subject) => {
+    const paper = byId.get(identity(subject));
+    if (paper?.print_component_recovery) subject = { ...subject, passing_marks: paper.passing_marks };
+    if (marksMode !== 'passing_criteria') return subject;
     if (!hasSavedMark(subject) || subject.is_absent || subject.isAbsent) return subject;
     const component = subject.assessment_schema === 'component';
     const field = component ? 'slip_test_marks' : 'marks_obtained';

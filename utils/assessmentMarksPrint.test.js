@@ -17,6 +17,31 @@ const report = (papers, students, examType = 'fa_results', className = '4th') =>
   sections: [{ classSection: { class_name: className, section_name: 'A' }, teacherName: 'BHANU LATHA', papers, students }],
 });
 
+test('secondary FA print recovers legacy English components, grades and percentage without altering the input', () => {
+  const english = { ...paper('eng', 'English', 20), passing_marks: 7.2 };
+  const subjects = [mark(english, 43.5, { participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: 13.5 })];
+  const original = structuredClone({ english, subjects });
+  const result = report([english], [{ student_name: 'Student', subjects }], 'fa_results', '9');
+  assert.match(result.html, /<td>10<\/td><td>10<\/td><td>10<\/td><td>13.5<\/td><td>43.5<\/td><td>A2<\/td><td>9<\/td>/);
+  assert.match(result.html, /<td>43.5<\/td><td>87<\/td><td>—<\/td><td>A2<\/td><td>9<\/td>/);
+  assert.match(result.html, /English \(out of 50\)/);
+  assert.deepEqual({ english, subjects }, original);
+  assert.doesNotMatch(report([english], [{ student_name: 'Student', subjects }], 'sa_results', '4').html, /out of 50/);
+});
+
+test('decimal columns reserve room for late-page values and align across pages', () => {
+  const papers = ['Telugu', 'Hindi', 'English', 'Maths', 'Physics', 'Biology', 'Social'].map((name) => paper(name, name, 50, 'component'));
+  const students = Array.from({ length: 30 }, (_, index) => ({ student_name: `Student ${index + 1}`,
+    subjects: papers.map((p) => mark(p, 0, { participation_marks: 10, written_work_marks: 10, project_work_marks: 10, slip_test_marks: index === 29 ? 19.55 : 10 })) }));
+  const result = report(papers, students, 'fa_results', '9');
+  const groups = [...result.html.matchAll(/<colgroup>(.*?)<\/colgroup>/g)];
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0][1], groups[1][1]);
+  const widths = [...groups[0][1].matchAll(/width:([\d.]+)mm/g)].map((match) => Number(match[1]));
+  const fontSize = Number(result.html.match(/--mark-font-size:([\d.]+)pt/)[1]);
+  assert.ok(widths[3] >= fontSize * 25.4 / 72 * 2.25 + .7, 'Slip Test must fit 19.55 plus padding and borders');
+});
+
 test('sample grades include A2 and the photographed low-score boundaries', () => {
   for (const [score, grade] of [[100, 'A1'], [91, 'A1'], [90, 'A2'], [81, 'A2'], [80, 'B1'], [70, 'B2'], [60, 'C1'], [50, 'C2'], [40, 'D1'], [35, 'D1'], [34, 'D2']]) {
     assert.equal(sampleAssessmentGrade(score), grade);

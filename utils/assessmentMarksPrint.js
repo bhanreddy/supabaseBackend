@@ -3,13 +3,16 @@ import { displayAssessmentPapers, examMaximumForStudents, examTotalMaximum, sele
 import { scienceAlternativeNote } from '../services/scienceSubjectSelection.js';
 import { isSecondaryAssessmentClass } from '../services/summativeMarksPrintService.js';
 import { assessmentPrintSubjects } from '../services/assessmentPrintMarksService.js';
+import { resolveFormativePrintPapers } from '../services/assessmentPrintPapersService.js';
+import { registerColumnWidths } from './assessmentPrintColumnLayout.js';
 import { componentMaximumsFromRow } from './componentMaximums.js';
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[char]));
 const round = (value, digits = 2) => Number(Number(value).toFixed(digits));
-const display = (value) => value == null ? '—' : escapeHtml(typeof value === 'number' ? round(value) : value);
+const display = (value) => value == null ? '—' : escapeHtml(typeof value === 'number'
+  || (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) ? round(value) : value);
 
 // The photographed registers include A2. Keep this print policy separate from
 // the application's existing result calculation policy.
@@ -211,26 +214,30 @@ function studentRow(student, index, groups, papers, component, componentGradeMod
   return `<tr>${td(index + 1)}${td(student.student_name, 'student-name')}${cells}${summary.map((value) => td(value)).join('')}</tr>`;
 }
 
+function estimatedRowHeight(student, component) {
+  // Uppercase names need extra room in the narrow component-register column.
+  const charsPerLine = component ? 20 : 27;
+  const words = String(student.student_name || '').toUpperCase().split(/\s+/);
+  let lines = 1;
+  let lineLength = 0;
+  for (const word of words) {
+    if (lineLength && lineLength + word.length + 1 > charsPerLine) { lines += 1; lineLength = 0; }
+    const extraLines = Math.max(0, Math.ceil(word.length / charsPerLine) - 1);
+    lines += extraLines;
+    lineLength = extraLines ? ((word.length - 1) % charsPerLine) + 1 : lineLength + word.length + (lineLength ? 1 : 0);
+  }
+  return Math.max(component ? 5.2 : 5.3, lines * (component ? 2.5 : 3.5) + (component ? 1.4 : 1.8));
+}
+
 function paginateStudents(students, component) {
   const pages = [];
   let page = [];
   let usedHeight = 0;
   const maxRows = component ? 28 : 30;
-  const charsPerLine = component ? 25 : 30;
+  const bodyBudget = component ? 145 : 150;
   for (const student of students) {
-    // Reserve space for wrapped names instead of clipping a long student name
-    // or letting the browser split a prepared page into uncounted pages.
-    const words = String(student.student_name || '').split(/\s+/);
-    let lines = 1;
-    let lineLength = 0;
-    for (const word of words) {
-      if (lineLength && lineLength + word.length + 1 > charsPerLine) { lines += 1; lineLength = 0; }
-      const extraLines = Math.max(0, Math.ceil(word.length / charsPerLine) - 1);
-      lines += extraLines;
-      lineLength = extraLines ? ((word.length - 1) % charsPerLine) + 1 : lineLength + word.length + (lineLength ? 1 : 0);
-    }
-    const height = Math.max(component ? 5.2 : 5.3, lines * (component ? 2.5 : 3.5) + (component ? 1.4 : 1.8));
-    if (page.length && (page.length >= maxRows || usedHeight + height > 160)) {
+    const height = estimatedRowHeight(student, component);
+    if (page.length && (page.length >= maxRows || usedHeight + height > bodyBudget)) {
       pages.push(page); page = []; usedHeight = 0;
     }
     page.push(student); usedHeight += height;
@@ -244,24 +251,33 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [], mar
   const pages = [];
   let studentCount = 0;
   for (const section of sections) {
-    const papers = section.papers || [];
+    const papers = exam?.exam_type === 'fa_results' && isSecondaryAssessmentClass(section.classSection)
+      ? resolveFormativePrintPapers(section.papers, section.students) : section.papers || [];
     const students = (section.students || []).map((student) => ({
       ...student, subjects: assessmentPrintSubjects(papers, student.subjects || [], marksMode),
     }));
     const summative = section.summative === true;
     const componentGradeMode = exam?.exam_type === 'fa_results' && isSecondaryAssessmentClass(section.classSection)
       ? 'replace' : exam?.exam_type === 'sa_results' ? 'add' : null;
-    const displayPapers = section.displayPapers ?? displayAssessmentPapers(papers, students);
+    const displayPapers = section.displayPapers
+      ? section.displayPapers.map((paper) => papers.find((resolved) => String(resolved.exam_subject_id) === String(paper.exam_subject_id)) ?? paper)
+      : displayAssessmentPapers(papers, students);
     const component = summative || displayPapers.some((paper) => paper.assessment_schema === 'component');
     const groups = paperGroups(displayPapers, summative ? false : component, summative);
+    const studentRows = students.map((student, index) => summative
+      ? summativeStudentRow(student, index, groups)
+      : studentRow(student, index, groups, papers, component, componentGradeMode));
     const maximum = examMaximumForStudents(papers, students);
+    const header = summative ? summativeTableHeader(groups, section.formative_keys) : tableHeader(groups, maximum, component, componentGradeMode);
     const studentPages = paginateStudents(students, component);
     const pageCount = studentPages.length;
     studentCount += students.length;
     let start = 0;
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
       const pageStudents = studentPages[pageIndex];
-      const rowHeight = Math.max(component ? 5.2 : 5.3, Math.min(7.5, 150 / Math.max(1, pageStudents.length)));
+      const baseHeight = component ? 5.2 : 5.3;
+      const extraHeight = pageStudents.reduce((sum, student) => sum + estimatedRowHeight(student, component) - baseHeight, 0);
+      const rowHeight = Math.max(baseHeight, Math.min(7.5, ((component ? 145 : 150) - extraHeight) / Math.max(1, pageStudents.length)));
       // Give decimal totals/weightages more room than individual component
       // marks. Equal-width columns wrap 223.5 and create accidental extra pages.
       const paperWidths = groups.flatMap((group) => summative
@@ -271,30 +287,30 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [], mar
         : [1.5, 1]);
       const summaryWidths = summative ? [2.3, 2, 2, 1.5, 1.8] : component ? [2, 2, 1.8, 1.3, 1.5] : [1.8, 1, 1, 1.8];
       const numericWidths = [...paperWidths, ...summaryWidths];
-      const totalWidth = numericWidths.reduce((total, width) => total + width, 0);
-      const availableWidth = component ? 245 : 220;
-      const widths = numericWidths.map((width) => `<col style="width:${round(width / totalWidth * availableWidth, 3)}mm">`).join('');
+      const layout = registerColumnWidths(studentRows, numericWidths, component, header);
+      const widths = layout.widths
+        .map((width) => `<col style="width:${round(width, 3)}mm">`).join('');
       const columnCount = 2 + numericWidths.length;
       const incomplete = pageStudents.some((student) => summative ? !student.is_complete
         : !summarizeStudentMarks({ papers, subjects: student.subjects }).is_complete);
       const absent = pageStudents.some((student) => summative ? student.has_absence
         : selectScoringSubjects(papers, student.subjects).subjects.some((subject) => subject.is_absent));
       const alternativeNote = scienceAlternativeNote(displayPapers);
+      const recoveredPapers = papers.filter((paper) => paper.print_component_recovery);
+      const recoveryNote = recoveredPapers.length ? `Print uses saved components for ${recoveredPapers.map((paper) => `${paper.subject_name} (out of ${paper.max_marks})`).join(', ')}. Saved marks stay unchanged.` : '';
       const passingNote = marksMode === 'passing_criteria'
         ? 'Passing criteria (36%): entered Slip Test/direct marks below 36% are adjusted for this print only.' : '';
       const missingLegend = summative
         ? '— = required FA/exam marks not entered; combined totals, grade, GPA and rank await complete marks.'
         : '— = marks not entered. * = total and percentage include entered papers only; overall grade/GPA awaits complete marks.';
-      pages.push(`<section class="sheet ${component ? 'component' : 'consolidated'}" style="--row-height:${round(rowHeight, 3)}mm">
+      pages.push(`<section class="sheet ${component ? 'component' : 'consolidated'}" style="--row-height:${round(rowHeight, 3)}mm;--mark-font-size:${round(layout.fontSize, 3)}pt;--header-font-size:${round(layout.headerFontSize, 3)}pt">
         <header><h1>${escapeHtml(String(schoolName || 'School').toUpperCase())}</h1><h2>${escapeHtml(assessmentTitle(exam, component))}</h2>
         <div class="metadata"><span>${component ? 'Name of the Class Teacher' : 'CLASS TEACHER NAME'} : ${escapeHtml(section.teacherName || '')}</span><span>${component ? 'Class/Sec' : 'CLASS'}: ${escapeHtml(section.classSection?.class_name)} - ${escapeHtml(section.classSection?.section_name)}</span></div></header>
         <table><colgroup><col class="number-col"><col class="name-col">${widths}</colgroup>
-        <thead>${summative ? summativeTableHeader(groups, section.formative_keys) : tableHeader(groups, maximum, component, componentGradeMode)}</thead><tbody>
-        ${pageStudents.length ? pageStudents.map((student, index) => summative
-          ? summativeStudentRow(student, start + index, groups)
-          : studentRow(student, start + index, groups, papers, component, componentGradeMode)).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
+        <thead>${header}</thead><tbody>
+        ${pageStudents.length ? studentRows.slice(start, start + pageStudents.length).join('') : `<tr><td colspan="${columnCount}" class="empty">No students match the selected filters.</td></tr>`}
         </tbody></table>
-        ${incomplete || absent || alternativeNote || passingNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}${passingNote ? ` ${escapeHtml(passingNote)}` : ''}</div>` : ''}
+        ${incomplete || absent || alternativeNote || passingNote || recoveryNote ? `<div class="legend">${incomplete ? missingLegend : ''}${absent ? ' AB = absent (counted as zero in totals).' : ''}${alternativeNote ? ` ${escapeHtml(alternativeNote)}` : ''}${passingNote ? ` ${escapeHtml(passingNote)}` : ''} ${escapeHtml(recoveryNote)}</div>` : ''}
         ${pageCount > 1 ? `<div class="page-number">${pageIndex + 1} / ${pageCount}</div>` : ''}
         </section>`);
       start += pageStudents.length;
@@ -315,8 +331,8 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [], mar
       h2 { text-align: center; font-size: 11pt; margin: 0 0 3mm; }
       .metadata { display: flex; justify-content: space-between; gap: 5mm; font-size: 9pt; margin-bottom: 1.2mm; }
       table { width: 100%; table-layout: fixed; border-collapse: collapse; }
-      th, td { border: .2mm solid #000; text-align: center; padding: .8mm .4mm; overflow-wrap: anywhere; font-size: 8.5pt; }
-      th { font-weight: 700; font-size: 7.5pt; }
+      th, td { border: .2mm solid #000; text-align: center; padding: .8mm .4mm; overflow-wrap: anywhere; font-size: var(--mark-font-size, 8.5pt); }
+      th { font-weight: 700; font-size: var(--header-font-size, 7.5pt); }
       thead { display: table-header-group; }
       tr { break-inside: avoid; page-break-inside: avoid; }
       td { height: var(--row-height, 5.3mm); white-space: nowrap; line-height: 1.12; }
@@ -328,8 +344,8 @@ export function buildAssessmentMarksPrint({ schoolName, exam, sections = [], mar
       .component .metadata { font-size: 8pt; }
       .component .name-col { width: 31mm; }
       .component .number-col { width: 5mm; }
-      .component th, .component td { font-size: 6.2pt; padding: .6mm .25mm; }
-      .component th { font-size: 5.6pt; white-space: nowrap; }
+      .component th, .component td { font-size: var(--mark-font-size, 6.2pt); padding: .6mm .25mm; }
+      .component th { font-size: var(--header-font-size, 5.6pt); white-space: nowrap; }
       .vertical { writing-mode: vertical-rl; }
       .legend, .page-number { font: 7pt Arial, sans-serif; margin-top: 2mm; }
       .page-number { text-align: right; } .empty { height: 15mm; }
