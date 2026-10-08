@@ -2654,9 +2654,27 @@ CREATE OR REPLACE FUNCTION public.fn_check_no_future_attendance()
  LANGUAGE plpgsql
  SET search_path TO 'public'
 AS $function$
+DECLARE
+    school_today date;
 BEGIN
-    IF NEW.attendance_date > CURRENT_DATE THEN
-        RAISE EXCEPTION 'Cannot mark attendance for future date: % (Today is %)', NEW.date, CURRENT_DATE;
+    school_today := (
+        timezone(
+            COALESCE(
+                (
+                    SELECT tz.name
+                    FROM school_settings setting
+                    JOIN pg_timezone_names tz ON tz.name = setting.value
+                    WHERE setting.school_id = NEW.school_id
+                      AND setting.key = 'school_timezone'
+                    LIMIT 1
+                ),
+                'Asia/Kolkata'
+            ),
+            now()
+        )
+    )::date;
+    IF NEW.attendance_date > school_today THEN
+        RAISE EXCEPTION 'Cannot mark attendance for future date: % (Today is %)', NEW.attendance_date, school_today;
     END IF;
     RETURN NEW;
 END;
@@ -3897,6 +3915,32 @@ FOR EACH ROW EXECUTE FUNCTION recalculate_rolls_after_student_delete_change();
 
 -- 9. ATTENDANCE
 
+-- current_date follows the database clock (often UTC). A school morning in
+-- Asia/Kolkata can already be the next calendar day, so "today" is the
+-- school's configured timezone, not the server date.
+CREATE OR REPLACE FUNCTION public.attendance_date_is_not_future(p_school_id integer, p_date date)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path TO 'public'
+AS $$
+  SELECT p_date <= (
+    timezone(
+      COALESCE(
+        (
+          SELECT tz.name
+          FROM school_settings setting
+          JOIN pg_timezone_names tz ON tz.name = setting.value
+          WHERE setting.school_id = p_school_id
+            AND setting.key = 'school_timezone'
+          LIMIT 1
+        ),
+        'Asia/Kolkata'
+      ),
+      now()
+    )
+  )::date;
+$$;
 
 CREATE TABLE IF NOT EXISTS daily_attendance (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3908,7 +3952,7 @@ CREATE TABLE IF NOT EXISTS daily_attendance (
     marked_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
-    CONSTRAINT chk_attendance_date_past CHECK (attendance_date <= current_date),
+    CONSTRAINT chk_attendance_date_past CHECK (attendance_date_is_not_future(school_id, attendance_date)),
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE
 );
 

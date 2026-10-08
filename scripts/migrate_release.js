@@ -48,6 +48,7 @@ const payrollAttendanceSummaryMigrationName = '20260925_payroll_manual_attendanc
 const examOnlySpecialSubjectsMigrationName = '20260926_exam_only_special_subjects.sql';
 const accountsLeaveHalfDayMigrationName = '20260930_accounts_leave_half_day.sql';
 const accountsLeaveApplyOnlyMigrationName = '20260930_accounts_leave_apply_only.sql';
+const attendanceSchoolLocalDateMigrationName = '20261008_attendance_school_local_date.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -243,6 +244,7 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, examOnlySpecialSubjectsMigrationName, 4550926);
   await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
   await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
+  await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -446,6 +448,11 @@ export async function verifyReleaseDatabase(db) {
   if (!backupEventsTable?.name) throw new Error('Database backup events table is missing');
   const [backupSettingsTable] = await db`SELECT to_regclass('public.backup_settings') AS name`;
   if (!backupSettingsTable?.name) throw new Error('Database backup settings table is missing');
+  const [attendanceDateCheck] = await db`SELECT pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint WHERE conname = 'chk_attendance_date_past'`;
+  if (!String(attendanceDateCheck?.definition || '').includes('attendance_date_is_not_future')) {
+    throw new Error('Attendance date check still uses the database clock');
+  }
   return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine + Database Backups', freshBaseline: readReleaseBaseline().manifest.id };
 }
 
@@ -510,6 +517,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, examOnlySpecialSubjectsMigrationName, 4550926);
       await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
       await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
+      await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

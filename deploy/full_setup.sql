@@ -589,7 +589,7 @@ CREATE TABLE IF NOT EXISTS daily_attendance (
     marked_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at TIMESTAMPTZ,
-    CONSTRAINT chk_attendance_date_past CHECK (attendance_date <= current_date)
+    CONSTRAINT chk_attendance_date_past CHECK (attendance_date <= (timezone('Asia/Kolkata', now()))::date)
 );
 
 DROP TRIGGER IF EXISTS trg_attendance_updated ON daily_attendance;

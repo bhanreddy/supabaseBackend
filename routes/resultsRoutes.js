@@ -1975,7 +1975,8 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
     : 'all';
   const format = req.query.format || 'xlsx';
   if (!['xlsx', 'print'].includes(format)) return res.status(400).json({ error: 'Invalid format' });
-  const marksMode = format === 'print' ? req.query.marks_mode ?? 'original' : 'original';
+  const clientPrint = format === 'print' && req.query.renderer === 'client';
+  const marksMode = format === 'print' && !clientPrint ? req.query.marks_mode ?? 'original' : 'original';
   if (!ASSESSMENT_PRINT_MARKS_MODES.includes(marksMode)) return res.status(400).json({ error: 'Invalid marks_mode' });
   if (classId && !UUID_RE.test(classId)) return res.status(400).json({ error: 'Invalid class_id' });
   if (sectionId && !UUID_RE.test(sectionId)) return res.status(400).json({ error: 'Invalid section_id' });
@@ -2201,6 +2202,17 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       papersByClass.get(String(classSection.class_id)) || [],
       classSection.id
     );
+    if (clientPrint) {
+      // Only raw saved rows and read-only configuration cross this boundary.
+      // The frontend owns print rounding, totals, ranking and result filtering.
+      return {
+        classSection, teacherName: classSection.teacher_name, papers: sectionPapers,
+        students: [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => ({
+          ...student,
+          attendance_percentage: attendanceByStudent.get(`${classSection.id}:${student.student_id}`) ?? null,
+        })),
+      };
+    }
     const students = [...(studentsBySection.get(String(classSection.id)) || new Map()).values()].map((student) => {
       const subjects = assessmentPrintSubjects(sectionPapers, student.subjects, marksMode);
       const totals = summarizeStudentMarks({ papers: sectionPapers, subjects });
@@ -2255,11 +2267,12 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
       return res.status(400).json({ error: 'Assessment print formats are available for formative and summative assessments' });
     }
     let printSections = exportSections;
+    let formativeRows = [];
     const summativeSections = exportSections.filter((section) => usesSummativeMarksRegister(exam, section.classSection));
     if (summativeSections.length) {
       try { summativeFormativeKeys(exam); } catch (error) { return res.status(400).json({ error: error.message }); }
       const sectionIds = summativeSections.map((section) => section.classSection.id);
-      const formativeRows = await sql`
+      formativeRows = await sql`
         SELECT enrollment.class_section_id, enrollment.student_id,
           paper.subject_id, paper.id AS exam_subject_id, paper.max_marks, paper.assessment_schema,
           paper.participation_max_marks, paper.written_work_max_marks,
@@ -2292,9 +2305,15 @@ router.get('/accounts/exams/:examId/marks/export', requireAuth, requireRole('acc
         ORDER BY formative.start_date DESC NULLS LAST, formative.created_at DESC, formative.id DESC
       `;
       try {
-        printSections = exportSections.map((section) => usesSummativeMarksRegister(exam, section.classSection)
+        if (!clientPrint) printSections = exportSections.map((section) => usesSummativeMarksRegister(exam, section.classSection)
           ? prepareSummativeMarksSection(section, exam, formativeRows, rankingMethod, resultStatus, marksMode) : section);
       } catch (error) { return res.status(409).json({ error: error.message }); }
+    }
+    if (clientPrint) {
+      return sendSuccess(res, req.schoolId, {
+        print_data_version: 1, schoolName: school?.name, exam,
+        sections: exportSections, formativeRows, rankingMethod,
+      });
     }
     return sendSuccess(res, req.schoolId, buildAssessmentMarksPrint({
       schoolName: school?.name,
