@@ -213,6 +213,22 @@ test('Cross-Tenant Security: Student login QR routes strictly use JWT schoolId e
   assert.equal(req.schoolId, '101', 'QR tenant must come from JWT, never from a School B student id in the URL or body');
 });
 
+test('Cross-Tenant Security: Role login QR routes strictly use JWT schoolId even if query param differs', () => {
+  const req = {
+    method: 'POST',
+    path: '/api/v1/role-login-qr/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/generate',
+    user: { schoolId: 101, roles: ['admin'] },
+    query: { school_id: '102' },
+    body: { school_id: '102' },
+    headers: {},
+  };
+  const res = mockResponse();
+  const continued = invokeMiddleware(req, res);
+
+  assert.equal(continued, true, 'JWT-bound role QR route continues execution');
+  assert.equal(req.schoolId, '101', 'Role QR tenant must come from JWT, never from a School B account id in the URL or body');
+});
+
 test('Cross-Tenant Security: Action Center route strictly uses JWT schoolId even if query param differs', () => {
   const req = {
     method: 'GET',

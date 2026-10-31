@@ -53,7 +53,7 @@ const deriveSessionPoolerUrl = (url) => {
 };
 
 const config = {
-    port: Number(required('PORT', 3000)),
+    port: Number(process.env.X_ZOHO_CATALYST_LISTEN_PORT || required('PORT', 3000)),
     nodeEnv,
     isProduction,
     logLevel: optional('LOG_LEVEL', isProduction ? 'info' : 'debug'),
@@ -76,6 +76,7 @@ const config = {
         serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
     },
     cors: {
+        managedByCatalyst: optional('PLATFORM_MANAGED_CORS', 'false') === 'true',
         // In production, prefer an explicit allowlist (no '*').
         allowedOrigins: parseCsv(optional('ALLOWED_ORIGINS', isProduction ? '' : '*')),
     },

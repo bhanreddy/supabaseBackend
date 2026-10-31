@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import sql from '../db.js';
 import { canonicalJsonStringify } from '../utils/canonicalPayload.js';
-import { getCampusPolicy, evaluateLocationPolicy, getSchoolLocalDate, evaluateAttendanceWindow } from './campusPolicyService.js';
+import { getCampusPolicy, evaluateLocationPolicy, getSchoolLocalDate, getAttendanceDate, evaluateAttendanceWindow } from './campusPolicyService.js';
 import { verifyEcdsaSignature } from './staffDeviceService.js';
 
 const ADMIN_ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'half_day']);
@@ -47,12 +47,12 @@ export async function createAttendanceChallenge({
     err.code = windowResult.code;
     throw err;
   }
-  const attendanceDate = getSchoolLocalDate(policy.school_timezone);
+  const attendanceDate = getAttendanceDate(policy);
 
-  // 2. Serialize challenge replacement and state validation for this staff/day.
+  // 2. Serialize challenge replacement and state validation for this staff member.
   // This guarantees that concurrent taps leave exactly one usable challenge.
   return sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance-challenge:${schoolId}:${staffId}:${attendanceDate}`}, 0))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${schoolId}:${staffId}`}, 0))`;
 
     const [device] = await tx`
       SELECT id, attendance_public_key, status
@@ -163,146 +163,151 @@ export async function verifyAndRecordAttendance({
     err.code = 'MISSING_IDEMPOTENCY_KEY';
     throw err;
   }
-
-  // 1. Idempotency check: if this request was already processed, return original accepted result
-  const [existingEvent] = await sql`
-    SELECT sae.*, ac.attendance_date::text AS challenge_attendance_date,
-      sa.status AS summary_status, sa.check_in_time, sa.check_out_time
-    FROM staff_attendance_events sae
-    LEFT JOIN attendance_challenges ac ON ac.id = sae.challenge_id
-    LEFT JOIN staff_attendance sa ON sa.staff_id = sae.staff_id 
-      AND sa.school_id = sae.school_id
-      AND sa.attendance_date = ac.attendance_date
-    WHERE sae.idempotency_key = ${idempotencyKey}
-      AND sae.school_id = ${schoolId}
-      AND sae.staff_id = ${staffId}
-    LIMIT 1
-  `;
-
-  if (existingEvent) {
-    return {
-      success: true,
-      isIdempotentReplay: true,
-      action: existingEvent.action,
-      attendanceDate: existingEvent.challenge_attendance_date || getSchoolLocalDate('Asia/Kolkata', new Date(existingEvent.event_timestamp)),
-      eventTimestamp: existingEvent.event_timestamp,
-      verificationStatus: existingEvent.verification_status,
-      summary: {
-        status: existingEvent.summary_status,
-        checkInTime: existingEvent.check_in_time,
-        checkOutTime: existingEvent.check_out_time,
-      },
-    };
-  }
-
-  // 2. Fetch challenge and active approved device
-  const [challenge] = await sql`
-    SELECT *, attendance_date::text AS attendance_date
-    FROM attendance_challenges
-    WHERE id = ${challengeId}
-      AND school_id = ${schoolId}
-      AND staff_id = ${staffId}
-    LIMIT 1
-  `;
-
-  if (!challenge) {
-    const err = new Error('Attendance challenge not found');
-    err.code = 'CHALLENGE_NOT_FOUND';
-    throw err;
-  }
-
-  if (challenge.consumed_at) {
-    const err = new Error('Attendance challenge has already been consumed (replay rejected)');
-    err.code = 'CHALLENGE_ALREADY_USED';
-    throw err;
-  }
-
-  if (new Date(challenge.expires_at).getTime() < Date.now()) {
-    const err = new Error('Attendance challenge has expired. Please try again.');
-    err.code = 'CHALLENGE_EXPIRED';
-    throw err;
-  }
-
-  const [device] = await sql`
-    SELECT *
-    FROM staff_device_registrations
-    WHERE id = ${challenge.registration_id}
-      AND canonical_person_id = ${canonicalPersonId}
-      AND school_id = ${schoolId}
-      AND staff_id = ${staffId}
-      AND status = 'approved'
-    LIMIT 1
-  `;
-
-  if (!device) {
-    const err = new Error('Device registration is not approved or has been revoked');
-    err.code = 'DEVICE_NOT_APPROVED';
-    throw err;
-  }
-
-  // 3. Verify canonical payload content and structure
-  if (!payload || typeof payload !== 'object') {
-    const err = new Error('Invalid attendance payload');
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.length > 200 ||
+      typeof challengeId !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(challengeId) ||
+      !payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      typeof signature !== 'string' || signature.length > 2048) {
+    const err = new Error('Invalid attendance verification request');
     err.code = 'INVALID_PAYLOAD';
     throw err;
   }
 
-  if (
-    payload.action !== challenge.action ||
-    payload.challenge_id !== challenge.id ||
-    payload.registration_id !== device.id ||
-    Number(payload.school_id) !== Number(schoolId) ||
-    String(payload.staff_id) !== String(staffId) ||
-    payload.idempotency_key !== idempotencyKey ||
-    payload.policy_version !== challenge.policy_version
-  ) {
-    const err = new Error('Payload attributes do not match challenge context');
-    err.code = 'PAYLOAD_CONTEXT_MISMATCH';
-    throw err;
-  }
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${schoolId}:${staffId}`}, 0))`;
+    // 1. Idempotency check: if this request was already processed, return original accepted result
+    const [existingEvent] = await tx`
+      SELECT sae.*, ac.attendance_date::text AS challenge_attendance_date,
+        sa.status AS summary_status, sa.check_in_time, sa.check_out_time
+      FROM staff_attendance_events sae
+      LEFT JOIN attendance_challenges ac ON ac.id = sae.challenge_id
+      LEFT JOIN staff_attendance sa ON sa.staff_id = sae.staff_id
+        AND sa.school_id = sae.school_id
+        AND sa.attendance_date = ac.attendance_date
+      WHERE sae.idempotency_key = ${idempotencyKey}
+        AND sae.school_id = ${schoolId}
+        AND sae.staff_id = ${staffId}
+      LIMIT 1
+    `;
 
-  // 4. Verify cryptographic signature over deterministic canonical JSON
-  const canonicalString = canonicalJsonStringify(payload);
-  const signatureValid = verifyEcdsaSignature(
-    device.attendance_public_key,
-    canonicalString,
-    signature
-  );
+    if (existingEvent) {
+      if (existingEvent.challenge_id !== challengeId || existingEvent.action !== payload.action ||
+          payload.challenge_id !== challengeId || payload.idempotency_key !== idempotencyKey) {
+        const err = new Error('This idempotency key belongs to a different attendance request');
+        err.code = 'IDEMPOTENCY_CONFLICT';
+        throw err;
+      }
+      return {
+        success: true,
+        isIdempotentReplay: true,
+        action: existingEvent.action,
+        attendanceDate: existingEvent.challenge_attendance_date || getSchoolLocalDate('Asia/Kolkata', new Date(existingEvent.event_timestamp)),
+        eventTimestamp: existingEvent.event_timestamp,
+        verificationStatus: existingEvent.verification_status,
+        summary: {
+          status: existingEvent.summary_status,
+          checkInTime: existingEvent.check_in_time,
+          checkOutTime: existingEvent.check_out_time,
+        },
+      };
+    }
 
-  if (!signatureValid) {
-    const err = new Error('Cryptographic signature verification failed');
-    err.code = 'INVALID_SIGNATURE';
-    throw err;
-  }
+    // 2. Fetch challenge and active approved device
+    const [challenge] = await tx`
+      SELECT *, attendance_date::text AS attendance_date
+      FROM attendance_challenges
+      WHERE id = ${challengeId}
+        AND school_id = ${schoolId}
+        AND staff_id = ${staffId}
+      LIMIT 1
+    `;
 
-  // 5. Evaluate geofence policy
-  const policy = await getCampusPolicy(schoolId, payload.campus_id);
-  if (!policy.id || String(policy.id) !== String(payload.campus_id)) {
-    const err = new Error('The signed campus does not match an active school campus');
-    err.code = 'PAYLOAD_CONTEXT_MISMATCH';
-    throw err;
-  }
-  const windowResult = evaluateAttendanceWindow(challenge.action, policy);
-  if (!windowResult.ok) {
-    const err = new Error(windowResult.message);
-    err.code = windowResult.code;
-    throw err;
-  }
-  const locationResult = evaluateLocationPolicy(payload.location, policy);
+    if (!challenge) {
+      const err = new Error('Attendance challenge not found');
+      err.code = 'CHALLENGE_NOT_FOUND';
+      throw err;
+    }
 
-  if (!locationResult.ok) {
-    const err = new Error(locationResult.message);
-    err.code = locationResult.code;
-    err.details = locationResult;
-    throw err;
-  }
+    if (challenge.consumed_at) {
+      const err = new Error('Attendance challenge has already been consumed (replay rejected)');
+      err.code = 'CHALLENGE_ALREADY_USED';
+      throw err;
+    }
 
-  const attendanceDate = challenge.attendance_date;
+    if (new Date(challenge.expires_at).getTime() < Date.now()) {
+      const err = new Error('Attendance challenge has expired. Please try again.');
+      err.code = 'CHALLENGE_EXPIRED';
+      throw err;
+    }
 
-  // 6. Execute atomic database transaction
-  return await sql.begin(async (tx) => {
-    // Serialize state transitions even when a daily summary row does not exist.
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${staffId}:${attendanceDate}`}, 0))`;
+    const [device] = await tx`
+      SELECT *
+      FROM staff_device_registrations
+      WHERE id = ${challenge.registration_id}
+        AND canonical_person_id = ${canonicalPersonId}
+        AND school_id = ${schoolId}
+        AND staff_id = ${staffId}
+        AND status = 'approved'
+      LIMIT 1
+    `;
+
+    if (!device) {
+      const err = new Error('Device registration is not approved or has been revoked');
+      err.code = 'DEVICE_NOT_APPROVED';
+      throw err;
+    }
+
+    // 3. Bind the signed payload to the authenticated challenge.
+    if (
+      payload.action !== challenge.action ||
+      payload.challenge_id !== challenge.id ||
+      payload.registration_id !== device.id ||
+      Number(payload.school_id) !== Number(schoolId) ||
+      String(payload.staff_id) !== String(staffId) ||
+      payload.idempotency_key !== idempotencyKey ||
+      payload.policy_version !== challenge.policy_version
+    ) {
+      const err = new Error('Payload attributes do not match challenge context');
+      err.code = 'PAYLOAD_CONTEXT_MISMATCH';
+      throw err;
+    }
+
+    // 4. Verify cryptographic signature over deterministic canonical JSON
+    const canonicalString = canonicalJsonStringify(payload);
+    const signatureValid = verifyEcdsaSignature(
+      device.attendance_public_key,
+      canonicalString,
+      signature
+    );
+
+    if (!signatureValid) {
+      const err = new Error('Cryptographic signature verification failed');
+      err.code = 'INVALID_SIGNATURE';
+      throw err;
+    }
+
+    // 5. Evaluate geofence policy
+    const policy = await getCampusPolicy(schoolId, payload.campus_id, tx);
+    if (!policy.id || String(policy.id) !== String(payload.campus_id)) {
+      const err = new Error('The signed campus does not match an active school campus');
+      err.code = 'PAYLOAD_CONTEXT_MISMATCH';
+      throw err;
+    }
+    const windowResult = evaluateAttendanceWindow(challenge.action, policy);
+    if (!windowResult.ok) {
+      const err = new Error(windowResult.message);
+      err.code = windowResult.code;
+      throw err;
+    }
+    const locationResult = evaluateLocationPolicy(payload.location, policy);
+
+    if (!locationResult.ok) {
+      const err = new Error(locationResult.message);
+      err.code = locationResult.code;
+      err.details = locationResult;
+      throw err;
+    }
+
+    const attendanceDate = challenge.attendance_date;
 
     const [lockedDevice] = await tx`
       SELECT id FROM staff_device_registrations
@@ -329,6 +334,11 @@ export async function verifyAndRecordAttendance({
     // Lock waits can outlive the challenge or GPS fix. Recheck against the
     // actual time after locking, and keep school dates as DATE text throughout.
     const serverNow = new Date();
+    if (attendanceDate !== getAttendanceDate(lockedPolicy, serverNow)) {
+      const err = new Error('The school attendance day changed. Please try again.');
+      err.code = 'CHALLENGE_EXPIRED';
+      throw err;
+    }
     const lockedWindowResult = evaluateAttendanceWindow(challenge.action, lockedPolicy, serverNow);
     const lockedLocationResult = evaluateLocationPolicy(payload.location, lockedPolicy, serverNow);
     const lockedFailure = !lockedWindowResult.ok ? lockedWindowResult : lockedLocationResult;
@@ -337,31 +347,6 @@ export async function verifyAndRecordAttendance({
       err.code = lockedFailure.code;
       err.details = lockedFailure;
       throw err;
-    }
-
-    const [idempotentEvent] = await tx`
-      SELECT sae.*, sa.status AS summary_status, sa.check_in_time, sa.check_out_time
-      FROM staff_attendance_events sae
-      LEFT JOIN staff_attendance sa ON sa.staff_id = sae.staff_id
-        AND sa.school_id = sae.school_id AND sa.attendance_date = ${attendanceDate}::date
-      WHERE sae.idempotency_key = ${idempotencyKey}
-        AND sae.school_id = ${schoolId} AND sae.staff_id = ${staffId}
-      LIMIT 1
-    `;
-    if (idempotentEvent) {
-      return {
-        success: true,
-        isIdempotentReplay: true,
-        action: idempotentEvent.action,
-        attendanceDate,
-        eventTimestamp: idempotentEvent.event_timestamp,
-        verificationStatus: idempotentEvent.verification_status,
-        summary: {
-          status: idempotentEvent.summary_status,
-          checkInTime: idempotentEvent.check_in_time,
-          checkOutTime: idempotentEvent.check_out_time,
-        },
-      };
     }
 
     // Consume exactly once and recheck expiry in the same transaction.
@@ -457,6 +442,14 @@ export async function verifyAndRecordAttendance({
         )
         ON CONFLICT (staff_id, attendance_date) DO UPDATE SET
           status = 'present',
+          deleted_at = NULL,
+          check_out_time = NULL,
+          check_out_event_id = NULL,
+          is_finalized = false,
+          finalized_by = NULL,
+          finalized_at = NULL,
+          marked_at = EXCLUDED.marked_at,
+          marked_by = NULL,
           check_in_time = ${serverNow},
           check_in_event_id = ${event.id},
           verification_source = 'mobile_v2',
@@ -554,7 +547,7 @@ export async function recordAdminAttendanceAction({
   }
 
   return await sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${targetStaffId}:${attendanceDate}`}, 0))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${schoolId}:${targetStaffId}`}, 0))`;
 
     const [priorEvent] = await tx`
       SELECT id FROM staff_attendance_events
@@ -696,7 +689,7 @@ export async function recordAdminAttendanceBatch({
   return sql.begin(async (tx) => {
     const results = [];
     for (const row of normalized) {
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${row.staffId}:${attendanceDate}`}, 0))`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${schoolId}:${row.staffId}`}, 0))`;
       const rowKey = `${idempotencyKey}:${row.staffId}`;
       const [priorEvent] = await tx`
         SELECT id FROM staff_attendance_events
@@ -807,7 +800,7 @@ export async function reopenStaffAttendance({
   }
 
   return await sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${schoolId}:${targetStaffId}:${attendanceDate}`}, 0))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${schoolId}:${targetStaffId}`}, 0))`;
     const [priorEvent] = await tx`
       SELECT id FROM staff_attendance_events
       WHERE school_id = ${schoolId} AND staff_id = ${targetStaffId}
@@ -884,32 +877,21 @@ export async function reopenStaffAttendance({
  */
 export async function getAuthoritativeTodayAttendance(schoolId, staffId, canonicalPersonId, devicePublicKey = null) {
   const policy = await getCampusPolicy(schoolId);
-  const attendanceDate = getSchoolLocalDate(policy.school_timezone);
+  const attendanceDate = getAttendanceDate(policy);
 
-  // 1. Get approved device registration
-  const [device] = await sql`
-    SELECT id, device_model, status, approved_at
-    FROM staff_device_registrations
-    WHERE canonical_person_id = ${canonicalPersonId}
-      AND school_id = ${schoolId}
-      AND staff_id = ${staffId}
-      AND device_session_public_key = ${devicePublicKey}
-      AND status = 'approved'
-    LIMIT 1
-  `;
-
-  // 2. Resolve this phone's latest non-approved registration so the client can
-  // reconcile approval, rejection, or revocation into protected local state.
-  const [currentDevice] = device ? [null] : await sql`
+  // Prefer approval if historical registrations reused the same key; otherwise
+  // return the latest state without a second database round trip.
+  const [currentDevice] = await sql`
     SELECT id, device_model, status, created_at
     FROM staff_device_registrations
     WHERE canonical_person_id = ${canonicalPersonId}
       AND school_id = ${schoolId}
       AND staff_id = ${staffId}
       AND device_session_public_key = ${devicePublicKey}
-    ORDER BY created_at DESC
+    ORDER BY (status = 'approved') DESC, created_at DESC
     LIMIT 1
   `;
+  const device = currentDevice?.status === 'approved' ? currentDevice : null;
 
   // 3. Get today's daily summary
   const [summary] = await sql`

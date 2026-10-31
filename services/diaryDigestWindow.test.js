@@ -3,13 +3,16 @@ import test, { mock } from 'node:test';
 import postgres from 'postgres';
 
 mock.module('../db.js', { defaultExport: async () => [] });
-mock.module('../utils/logger.js', { defaultExport: {} });
+mock.module('../utils/logger.js', { defaultExport: { error({ err }) { throw err; } } });
 mock.module('./notificationService.js', { namedExports: { sendNotificationToUsers: async () => {} } });
+mock.module('./ai/translationService.js', { namedExports: { translateDiaryFields: async (fields) => fields } });
+mock.module('./smartDiary/photoHistory.js', { namedExports: { recordDiaryPhotoHistory: async () => {} } });
 const { getDailyDiaryDigestRecipients } = await import('./diaryDigestService.js');
+const { notifyDiaryEntriesAfterCutoff } = await import('./smartDiary/publishService.js');
 
 const databaseUrl = process.env.DIARY_DIGEST_TEST_DATABASE_URL;
 
-test('digest SQL includes the 5:00–5:30 PM uploads and carries later uploads into the next evening', {
+test('digest SQL includes early posts and failed late sends, and excludes successful immediate sends', {
   skip: !databaseUrl && 'Set DIARY_DIGEST_TEST_DATABASE_URL to an isolated local PostgreSQL database',
 }, async () => {
   assert.ok(['127.0.0.1', 'localhost'].includes(new URL(databaseUrl).hostname), 'Use only a local test database');
@@ -18,7 +21,7 @@ test('digest SQL includes the 5:00–5:30 PM uploads and carries later uploads i
     await db.begin(async (tx) => {
       await tx.unsafe(`
         CREATE TEMP TABLE schools (id int, is_active boolean) ON COMMIT DROP;
-        CREATE TEMP TABLE diary_entries (school_id int, class_section_id text, created_at timestamptz, updated_at timestamptz, notification_sent_at timestamptz, deleted_at timestamptz) ON COMMIT DROP;
+        CREATE TEMP TABLE diary_entries (school_id int, class_section_id text, created_at timestamptz, updated_at timestamptz, notification_sent_at timestamptz, deleted_at timestamptz, id text) ON COMMIT DROP;
         CREATE TEMP TABLE students (id text, school_id int, person_id text, deleted_at timestamptz) ON COMMIT DROP;
         CREATE TEMP TABLE student_enrollments (student_id text, school_id int, class_section_id text, status text, deleted_at timestamptz, start_date date, end_date date) ON COMMIT DROP;
         CREATE TEMP TABLE parents (id text, school_id int, person_id text, deleted_at timestamptz) ON COMMIT DROP;
@@ -30,7 +33,7 @@ test('digest SQL includes the 5:00–5:30 PM uploads and carries later uploads i
       async function seed(key, postedAt, { schoolId = 17, notified = false, deleted = false, active = true } = {}) {
         await tx`INSERT INTO diary_entries VALUES (
           ${schoolId}, ${key}, ${postedAt}, ${postedAt},
-          ${notified ? postedAt : null}, ${deleted ? postedAt : null}
+          ${notified ? postedAt : null}, ${deleted ? postedAt : null}, ${key}
         )`;
         await tx`INSERT INTO students VALUES (${key}, ${schoolId}, ${`student-person-${key}`}, NULL)`;
         await tx`INSERT INTO student_enrollments VALUES (${key}, ${schoolId}, ${key}, ${active ? 'active' : 'inactive'}, NULL, '2026-06-01', NULL)`;
@@ -76,6 +79,34 @@ test('digest SQL includes the 5:00–5:30 PM uploads and carries later uploads i
         { school_id: 17, user_id: 'parent-late-today' },
         { school_id: 17, user_id: 'student-late-today' },
       ]);
+
+      const notifications = [];
+      await notifyDiaryEntriesAfterCutoff(17, [{ id: 'late-today', class_section_id: 'late-today' }], {
+        now: new Date('2026-09-28T12:01:00Z'),
+        db: tx,
+        notify: async (...args) => {
+          notifications.push(args);
+          return { successCount: 2, failureCount: 0 };
+        },
+      });
+      assert.equal(notifications.length, 1);
+      assert.deepEqual(notifications[0][0].sort(), ['parent-late-today', 'student-late-today']);
+      assert.deepEqual(await recipientsAt('2026-09-29T12:00:00Z'), [], 'Successful late alerts must not repeat in the next digest');
+
+      // An edit made during delivery remains pending for a subsequent alert.
+      await tx`UPDATE diary_entries SET notification_sent_at = NULL WHERE id = 'late-today'`;
+      await notifyDiaryEntriesAfterCutoff(17, [{ id: 'late-today', class_section_id: 'late-today' }], {
+        now: new Date('2026-09-28T12:02:00Z'),
+        db: tx,
+        notify: async () => {
+          await tx`UPDATE diary_entries SET updated_at = '2026-09-28T12:02:01Z' WHERE id = 'late-today'`;
+          return { successCount: 2, failureCount: 0 };
+        },
+      });
+      assert.deepEqual(await recipientsAt('2026-09-29T12:00:00Z'), [
+        { school_id: 17, user_id: 'parent-late-today' },
+        { school_id: 17, user_id: 'student-late-today' },
+      ], 'An immediate send must not consume a newer edit');
     });
   } finally {
     await db.end();

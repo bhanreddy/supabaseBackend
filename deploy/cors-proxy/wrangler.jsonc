@@ -1,0 +1,13 @@
+{
+  "name": "simsapi",
+  "account_id": "a8cafe576c35cf0f08efd22b81e39f6c",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-14",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "simsapi.nexsyrus.com", "custom_domain": true }
+  ],
+  "vars": {
+    "UPSTREAM_URL": "https://simsapi-50046891665.development.catalystappsail.in"
+  }
+}

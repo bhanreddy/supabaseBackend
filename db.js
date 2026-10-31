@@ -32,12 +32,16 @@ const sql = postgres(config.databaseUrl, {
 });
 
 // 2. Supabase Clients
-export const supabase = createClient(config.supabase.url, config.supabase.anonKey, {
+export function createRequestAuthClient() {
+  return createClient(config.supabase.url, config.supabase.anonKey, {
     auth: {
         persistSession: false,
         autoRefreshToken: false
     }
-});
+  });
+}
+
+export const supabase = createRequestAuthClient();
 
 export const supabaseAdmin = createClient(config.supabase.url, config.supabase.serviceRoleKey, {
     auth: {

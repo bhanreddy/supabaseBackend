@@ -13,23 +13,24 @@ export function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const bounded = Math.min(1, Math.max(0, a));
+  const c = 2 * Math.atan2(Math.sqrt(bounded), Math.sqrt(1 - bounded));
   return R * c;
 }
 
 /**
  * Fetch active campus policy for a school.
  */
-export async function getCampusPolicy(schoolId, campusId = null) {
+export async function getCampusPolicy(schoolId, campusId = null, query = sql) {
   let rows;
   if (campusId) {
-    rows = await sql`
+    rows = await query`
       SELECT * FROM campus_attendance_policies
       WHERE id = ${campusId} AND school_id = ${schoolId} AND is_active = true
       LIMIT 1
     `;
   } else {
-    rows = await sql`
+    rows = await query`
       SELECT * FROM campus_attendance_policies
       WHERE school_id = ${schoolId} AND is_active = true
       ORDER BY created_at ASC
@@ -68,6 +69,17 @@ export async function getCampusPolicy(schoolId, campusId = null) {
  * Evaluates coordinates, freshness, reported accuracy, and geofence boundary uncertainty.
  */
 export function evaluateLocationPolicy(location, policy, serverNow = new Date()) {
+  // PostgreSQL NUMERIC values arrive as strings. Invalid or missing stored
+  // configuration must never turn a distance comparison into NaN > radius.
+  const fields = ['center_latitude', 'center_longitude', 'radius_meters',
+    'max_location_age_seconds', 'max_accuracy_meters'];
+  if (!policy || fields.some((field) => policy[field] == null ||
+      String(policy[field]).trim() === '' || !Number.isFinite(Number(policy[field]))) ||
+      Math.abs(Number(policy.center_latitude)) > 90 || Math.abs(Number(policy.center_longitude)) > 180 ||
+      Number(policy.radius_meters) <= 0 || Number(policy.max_location_age_seconds) <= 0 ||
+      Number(policy.max_accuracy_meters) <= 0) {
+    return { ok: false, code: 'INVALID_CAMPUS_POLICY', message: 'The campus location rules are invalid. Contact the school administrator.' };
+  }
   if (!location || typeof location !== 'object') {
     return { ok: false, code: 'LOCATION_MISSING', message: 'Location evidence is missing' };
   }
@@ -94,13 +106,13 @@ export function evaluateLocationPolicy(location, policy, serverNow = new Date())
   }
 
   // 3. Location freshness
-  const locationTime = Number(timestamp);
-  if (!Number.isFinite(locationTime)) {
+  const locationTime = timestamp;
+  if (typeof locationTime !== 'number' || !Number.isFinite(locationTime) || locationTime <= 0) {
     return { ok: false, code: 'INVALID_TIMESTAMP', message: 'Invalid location timestamp' };
   }
 
   const serverTimeMs = serverNow.getTime();
-  const maxAgeMs = (policy.max_location_age_seconds || 30) * 1000;
+  const maxAgeMs = Number(policy.max_location_age_seconds) * 1000;
   const clockSkewAllowanceMs = 5000; // max 5 seconds into future
 
   if (locationTime > serverTimeMs + clockSkewAllowanceMs) {
@@ -117,7 +129,7 @@ export function evaluateLocationPolicy(location, policy, serverNow = new Date())
   }
 
   // 4. Accuracy validation
-  const maxAccuracy = Number(policy.max_accuracy_meters) || 50.0;
+  const maxAccuracy = Number(policy.max_accuracy_meters);
   if (typeof accuracy !== 'number' || !Number.isFinite(accuracy) || accuracy <= 0) {
     return { ok: false, code: 'INVALID_ACCURACY', message: 'Reported GPS accuracy is invalid' };
   }
@@ -133,7 +145,7 @@ export function evaluateLocationPolicy(location, policy, serverNow = new Date())
   // 5. Geofence evaluation with boundary uncertainty check
   const campusLat = Number(policy.center_latitude);
   const campusLon = Number(policy.center_longitude);
-  const radius = Number(policy.radius_meters) || 100.0;
+  const radius = Number(policy.radius_meters);
 
   const distanceMeters = calculateDistanceMeters(latitude, longitude, campusLat, campusLon);
 
@@ -182,11 +194,11 @@ export function getSchoolLocalDate(timezone = 'Asia/Kolkata', now = new Date()) 
 }
 
 function timeToMinutes(value) {
-  const match = String(value || '').match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  const match = String(value || '').match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/);
   if (!match) return null;
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
-  if (hours > 23 || minutes > 59) return null;
+  if (hours > 23 || minutes > 59 || Number(match[3] || 0) > 59) return null;
   return hours * 60 + minutes;
 }
 
@@ -196,14 +208,15 @@ export function validateCampusPolicyUpdate(input) {
   const numberInRange = (field, min, max) => {
     if (input[field] === undefined || input[field] === null) return;
     const value = Number(input[field]);
-    if (!Number.isFinite(value) || value < min || value > max) {
+    if (!['number', 'string'].includes(typeof input[field]) || String(input[field]).trim() === '' ||
+        !Number.isFinite(value) || value < min || value > max) {
       errors.push(`${field} must be between ${min} and ${max}`);
     }
   };
 
   if (input.campus_name !== undefined) {
     const name = String(input.campus_name).trim();
-    if (!name || name.length > 120) errors.push('campus_name must contain 1 to 120 characters');
+    if (typeof input.campus_name !== 'string' || !name || name.length > 120) errors.push('campus_name must contain 1 to 120 characters');
   }
   if (input.enforcement_mode !== undefined &&
       !['disabled', 'pilot', 'optional', 'enforced'].includes(input.enforcement_mode)) {
@@ -236,6 +249,25 @@ export function validateCampusPolicyUpdate(input) {
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+/** After-midnight attendance belongs to the day the overnight window opened. */
+export function getAttendanceDate(policy, now = new Date()) {
+  const timezone = policy.school_timezone || 'Asia/Kolkata';
+  const zoned = toZonedTime(now, timezone);
+  const minutes = zoned.getHours() * 60 + zoned.getMinutes();
+  const grace = Math.max(0, Number(policy.grace_period_minutes) || 0);
+  const overnight = ['check_in', 'check_out'].some((action) => {
+    const start = timeToMinutes(policy[`${action}_start_time`]);
+    const end = timeToMinutes(policy[`${action}_end_time`]);
+    return start != null && end != null && (start > end || end + grace >= 1440) &&
+      minutes < start && minutes <= (end + grace) % 1440;
+  });
+  const date = getSchoolLocalDate(timezone, now);
+  if (!overnight) return date;
+  const previous = new Date(`${date}T00:00:00Z`);
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  return previous.toISOString().slice(0, 10);
 }
 
 /** Enforce rollout and school-local check-in/check-out windows. */

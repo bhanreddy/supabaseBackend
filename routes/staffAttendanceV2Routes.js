@@ -142,6 +142,7 @@ router.post('/verify', requireAuth, asyncHandler(async (req, res) => {
       err.code === 'INVALID_ACCURACY' ||
       err.code === 'MOCK_LOCATION_DETECTED' ||
       err.code === 'INVALID_COORDINATES' ||
+      err.code === 'INVALID_CAMPUS_POLICY' ||
       err.code === 'COORDINATES_OUT_OF_BOUNDS' ||
       err.code === 'OUTSIDE_ATTENDANCE_WINDOW' ||
       err.code === 'INVALID_ATTENDANCE_WINDOW'
@@ -172,7 +173,7 @@ router.post('/verify', requireAuth, asyncHandler(async (req, res) => {
       return res.status(400).json({ error: err.message, code: err.code });
     }
 
-    if (err.code === 'ATTENDANCE_FINALIZED' || err.code === 'ALREADY_CHECKED_IN' || err.code === 'ALREADY_CHECKED_OUT' || err.code === 'CHECK_IN_REQUIRED' || err.code === 'POLICY_CHANGED') {
+    if (err.code === 'ATTENDANCE_FINALIZED' || err.code === 'ALREADY_CHECKED_IN' || err.code === 'ALREADY_CHECKED_OUT' || err.code === 'CHECK_IN_REQUIRED' || err.code === 'POLICY_CHANGED' || err.code === 'IDEMPOTENCY_CONFLICT') {
       return res.status(409).json({ error: err.message, code: err.code });
     }
 
@@ -511,56 +512,74 @@ router.put('/admin/policy', requirePermission('staff_attendance.manage'), asyncH
     return res.status(400).json({ error: 'Invalid attendance policy', details: validation.errors });
   }
 
-  const [existing] = await sql`
-    SELECT id FROM campus_attendance_policies WHERE school_id = ${req.schoolId} AND is_active = true ORDER BY created_at ASC LIMIT 1
-  `;
+  try {
+    const updated = await sql.begin(async (tx) => {
+      // Serialize first creation as well as updates: all clients must use the
+      // same active policy, and the audit must commit with the configuration.
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`campus-policy:${req.schoolId}`}, 0))`;
+      const [existing] = await tx`
+        SELECT * FROM campus_attendance_policies WHERE school_id = ${req.schoolId} AND is_active = true ORDER BY created_at ASC LIMIT 1
+      `;
 
-  if (!existing && (center_latitude == null || center_longitude == null)) {
-    return res.status(400).json({ error: 'Explicit campus latitude and longitude are required for a new policy' });
+      if (!existing && (center_latitude == null || center_longitude == null)) {
+        const err = new Error('Explicit campus latitude and longitude are required for a new policy');
+        err.code = 'INVALID_CAMPUS_POLICY';
+        throw err;
+      }
+
+      let updated;
+      if (existing) {
+        [updated] = await tx`
+          UPDATE campus_attendance_policies SET
+            campus_name = COALESCE(${campus_name}, campus_name),
+            center_latitude = COALESCE(${center_latitude}, center_latitude),
+            center_longitude = COALESCE(${center_longitude}, center_longitude),
+            radius_meters = COALESCE(${radius_meters}, radius_meters),
+            max_location_age_seconds = COALESCE(${max_location_age_seconds}, max_location_age_seconds),
+            max_accuracy_meters = COALESCE(${max_accuracy_meters}, max_accuracy_meters),
+            enforcement_mode = COALESCE(${enforcement_mode}, enforcement_mode),
+            check_in_start_time = COALESCE(${check_in_start_time}, check_in_start_time),
+            check_in_end_time = COALESCE(${check_in_end_time}, check_in_end_time),
+            check_out_start_time = COALESCE(${check_out_start_time}, check_out_start_time),
+            check_out_end_time = COALESCE(${check_out_end_time}, check_out_end_time),
+            grace_period_minutes = COALESCE(${grace_period_minutes}, grace_period_minutes),
+            school_timezone = COALESCE(${school_timezone}, school_timezone),
+            challenge_expiry_seconds = COALESCE(${challenge_expiry_seconds}, challenge_expiry_seconds),
+            policy_version = md5(random()::text || clock_timestamp()::text),
+            updated_at = now()
+          WHERE id = ${existing.id}
+          RETURNING *
+        `;
+      } else {
+        [updated] = await tx`
+          INSERT INTO campus_attendance_policies (
+            school_id, campus_name, center_latitude, center_longitude,
+            radius_meters, max_location_age_seconds, max_accuracy_meters,
+            enforcement_mode, check_in_start_time, check_in_end_time,
+            check_out_start_time, check_out_end_time, grace_period_minutes, school_timezone, challenge_expiry_seconds
+          ) VALUES (
+            ${req.schoolId}, ${campus_name ?? 'Main Campus'}, ${center_latitude ?? 17.385044}, ${center_longitude ?? 78.486671},
+            ${radius_meters ?? 150.0}, ${max_location_age_seconds ?? 30}, ${max_accuracy_meters ?? 50.0},
+            ${enforcement_mode ?? 'disabled'}, ${check_in_start_time ?? '07:30'}, ${check_in_end_time ?? '10:00'},
+            ${check_out_start_time ?? '15:30'}, ${check_out_end_time ?? '19:00'}, ${grace_period_minutes ?? 15},
+            ${school_timezone ?? 'Asia/Kolkata'}, ${challenge_expiry_seconds ?? 60}
+          )
+          RETURNING *
+        `;
+      }
+
+      await tx`
+        INSERT INTO staff_attendance_audit_logs (school_id, actor_id, action, reason, previous_state, new_state)
+        VALUES (${req.schoolId}, ${req.user.internal_id || req.user.id}, 'CAMPUS_POLICY_UPDATED',
+          'Campus attendance rules updated', ${sql.json(existing || {})}, ${sql.json(updated)})
+      `;
+      return updated;
+    });
+    return sendSuccess(res, req.schoolId, updated);
+  } catch (err) {
+    if (err.code === 'INVALID_CAMPUS_POLICY') return res.status(400).json({ error: err.message, code: err.code });
+    throw err;
   }
-
-  let updated;
-  if (existing) {
-    [updated] = await sql`
-      UPDATE campus_attendance_policies SET
-        campus_name = COALESCE(${campus_name}, campus_name),
-        center_latitude = COALESCE(${center_latitude}, center_latitude),
-        center_longitude = COALESCE(${center_longitude}, center_longitude),
-        radius_meters = COALESCE(${radius_meters}, radius_meters),
-        max_location_age_seconds = COALESCE(${max_location_age_seconds}, max_location_age_seconds),
-        max_accuracy_meters = COALESCE(${max_accuracy_meters}, max_accuracy_meters),
-        enforcement_mode = COALESCE(${enforcement_mode}, enforcement_mode),
-        check_in_start_time = COALESCE(${check_in_start_time}, check_in_start_time),
-        check_in_end_time = COALESCE(${check_in_end_time}, check_in_end_time),
-        check_out_start_time = COALESCE(${check_out_start_time}, check_out_start_time),
-        check_out_end_time = COALESCE(${check_out_end_time}, check_out_end_time),
-        grace_period_minutes = COALESCE(${grace_period_minutes}, grace_period_minutes),
-        school_timezone = COALESCE(${school_timezone}, school_timezone),
-        challenge_expiry_seconds = COALESCE(${challenge_expiry_seconds}, challenge_expiry_seconds),
-        policy_version = md5(random()::text || clock_timestamp()::text),
-        updated_at = now()
-      WHERE id = ${existing.id}
-      RETURNING *
-    `;
-  } else {
-    [updated] = await sql`
-      INSERT INTO campus_attendance_policies (
-        school_id, campus_name, center_latitude, center_longitude,
-        radius_meters, max_location_age_seconds, max_accuracy_meters,
-        enforcement_mode, check_in_start_time, check_in_end_time,
-        check_out_start_time, check_out_end_time, grace_period_minutes, school_timezone, challenge_expiry_seconds
-      ) VALUES (
-        ${req.schoolId}, ${campus_name ?? 'Main Campus'}, ${center_latitude ?? 17.385044}, ${center_longitude ?? 78.486671},
-        ${radius_meters ?? 150.0}, ${max_location_age_seconds ?? 30}, ${max_accuracy_meters ?? 50.0},
-        ${enforcement_mode ?? 'disabled'}, ${check_in_start_time ?? '07:30'}, ${check_in_end_time ?? '10:00'},
-        ${check_out_start_time ?? '15:30'}, ${check_out_end_time ?? '19:00'}, ${grace_period_minutes ?? 15},
-        ${school_timezone ?? 'Asia/Kolkata'}, ${challenge_expiry_seconds ?? 60}
-      )
-      RETURNING *
-    `;
-  }
-
-  return sendSuccess(res, req.schoolId, updated);
 }));
 
 /**
@@ -628,7 +647,7 @@ router.post('/admin/exceptions/:id/review', requirePermission('staff_attendance.
       err.code = 'SELF_MODIFICATION_FORBIDDEN';
       throw err;
     }
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${req.schoolId}:${request.staff_id}:${request.attendance_date}`}, 0))`;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-attendance:${req.schoolId}:${request.staff_id}`}, 0))`;
 
     const [reviewed] = await tx`
       UPDATE staff_attendance_exceptions

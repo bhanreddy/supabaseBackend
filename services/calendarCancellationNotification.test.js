@@ -150,3 +150,26 @@ test('diary notifications use only the dedicated sound in every delivery payload
     assert.equal(message.data.deepLink, '/Screen/diary');
   }
 });
+
+for (const [type, sound] of [
+  ['LEAVE_APPROVED', 'voice_alert'],
+  ['MESSAGE_RECEIVED', 'voice_alert'],
+  ['NOTICE_ADMIN_STUDENT', 'notification_default'],
+  ['POPUP_ANNOUNCEMENT', 'notification_default'],
+]) {
+  test(`${type} sends the correct sound and channel for all delivery modes`, async () => {
+    await sendNotificationToUsers(recipients.map(({ user_id }) => user_id), type, {
+      message: 'School update',
+    }, { schoolId });
+
+    assert.deepEqual(state.errors, []);
+    assert.equal(state.messages.length, 2);
+    for (const message of state.messages) {
+      assert.equal(message.android.notification.channelId, `${sound}_custom`);
+      assert.equal(message.android.notification.sound, sound);
+      assert.equal(message.apns.payload.aps.sound, `${sound}.wav`);
+      assert.equal(message.data.channelId, `${sound}_custom`);
+      assert.equal(message.data.sound, sound);
+    }
+  });
+}

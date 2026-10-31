@@ -7,6 +7,7 @@ import {
   evaluateAttendanceWindow,
   evaluateLocationPolicy,
   getSchoolLocalDate,
+  getAttendanceDate,
   validateCampusPolicyUpdate,
 } from '../services/campusPolicyService.js';
 import { verifyEcdsaSignature } from '../services/staffDeviceService.js';
@@ -506,4 +507,39 @@ test('staff_attendance structure preserves required fields for payroll queries',
   assert.equal(typeof staffAttendanceRow.staff_id, 'string');
   assert.equal(typeof staffAttendanceRow.attendance_date, 'string');
   assert.equal(staffAttendanceRow.verification_source, 'mobile_v2');
+});
+
+
+test('stored invalid geofence configuration fails closed, including PostgreSQL NaN', () => {
+  const policy = { center_latitude: '17.385044', center_longitude: '78.486671',
+    radius_meters: '100', max_location_age_seconds: 30, max_accuracy_meters: '50' };
+  const evidence = { latitude: 17.385044, longitude: 78.486671, accuracy: 10, timestamp: Date.now() };
+  assert.equal(evaluateLocationPolicy(evidence, policy).ok, true);
+  for (const field of Object.keys(policy)) {
+    for (const value of [null, '', 'NaN', Infinity]) {
+      assert.equal(evaluateLocationPolicy(evidence, { ...policy, [field]: value }).code,
+        'INVALID_CAMPUS_POLICY', `${field}=${value}`);
+    }
+  }
+  for (const timestamp of [null, '', String(Date.now()), true]) {
+    assert.equal(evaluateLocationPolicy({ ...evidence, timestamp }, policy).code, 'INVALID_TIMESTAMP');
+  }
+});
+
+test('policy input rejects coercion and malformed seconds', () => {
+  for (const value of ['', ' ', false, [], {}]) {
+    assert.equal(validateCampusPolicyUpdate({ center_latitude: value }).ok, false);
+  }
+  assert.equal(validateCampusPolicyUpdate({ check_in_start_time: '07:30:99' }).ok, false);
+  assert.equal(validateCampusPolicyUpdate({ center_latitude: 0, center_longitude: '-78.5' }).ok, true);
+});
+
+test('overnight checkout and grace retain the previous attendance date', () => {
+  const policy = { school_timezone: 'Asia/Kolkata', check_in_start_time: '07:00',
+    check_in_end_time: '10:00', check_out_start_time: '22:00', check_out_end_time: '00:15', grace_period_minutes: 0 };
+  assert.equal(getAttendanceDate(policy, new Date('2026-10-14T18:35:00Z')), '2026-10-14');
+  assert.equal(getAttendanceDate(policy, new Date('2026-10-15T02:00:00Z')), '2026-10-15');
+  assert.equal(getAttendanceDate({ ...policy, check_out_end_time: '23:59', grace_period_minutes: 15 },
+    new Date('2026-10-14T18:38:00Z')), '2026-10-14');
+  assert.equal(getAttendanceDate(policy, new Date('2026-12-31T18:35:00Z')), '2026-12-31');
 });

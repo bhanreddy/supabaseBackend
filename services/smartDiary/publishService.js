@@ -7,6 +7,10 @@ import {
 } from './composeContent.js';
 import { isUuid, sanitizeDueDate, sanitizeSource } from './validation.js';
 import { recordDiaryPhotoHistory } from './photoHistory.js';
+import { isAfterDiaryNotificationCutoff } from '../diaryNotificationPolicy.js';
+import { DIARY_DIGEST_MESSAGE } from '../diaryDigestService.js';
+import { sendNotificationToUsers } from '../notificationService.js';
+import logger from '../../utils/logger.js';
 
 export { isUuid, sanitizeDueDate, sanitizeSource };
 
@@ -139,6 +143,7 @@ export async function upsertDiaryEntry({
   syllabusChapterId = null,
   syllabusTopicId = null,
   academicPlanItemId = null,
+  deferNotification = false,
 }) {
   if (submissionId) {
     const existing = await findBySubmissionId(schoolId, submissionId);
@@ -213,6 +218,7 @@ export async function upsertDiaryEntry({
       entryDate,
       attachments,
     });
+    if (!deferNotification) await notifyDiaryEntriesAfterCutoff(schoolId, [entry]);
     return { entry, createdNew, duplicate: false };
   } catch (error) {
     if (error.code === '23505' && submissionId) {
@@ -253,13 +259,17 @@ export async function patchDiaryAiFields(schoolId, diaryId, fields = {}) {
       detected_language = COALESCE(${fields.detectedLanguage || null}, detected_language),
       processing_metadata = COALESCE(${fields.processingMetadata ? JSON.stringify(fields.processingMetadata) : null}, processing_metadata),
       homework_due_date = COALESCE(${fields.homeworkDueDate || null}, homework_due_date),
-      notification_sent_at = NULL,
+      notification_sent_at = CASE WHEN ${fields.content != null || fields.title != null}
+        THEN NULL ELSE notification_sent_at END,
       updated_at = now()
     WHERE id = ${diaryId} AND school_id = ${schoolId}
     RETURNING *
   `;
 
-  // OCR/content updates are collected by the daily 5:30 PM IST digest.
+  // Status-only OCR updates must not re-alert families about the same photo.
+  if (fields.content != null || fields.title != null) {
+    await notifyDiaryEntriesAfterCutoff(schoolId, [updated]);
+  }
   return updated;
 }
 
@@ -305,6 +315,39 @@ export async function parentRecipientUserIds(schoolId, classSectionIds, db = sql
   return [...new Set(rows.map((row) => row.id))];
 }
 
+/** Send one alert per family for a completed late publication (including batches). */
+export async function notifyDiaryEntriesAfterCutoff(schoolId, entries, {
+  now = new Date(),
+  db = sql,
+  notify = sendNotificationToUsers,
+} = {}) {
+  if (!isAfterDiaryNotificationCutoff(now)) return;
+  const pending = entries.filter((entry) => entry?.id && !entry.notification_sent_at);
+  if (pending.length === 0) return;
+
+  try {
+    const recipients = await parentRecipientUserIds(schoolId, pending.map((entry) => entry.class_section_id), db);
+    if (recipients.length === 0) return;
+    const result = await notify(recipients, 'DIARY_UPDATED', DIARY_DIGEST_MESSAGE, {
+      role: 'parent', schoolId, deepLink: '/Screen/diary',
+    });
+    // Keep failed dispatches eligible for the next digest as a fallback.
+    if (result?.failureCount > 0) return;
+
+    await db`
+      UPDATE diary_entries SET notification_sent_at = now()
+      WHERE school_id = ${schoolId}
+        AND id = ANY(${pending.map((entry) => entry.id)})
+        AND notification_sent_at IS NULL
+        AND GREATEST(COALESCE(updated_at, created_at), created_at) <= ${now}
+        AND deleted_at IS NULL
+    `;
+  } catch (error) {
+    // Diary publication succeeds even if delivery fails; the digest can retry.
+    logger.error({ err: error, schoolId, event: 'late_diary_dispatch_failed' }, 'Late diary notification failed');
+  }
+}
+
 export async function publishDiaryTargets({
   schoolId,
   userInternalId,
@@ -315,6 +358,7 @@ export async function publishDiaryTargets({
 }) {
   const isAdmin = roles.includes('admin') || roles.includes('principal');
   const results = [];
+  const publishedEntries = [];
 
   for (const target of targets) {
     const classSectionId = target.class_section_id;
@@ -377,7 +421,10 @@ export async function publishDiaryTargets({
       templateId: shared.template_id,
       submissionId,
       processingMetadata: shared.processing_metadata,
+      deferNotification: true,
     });
+
+    if (!duplicate) publishedEntries.push(entry);
 
     results.push({
       class_section_id: classSectionId,
@@ -387,8 +434,7 @@ export async function publishDiaryTargets({
     });
   }
 
-  // Publishing makes diary entries visible immediately; parent push alerts
-  // belong exclusively to the scheduled daily digest.
+  await notifyDiaryEntriesAfterCutoff(schoolId, publishedEntries);
   return results;
 }
 

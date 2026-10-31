@@ -1,12 +1,13 @@
 import { readStaffDevicePublicKey } from '../utils/staffDeviceHeaders.js';
 import express from 'express';
 import { sendSuccess } from '../utils/apiResponse.js';
-import { supabase, supabaseAdmin } from '../db.js';
+import { supabase, supabaseAdmin, createRequestAuthClient } from '../db.js';
 import sql from '../db.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import config from '../config/env.js';
 import { normalizeEmail } from '../utils/schoolEmail.js';
 import { requireAuth } from '../middleware/auth.js';
+import { isTransientError } from '../utils/retry.js';
 import { qrLoginLimiter } from '../middleware/rateLimiter.js';
 import {
   refreshUserAccessContexts,
@@ -46,10 +47,11 @@ router.post('/qr/resolve', qrLoginLimiter, asyncHandler(async (req, res) => {
   try {
     const { credential, session } = await exchangeLoginQrForSession(qrPayload, req.schoolId);
 
+    const credentialEntity = credential.subject === 'role' ? 'role_login_qr' : 'student_login_qr';
     await sql`INSERT INTO audit_logs
       (school_id, user_id, action, entity, entity_id, details, ip_address, user_agent, request_id)
       VALUES (${credential.schoolId}, ${credential.userId}, 'LOGIN_QR_RESOLVED',
-        'student_login_qr', ${credential.credentialId}, ${sql.json({ login_method: 'qr', success: true })},
+        ${credentialEntity}, ${credential.credentialId}, ${sql.json({ login_method: 'qr', success: true, subject: credential.subject || 'student' })},
         ${req.ip}, ${req.headers['user-agent'] || null}, ${requestId})`;
 
     logQrLogin({
@@ -240,7 +242,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   const dbUser = userInfo[0];
 
   if (dbUser.account_status !== 'active') {
-    return res.status(403).json({ error: 'Account is not active' });
+    return res.status(403).json({ error: 'Account is not active', code: 'ACCOUNT_NOT_ACTIVE' });
   }
 
   // B5: Verify user belongs to requested school (tenant isolation)
@@ -316,13 +318,13 @@ router.post('/login', asyncHandler(async (req, res) => {
  * POST /auth/logout
  * Logout current session
  */
-router.post('/logout', asyncHandler(async (req, res) => {
+router.post('/logout', requireAuth, asyncHandler(async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return res.status(400).json({ error: 'No session to logout' });
   }
 
-  const { error } = await supabase.auth.signOut();
+  const { error } = await supabaseAdmin.auth.admin.signOut(authHeader.split(' ')[1], 'local');
 
   if (error) {
     return res.status(500).json({ error: 'Logout failed', details: error.message });
@@ -374,17 +376,17 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
   `;
 
   if (userInfo.length === 0) {
-    return res.status(403).json({ error: 'account_not_in_school' });
+    return res.status(403).json({ error: 'account_not_in_school', code: 'ACCOUNT_NOT_IN_SCHOOL' });
   }
 
   const dbUser = userInfo[0];
 
   if (dbUser.account_status === 'locked') {
-    return res.status(403).json({ error: 'account_locked' });
+    return res.status(403).json({ error: 'account_locked', code: 'ACCOUNT_LOCKED' });
   }
 
   if (dbUser.account_status !== 'active') {
-    return res.status(403).json({ error: 'account_not_active' });
+    return res.status(403).json({ error: 'account_not_active', code: 'ACCOUNT_NOT_ACTIVE' });
   }
 
   // B5: Verify user belongs to requested school
@@ -400,12 +402,17 @@ router.post('/validate-school-user', asyncHandler(async (req, res) => {
       AND school_id = ${req.schoolId}`;
 
   let portalContexts = null;
-  try {
-    await refreshUserAccessContexts(req.user.id);
-    const deviceId = req.headers['x-device-id'] || null;
-    portalContexts = await buildContextsPayload(req.user.id, deviceId);
-  } catch (ctxErr) {
-    console.error('[auth/validate-school-user] refreshUserAccessContexts failed:', ctxErr.message);
+  // Saved-account switches only need the identity above and class below.
+  // The portal picker refreshes contexts through /auth/contexts when opened.
+  // Keep the full response by default for existing clients and first login.
+  if (req.body?.includePortalContexts !== false) {
+    try {
+      await refreshUserAccessContexts(req.user.id);
+      const deviceId = req.headers['x-device-id'] || null;
+      portalContexts = await buildContextsPayload(req.user.id, deviceId);
+    } catch (ctxErr) {
+      console.error('[auth/validate-school-user] refreshUserAccessContexts failed:', ctxErr.message);
+    }
   }
 
   // Resolve the class-section for this login, exactly as /auth/login and /auth/me do.
@@ -478,10 +485,10 @@ router.post('/refresh', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Refresh token is required' });
   }
 
-  const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+  const { data, error } = await createRequestAuthClient().auth.refreshSession({ refresh_token });
 
   if (error) {
-    return res.status(401).json({ error: 'Token refresh failed', details: error.message });
+    return res.status(isTransientError(error) ? 503 : 401).json({ error: 'Token refresh failed', details: error.message });
   }
 
   return sendSuccess(res, req.schoolId, {

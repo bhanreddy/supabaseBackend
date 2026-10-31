@@ -1,7 +1,7 @@
 import sql from '../../db.js';
 import { composeDiaryContent, composeDiaryTitle } from './composeContent.js';
 import { isUuid, sanitizeDueDate, sanitizeSource } from './validation.js';
-import { upsertDiaryEntry, logDiaryAnalytics } from './publishService.js';
+import { upsertDiaryEntry, logDiaryAnalytics, notifyDiaryEntriesAfterCutoff } from './publishService.js';
 import { matchSubjectName } from './subjectMatch.js';
 import { loadClassSubjects } from './classTeacherService.js';
 
@@ -120,6 +120,7 @@ export async function publishClassDiary({
 
   const sharedAttachments = imageUrl ? [imageUrl] : [];
   const results = [];
+  const publishedEntries = [];
 
   if (sendOriginal || entries.length === 0) {
     const { entry, createdNew, duplicate } = await upsertDiaryEntry({
@@ -127,6 +128,7 @@ export async function publishClassDiary({
       userInternalId,
       classSectionId,
       subjectId: null,
+      deferNotification: true,
       entryDate,
       title: classDiaryNotificationCopy(section?.class_name, section?.section_name).title,
       content: 'Please view the original class diary photo.',
@@ -140,6 +142,7 @@ export async function publishClassDiary({
       classDiaryUploadId: upload.id,
       processingMetadata: { classDiary: true, originalOnly: true },
     });
+    if (!duplicate) publishedEntries.push(entry);
     results.push({ id: entry.id, subject_id: null, createdNew, duplicate });
   } else {
     const selected = entries.filter((item) => item.selected !== false);
@@ -154,6 +157,7 @@ export async function publishClassDiary({
         userInternalId,
         classSectionId,
         subjectId: trusted.subject_id,
+        deferNotification: true,
         entryDate,
         title: trusted.title,
         content: trusted.content,
@@ -173,6 +177,7 @@ export async function publishClassDiary({
           chapter: trusted.chapter,
         },
       });
+      if (!duplicate) publishedEntries.push(entry);
       results.push({
         id: entry.id,
         subject_id: trusted.subject_id,
@@ -184,8 +189,7 @@ export async function publishClassDiary({
   }
 
   const created = results.filter((row) => row.id);
-  // Keep entries eligible for the daily digest; uploading a class photo or
-  // publishing extracted subjects must never send an immediate parent alert.
+  await notifyDiaryEntriesAfterCutoff(schoolId, publishedEntries);
 
   await logDiaryAnalytics({
     schoolId,

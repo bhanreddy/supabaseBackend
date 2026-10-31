@@ -13,7 +13,7 @@ import {
 } from '../utils/diaryPresentation.js';
 import { linkDiaryToSyllabus, validateSyllabusLinks } from '../services/syllabusService.js';
 import { CalendarService } from '../services/calendarService.js';
-import { upsertDiaryEntry, isUuid } from '../services/smartDiary/publishService.js';
+import { upsertDiaryEntry, isUuid, notifyDiaryEntriesAfterCutoff } from '../services/smartDiary/publishService.js';
 import { purgeTextDiaryOlderThanRetention } from '../services/smartDiary/photoHistory.js';
 import { DIARY_RETENTION_DAYS } from '../utils/diaryRetention.js';
 import { canReadDiaryClass } from '../services/smartDiary/readerAccess.js';
@@ -650,6 +650,7 @@ router.put('/:id', requirePermission('diary.create'), asyncHandler(async (req, r
       RETURNING *
     `;
     updated = result[0];
+    await notifyDiaryEntriesAfterCutoff(schoolId, [updated]);
 
     if (syllabus_chapter_id || syllabus_topic_id) {
       try {

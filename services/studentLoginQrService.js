@@ -1,6 +1,7 @@
 import sql from '../db.js';
 import { supabase, supabaseAdmin } from '../db.js';
 import config from '../config/env.js';
+import { resolveRoleLoginQrCredential } from './roleLoginQrService.js';
 import {
   LoginQrError,
   assertSameLoginQrSchool,
@@ -259,13 +260,37 @@ export async function revokeLoginQrForUser(userId, schoolId = null, actorUserId 
         WHERE user_id = ${userId} AND school_id = ${schoolId} AND revoked_at IS NULL RETURNING id`
     : await sql`UPDATE student_login_qr_credentials SET revoked_at = NOW(), revoked_by = ${actorUserId}
         WHERE user_id = ${userId} AND revoked_at IS NULL RETURNING id`;
-  return rows.length;
+  let roleRows = [];
+  try {
+    roleRows = schoolId
+      ? await sql`UPDATE role_login_qr_credentials SET revoked_at = NOW(), revoked_by = ${actorUserId}
+          WHERE user_id = ${userId} AND school_id = ${schoolId} AND revoked_at IS NULL RETURNING id`
+      : await sql`UPDATE role_login_qr_credentials SET revoked_at = NOW(), revoked_by = ${actorUserId}
+          WHERE user_id = ${userId} AND revoked_at IS NULL RETURNING id`;
+  } catch (error) {
+    if (error?.code !== '42P01') throw error;
+  }
+  return rows.length + roleRows.length;
 }
 
 export async function resolveLoginQrCredential(rawPayload, requestedSchoolId) {
   assertConfigured();
   const parsed = parseSchoolIMSLoginQr(rawPayload);
   assertSameLoginQrSchool(parsed.schoolId, requestedSchoolId);
+
+  const [studentCredential] = await sql`
+    SELECT id FROM student_login_qr_credentials
+    WHERE id = ${parsed.credentialId} AND school_id = ${requestedSchoolId}
+    LIMIT 1`;
+  if (!studentCredential) {
+    try {
+      return await resolveRoleLoginQrCredential(parsed, requestedSchoolId);
+    } catch (error) {
+      if (error instanceof LoginQrError) throw error;
+      if (error?.code === '42P01') throw new LoginQrError('QR_TOKEN_NOT_FOUND');
+      throw error;
+    }
+  }
 
   const [row] = await sql`
     SELECT qr.id, qr.school_id, qr.student_id, qr.user_id, qr.token_hash, qr.version,
@@ -327,7 +352,7 @@ export async function resolveLoginQrCredential(rawPayload, requestedSchoolId) {
     WHERE id = ${row.id} AND school_id = ${requestedSchoolId} AND revoked_at IS NULL
       AND expires_at > NOW() RETURNING id`;
   if (!used.length) throw new LoginQrError('QR_TOKEN_REVOKED');
-  return { credentialId: row.id, userId: row.user_id, schoolId: row.school_id };
+  return { credentialId: row.id, userId: row.user_id, schoolId: row.school_id, subject: 'student' };
 }
 
 export async function exchangeLoginQrForSession(rawPayload, requestedSchoolId) {

@@ -1,0 +1,10 @@
+{
+  "command": "node server.js",
+  "build_path": ".catalyst/build",
+  "stack": "node24",
+  "env_variables": {
+    "NODE_ENV": "production",
+    "LOG_LEVEL": "info"
+  },
+  "memory": 1024
+}

@@ -5,6 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "deploy:catalyst": "node scripts/deploy_catalyst.mjs",
+    "build:catalyst": "node scripts/deploy_catalyst.mjs --prepare-only",
     "dev": "npx nodemon server.js",
     "audit:introspect": "node audit_tooling/run_all_introspection.js",
     "audit:parse": "node audit_tooling/parse_schema.js",
@@ -27,7 +29,8 @@
     "tour:check": "node scripts/build_tour_audio.mjs --check",
     "tour:generate": "node scripts/build_tour_audio.mjs --generate",
     "tour:publish": "node scripts/build_tour_audio.mjs --publish --reviewed",
-    "test:tour": "node --test scripts/tourAudio.test.mjs"
+    "test:tour": "node --test scripts/tourAudio.test.mjs",
+    "test:staff-attendance": "node --experimental-test-module-mocks --test tests/staffAttendanceV2.test.js tests/staffAttendanceV2.integration.js"
   },
   "type": "module",
   "engines": {
@@ -68,6 +71,7 @@
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zcatalyst-sdk-node": "^3.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

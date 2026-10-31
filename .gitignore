@@ -56,3 +56,8 @@ dumps/
 
 # Staged narrated tour audio (generate, review, then publish the manifest).
 .tour-audio/
+
+# Catalyst build and generated configuration containing server credentials.
+.catalyst/
+app-config.json
+catalyst-debug.log

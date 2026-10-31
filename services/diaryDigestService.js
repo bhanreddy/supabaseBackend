@@ -11,7 +11,8 @@ export const DIARY_DIGEST_MESSAGE = Object.freeze({
 /**
  * Resolve parent accounts whose children received a diary update since the
  * previous daily cutoff. A post made after 5:30 PM IST is included in the
- * following day's digest instead of being silently missed.
+ * following day's digest as a fallback if its immediate alert failed. Late
+ * posts already dispatched are excluded by notification_sent_at.
  *
  * The DISTINCT pair is the core guarantee: multiple subjects and multiple
  * children in the same school still resolve to one notification recipient.

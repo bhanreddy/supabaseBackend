@@ -49,6 +49,8 @@ const examOnlySpecialSubjectsMigrationName = '20260926_exam_only_special_subject
 const accountsLeaveHalfDayMigrationName = '20260930_accounts_leave_half_day.sql';
 const accountsLeaveApplyOnlyMigrationName = '20260930_accounts_leave_apply_only.sql';
 const attendanceSchoolLocalDateMigrationName = '20261008_attendance_school_local_date.sql';
+const roleLoginQrMigrationName = '20261013_role_login_qr.sql';
+const staffAttendanceLookupMigrationName = '20261014_staff_attendance_lookup_indexes.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
 async function applyNamedSqlMigration(db, filename, lockKey) {
@@ -226,6 +228,7 @@ export async function initializeReleaseDatabase(db) {
   await applyBatch2Migrations(db);
   await applyBatch3Migrations(db);
   await applyStaffAttendanceV2Migration(db);
+  await applyNamedSqlMigration(db, staffAttendanceLookupMigrationName, 4601014);
   await applyStudentLoginQrMigration(db);
   await applySmartPopupManagerMigration(db);
   await applyNamedSqlMigration(db, finePenaltyMigrationName, 4220912);
@@ -245,6 +248,7 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
   await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
   await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
+  await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -482,6 +486,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyBatch2Migrations(db);
       await applyBatch3Migrations(db);
       await applyStaffAttendanceV2Migration(db);
+      await applyNamedSqlMigration(db, staffAttendanceLookupMigrationName, 4601014);
       await applyStudentLoginQrMigration(db);
       await applySmartPopupManagerMigration(db);
       await applyNamedSqlMigration(db, finePenaltyMigrationName, 4220912);
@@ -518,6 +523,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, accountsLeaveHalfDayMigrationName, 4560930);
       await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
       await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
+      await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
     }
     if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);

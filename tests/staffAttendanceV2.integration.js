@@ -86,6 +86,9 @@ test.before(async () => {
   try {
     await connection.unsafe(migration);
     await connection.unsafe(migration); // additive/re-runnable
+    const indexes = fs.readFileSync(new URL('../migrations/20261014_staff_attendance_lookup_indexes.sql', import.meta.url), 'utf8');
+    await connection.unsafe(indexes);
+    await connection.unsafe(indexes);
   } finally { connection.release(); }
   const app = express(); app.use(express.json());
   app.use((req, _res, next) => { req.schoolId = Number(req.headers['x-test-school'] || 12); req.user = { id: adminId, person_id: personId }; next(); });
@@ -262,4 +265,70 @@ test('administrator HTTP policy updates, rejection and exception inventory use r
   result = await send('/verify', 'POST', { challenge_id: value.challengeId, payload: value.payload, signature: value.signature, idempotency_key: value.idempotencyKey });
   assert.equal(result.status, 422, JSON.stringify(result.body));
   assert.equal(result.body.code, 'COORDINATES_OUT_OF_BOUNDS');
+});
+
+
+test('concurrent duplicate verification commits once and returns successful receipts to every retry', async () => {
+  await db`DELETE FROM staff_attendance`;
+  const device = await register();
+  await deviceService.approveDeviceRegistration(device.registration.id, adminId, 12);
+  const challenge = await service.createAttendanceChallenge(request(device));
+  const body = submission(device, challenge);
+  const receipts = await Promise.all(Array.from({ length: 6 }, () => service.verifyAndRecordAttendance(body)));
+  assert.equal(receipts.filter(receipt => !receipt.isIdempotentReplay).length, 1);
+  assert.ok(receipts.every(receipt => receipt.success && receipt.summary.checkInTime));
+  const [count] = await db`SELECT count(*)::int AS n FROM staff_attendance_events WHERE challenge_id=${challenge.challengeId}`;
+  assert.equal(count.n, 1);
+  await assert.rejects(service.verifyAndRecordAttendance({ ...body, payload: { ...body.payload, action: 'check_out' } }),
+    { code: 'IDEMPOTENCY_CONFLICT' });
+  // Replacing a checkout challenge and consuming it concurrently cannot deadlock.
+  const out = await service.createAttendanceChallenge(request(device, 'check_out'));
+  const attempts = await Promise.allSettled([
+    service.verifyAndRecordAttendance(submission(device, out)),
+    service.createAttendanceChallenge(request(device, 'check_out')),
+  ]);
+  for (const result of attempts) {
+    if (result.status === 'rejected') assert.ok(['CHALLENGE_ALREADY_USED', 'ALREADY_CHECKED_OUT'].includes(result.reason.code), result.reason.message);
+  }
+});
+
+test('mobile check-in restores a deleted summary without retaining old checkout/finalization', async () => {
+  await db`DELETE FROM staff_attendance`;
+  const device = await register();
+  await deviceService.approveDeviceRegistration(device.registration.id, adminId, 12);
+  const today = (await service.getAuthoritativeTodayAttendance(12, staffId, personId, device.session.publicKey)).attendance_date;
+  await db`INSERT INTO staff_attendance (school_id,staff_id,attendance_date,status,check_in_time,check_out_time,is_finalized,deleted_at)
+    VALUES (12,${staffId},${today},'absent',now(),now(),true,now())`;
+  const challenge = await service.createAttendanceChallenge(request(device));
+  await service.verifyAndRecordAttendance(submission(device, challenge));
+  const status = await service.getAuthoritativeTodayAttendance(12, staffId, personId, device.session.publicKey);
+  assert.equal(status.daily_status, 'present');
+  assert.ok(status.check_in_at);
+  assert.equal(status.check_out_at, null);
+  assert.equal(status.is_finalized, false);
+  assert.equal(status.can_check_out, true);
+});
+
+test('a challenge from a previous attendance day cannot mark yesterday using a current GPS fix', async () => {
+  await db`DELETE FROM staff_attendance`;
+  const device = await register();
+  await deviceService.approveDeviceRegistration(device.registration.id, adminId, 12);
+  const challenge = await service.createAttendanceChallenge(request(device));
+  await db`UPDATE attendance_challenges SET attendance_date=attendance_date-1 WHERE id=${challenge.challengeId}`;
+  await assert.rejects(service.verifyAndRecordAttendance(submission(device, challenge)), { code: 'CHALLENGE_EXPIRED' });
+  const [count] = await db`SELECT count(*)::int AS n FROM staff_attendance_events WHERE challenge_id=${challenge.challengeId}`;
+  assert.equal(count.n, 0);
+});
+
+
+test('concurrent first policy saves create one active campus and audit both updates', async () => {
+  const put = (campus_name) => fetch(`${baseUrl}/admin/policy`, { method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-test-school': '13' },
+    body: JSON.stringify({ campus_name, center_latitude: 0, center_longitude: -78.5, enforcement_mode: 'disabled' }) });
+  const results = await Promise.all([put('Campus A'), put('Campus B')]);
+  for (const res of results) assert.equal(res.status, 200, JSON.stringify(await res.json()));
+  const [count] = await db`SELECT count(*)::int AS n FROM campus_attendance_policies WHERE school_id=13 AND is_active=true`;
+  assert.equal(count.n, 1);
+  const [audits] = await db`SELECT count(*)::int AS n FROM staff_attendance_audit_logs WHERE school_id=13 AND action='CAMPUS_POLICY_UPDATED'`;
+  assert.equal(audits.n, 2);
 });

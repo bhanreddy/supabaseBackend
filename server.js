@@ -41,37 +41,46 @@ const port = config.port;
 // Install CORS before health routes, rate limiters, and every other middleware
 // that can finish a request. Otherwise early 429/5xx responses are unreadable
 // to the web app even when normal API responses have the correct header.
-app.use(cors({
-    origin: (origin, cb) => {
-        const allow = config.cors.allowedOrigins;
-        if (!allow || allow.length === 0) {
-            // Default to permissive (echo the origin back) if not configured
-            return cb(null, origin || true);
-        }
-        if (allow.includes('*')) return cb(null, true);
-        if (!origin) return cb(null, true); // server-to-server / curl
-        return cb(null, allow.includes(origin));
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'authorization-refresh',
-        'x-request-id',
-        'Accept',
-        'X-School-Id',
-        'X-Device-Id',
-        'X-Active-Context',
-        'X-Staff-Portal-Id',
-        'X-Device-Public-Key',
-        'X-Device-Session-Key',
-        'X-Device-Proof-Timestamp',
-        'X-Device-Proof-Nonce',
-        'X-Device-Proof',
-    ],
-    exposedHeaders: ['Retry-After', 'X-Request-Id', 'Request-Id'],
-    credentials: true,
-}));
+if (config.cors.managedByCatalyst) {
+    // Catalyst injects origin and credentials headers for Authorized Domains.
+    // Preserve browser access to API metadata without duplicating those headers.
+    app.use((_req, res, next) => {
+        res.setHeader('Access-Control-Expose-Headers', 'Retry-After,X-Request-Id,Request-Id');
+        next();
+    });
+} else {
+    app.use(cors({
+        origin: (origin, cb) => {
+            const allow = config.cors.allowedOrigins;
+            if (!allow || allow.length === 0) {
+                // Default to permissive (echo the origin back) if not configured
+                return cb(null, origin || true);
+            }
+            if (allow.includes('*')) return cb(null, true);
+            if (!origin) return cb(null, true); // server-to-server / curl
+            return cb(null, allow.includes(origin));
+        },
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+        allowedHeaders: [
+            'Content-Type',
+            'Authorization',
+            'authorization-refresh',
+            'x-request-id',
+            'Accept',
+            'X-School-Id',
+            'X-Device-Id',
+            'X-Active-Context',
+            'X-Staff-Portal-Id',
+            'X-Device-Public-Key',
+            'X-Device-Session-Key',
+            'X-Device-Proof-Timestamp',
+            'X-Device-Proof-Nonce',
+            'X-Device-Proof',
+        ],
+        exposedHeaders: ['Retry-After', 'X-Request-Id', 'Request-Id'],
+        credentials: true,
+    }));
+}
 
 // Lightweight liveness probe — exempt from all rate limiting and auth middleware
 app.get('/api/v1/ping', (req, res) => res.json({ ok: true }));
@@ -196,6 +205,7 @@ app.use(auditLogger);
 import authRouter from './routes/authRoutes.js';
 import studentsRouter from './routes/studentsRoutes.js';
 import studentLoginQrRouter from './routes/studentLoginQrRoutes.js';
+import roleLoginQrRouter from './routes/roleLoginQrRoutes.js';
 import studentDashboardRouter from './routes/studentDashboardRoutes.js';
 import teachersRouter from './routes/teachersRoutes.js';
 import staffRouter from './routes/staffRoutes.js';
@@ -333,6 +343,7 @@ app.get('/', (req, res) => {
 // API v1 Routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/student-login-qr', studentLoginQrRouter);
+app.use('/api/v1/role-login-qr', roleLoginQrRouter);
 app.use('/api/v1/students/documents', studentDocumentRouter);
 app.use('/api/v1/students', studentsRouter);
 app.use('/api/v1/student', studentDashboardRouter);

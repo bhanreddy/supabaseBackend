@@ -1,7 +1,7 @@
 import { readStaffDevicePublicKey } from '../utils/staffDeviceHeaders.js';
-import { supabase, supabaseAdmin } from '../db.js';
+import { supabase, createRequestAuthClient } from '../db.js';
 import sql from '../db.js';
-import { withRetry } from '../utils/retry.js';
+import { withRetry, isTransientError } from '../utils/retry.js';
 import { toZonedTime } from 'date-fns-tz';
 import config from '../config/env.js';
 import { enforceStaffDeviceProof } from '../services/staffDeviceService.js';
@@ -104,6 +104,10 @@ const TOKEN_CACHE_MAX_SIZE = 500;
 function getCachedUser(token) {
   const entry = tokenCache.get(token);
   if (!entry) return null;
+  if (!tokenNotYetExpired(token)) {
+    tokenCache.delete(token);
+    return null;
+  }
   if (Date.now() - entry.timestamp > TOKEN_CACHE_TTL) {
     // Past the fresh window: don't serve on the happy path, but KEEP the entry
     // so it can act as a stale fallback if Supabase Auth is throttled below.
@@ -183,25 +187,14 @@ export const identifyUser = async (req, res, next) => {
       }, { retries: 3, delayMs: 1000 });
       user = result.user;
     } catch (authErr) {
-      // Distinguish network failure from invalid tokeny
-      const isNetworkError =
-        authErr.code === 'ETIMEDOUT' ||
-        authErr.code === 'UND_ERR_CONNECT_TIMEOUT' ||
-        authErr.message?.includes('fetch failed') ||
-        authErr.message?.includes('Connect Timeout') ||
-        authErr.cause?.code === 'UND_ERR_CONNECT_TIMEOUT';
-
       // Supabase Auth (GoTrue) throttled us (429) or hit a transient server
       // error (5xx). This is an INFRA problem, not a bad token — during a login
       // surge, dozens of getUser() calls can trip Supabase's auth rate limit.
       // Never downgrade a VALID session to 401 because of it.
-      const authStatus = Number(authErr.status) || 0;
-      const isAuthServiceOverloaded =
-        authStatus === 429 || (authStatus >= 500 && authStatus <= 599);
+      const isTokenExpired = authErr.code === 'jwt_expired' ||
+        (Number(authErr.status) === 401 && authErr.message?.toLowerCase().includes('token expired'));
 
-      const isTokenExpired = authErr.status === 401 && authErr.message?.includes('token expired');
-
-      if (isNetworkError || isAuthServiceOverloaded) {
+      if (isTransientError(authErr)) {
         // Best effort: if we verified THIS exact token recently and it hasn't
         // expired, keep the user flowing — invisible to returning users mid-surge.
         const stale = getStaleCachedUser(token);
@@ -221,37 +214,20 @@ export const identifyUser = async (req, res, next) => {
 
         if (refreshToken) {
           try {
-            const refreshResult = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+            // Shared clients coalesce refreshes across requests. Each request
+            // needs its own client so two users never receive each other's tokens.
+            const refreshResult = await createRequestAuthClient().auth.refreshSession({ refresh_token: refreshToken });
             if (refreshResult.error) throw refreshResult.error;
 
             user = refreshResult.data.user;
-
-            // Only the finance console has the short re-auth policy.  A driver
-            // must not be signed out in the middle of a live trip merely
-            // because an access token needed refresh.
-            const [userLoginCheck] = await sql`
-              SELECT u.last_login_at,
-                COALESCE(BOOL_OR(r.code IN ('accountant', 'accounts')), false) AS is_accounts
-              FROM users u
-              LEFT JOIN user_roles ur ON ur.user_id = u.id
-              LEFT JOIN roles r ON r.id = ur.role_id
-              WHERE u.id = ${user.id}
-              GROUP BY u.id, u.last_login_at
-              LIMIT 1`;
-            if (userLoginCheck && userLoginCheck.last_login_at && userLoginCheck.is_accounts) {
-              const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-              const loginAge = Date.now() - new Date(userLoginCheck.last_login_at).getTime();
-              if (loginAge >= SEVEN_DAYS_MS) {
-                try { await supabaseAdmin.auth.admin.signOut(user.id, 'global'); } catch (e) { }
-                return res.status(401).json({ error: 'Weekly session reset. Please log in again.', code: 'WEEKLY_LOGOUT' });
-              }
-            }
 
             // Set the new token on the response so the mobile client can save it
             res.setHeader('X-Refreshed-Token', refreshResult.data.session.access_token);
             res.setHeader('X-Refreshed-Refresh-Token', refreshResult.data.session.refresh_token);
           } catch (refreshErr) {
-
+            if (isTransientError(refreshErr)) {
+              return res.status(503).json({ error: 'Auth service temporarily unavailable. Please retry.' });
+            }
             // Still fail down below
           }
         }
@@ -313,7 +289,7 @@ export const identifyUser = async (req, res, next) => {
 
     if (dbUser.account_status !== 'active') {
       req.user = null;
-      return res.status(403).json({ error: 'Account is not active' });
+      return res.status(403).json({ error: 'Account is not active', code: 'ACCOUNT_NOT_ACTIVE' });
     }
 
     // A refreshed token is valid for every active role. In particular, never
@@ -387,27 +363,8 @@ export const identifyUser = async (req, res, next) => {
       }
     }
 
-    // Only accountant/accounts sessions may be rotated weekly.  Transport
-    // drivers, teachers, parents, and admins must retain silent refresh so a
-    // transient auth renewal cannot stop an unattended trip.
-    const isLoginRoute = req.originalUrl.includes('/validate-school-user') || req.originalUrl.includes('/login');
-    const isAccountsRole = (dbUser.roles || []).some((role) =>
-      role === 'accountant' || role === 'accounts');
-    if (dbUser.last_login_at && !isLoginRoute && isAccountsRole) {
-      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-      const loginAge = Date.now() - new Date(dbUser.last_login_at).getTime();
-
-      if (loginAge >= SEVEN_DAYS_MS) {
-        try {
-          await supabaseAdmin.auth.admin.signOut(user.id, 'global');
-        } catch (e) { }
-
-        return res.status(401).json({
-          error: 'Weekly session reset. Please log in again.',
-          code: 'WEEKLY_LOGOUT'
-        });
-      }
-    }
+    // Session age never forces logout. Account status, permissions and school
+    // hours continue to be checked by server-side authorization.
 
     // Attach to req
     req.user = {
@@ -428,9 +385,9 @@ export const identifyUser = async (req, res, next) => {
 
   } catch (err) {
     console.error("identifyUser error:", err);
-    // Only pass through if it's not a critical error; for now, log and proceed with null user
-    req.user = null;
-    next();
+    // An internal failure is not proof of an invalid login. Returning 503
+    // avoids sending clients into unnecessary refresh/reauthentication loops.
+    return res.status(503).json({ error: 'Authentication temporarily unavailable. Please retry.' });
   }
 };
 

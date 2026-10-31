@@ -332,9 +332,9 @@ async function sendBatch(tokens, {
         channelId: channelId,  // Must match a channel created on the device
         sound: soundBase,      // Raw resource name WITHOUT extension (e.g. "voice_alert")
         defaultSound: false,
-        priority: 'high',
+        // Admin SDK maps this to FCM's notification_priority field.
+        priority: 'max',
         visibility: 'public',
-        notificationPriority: 'PRIORITY_MAX',
         notificationCount: 1
       }
     },

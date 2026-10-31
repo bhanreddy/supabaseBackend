@@ -461,7 +461,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 
   const markedBy = req.user?.internal_id || null;
 
-  const results = await sql.begin(async (tx) => {
+  const { results, changedResults } = await sql.begin(async (tx) => {
     const rows = (attendance || [])
       .filter((r) => r?.student_id && r?.status)
       .map((r) => ({ student_id: String(r.student_id), status: r.status }));
@@ -470,7 +470,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       lastByStudent.set(r.student_id, r.status);
     }
     const studentIds = [...lastByStudent.keys()];
-    if (studentIds.length === 0) return [];
+    if (studentIds.length === 0) return { results: [], changedResults: [] };
 
     const enrollments = await tx`
       SELECT se.id AS enrollment_id, se.student_id
@@ -513,7 +513,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       envIds.push(eid);
       statuses.push(lastByStudent.get(sid));
     }
-    if (envIds.length === 0) return [];
+    if (envIds.length === 0) return { results: [], changedResults: [] };
 
     // Write only the current session's column; the other session (if already
     // marked earlier today) is preserved. `status` is seeded here but the
@@ -544,10 +544,23 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
         marked_by = EXCLUDED.marked_by,
         updated_at = NOW(),
         deleted_at = NULL
+      WHERE daily_attendance.${sql(sessionColumn)} IS DISTINCT FROM EXCLUDED.${sql(sessionColumn)}
       RETURNING id, status, morning_status, afternoon_status, student_enrollment_id
     `;
+    // Only inserted/changed rows are returned by the conditional upsert. Read
+    // all submitted rows so unchanged records still count as successfully saved
+    // (including retries from the offline queue).
+    const saved = await tx`
+      SELECT id, status, morning_status, afternoon_status, student_enrollment_id
+      FROM daily_attendance
+      WHERE school_id = ${req.schoolId}
+        AND student_enrollment_id = ANY(${sql.array(envIds)}::uuid[])
+        AND attendance_date = ${date}::date
+        AND deleted_at IS NULL
+    `;
+    const changedIds = new Set(upserted.map((row) => String(row.id)));
     const invStudent = new Map(enrollments.map((e) => [String(e.enrollment_id), String(e.student_id)]));
-    return upserted.map((row) => ({
+    const results = saved.map((row) => ({
       student_id: invStudent.get(String(row.student_enrollment_id)),
       id: row.id,
       status: row.status,
@@ -556,6 +569,10 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       // The status the teacher just submitted for this session (drives notifications).
       session_status: session === 'afternoon' ? row.afternoon_status : row.morning_status,
     }));
+    return {
+      results,
+      changedResults: results.filter((row) => changedIds.has(String(row.id))),
+    };
   });
 
   // ... (Database transaction successful)
@@ -569,9 +586,9 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 
   (async () => {
     try {
-      if (!results || results.length === 0) return;
+      if (changedResults.length === 0) return;
 
-      const studentIds = results.map((r) => r.student_id).filter(Boolean);
+      const studentIds = changedResults.map((r) => r.student_id).filter(Boolean);
       for (const sid of studentIds) {
         emitSchoolEvent(AUTOMATION_EVENTS.STUDENT_ATTENDANCE_RISK_CHANGED, { schoolId: req.schoolId, studentId: sid });
       }
@@ -610,7 +627,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 
       // Notify based on the status just marked for THIS session, not the derived
       // overall day status (which may still be pending the other session).
-      const statusByStudent = new Map(results.map((r) => [String(r.student_id), r.session_status]));
+      const statusByStudent = new Map(changedResults.map((r) => [String(r.student_id), r.session_status]));
       const absentUserIds = [];
       const presentUserIds = [];
 

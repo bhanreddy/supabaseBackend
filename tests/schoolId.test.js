@@ -131,6 +131,28 @@ test('student login QR routes ignore client school_id and use the JWT tenant', (
   assert.equal(result.req.schoolId, '12');
 });
 
+test('role login QR routes ignore client school_id and use the JWT tenant', () => {
+  const result = invoke('/api/v1/role-login-qr/users', {
+    method: 'GET',
+    user: { schoolId: 12 },
+    query: { school_id: '99', role: 'staff' },
+  });
+
+  assert.equal(result.continued, true);
+  assert.equal(result.req.schoolId, '12');
+});
+
+test('role login QR routes reject unauthenticated access even with a client school_id', () => {
+  const result = invoke('/api/v1/role-login-qr/17/generate', {
+    method: 'POST',
+    user: null,
+    body: { school_id: '12' },
+  });
+
+  assert.equal(result.continued, false);
+  assert.equal(result.statusCode, 401);
+});
+
 test('student login QR routes reject unauthenticated access even with a client school_id', () => {
   const result = invoke('/api/v1/student-login-qr/17/generate', {
     method: 'POST',
