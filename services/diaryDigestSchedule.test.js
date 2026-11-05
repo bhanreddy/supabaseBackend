@@ -3,7 +3,7 @@ import test, { mock } from 'node:test';
 import cronParser from 'cron-parser';
 
 // Isolated process configuration: legacy schedule overrides must not move the
-// required 5:30 PM IST digest, and diary scheduling must work without transport.
+// required 4:30 PM IST digest, and diary scheduling must work without transport.
 Object.assign(process.env, {
   NODE_ENV: 'test',
   DATABASE_URL: 'postgresql://test:test@127.0.0.1:5432/test',
@@ -53,9 +53,9 @@ for (const [modulePath, namedExports] of [
 const { default: config } = await import('../config/env.js');
 const { startTransportJobs, stopTransportJobs, isDiaryDigestJobsReady, DAILY_DIARY_DIGEST_JOB } = await import('./transportJobService.js');
 
-test('diary digest is registered at 5:30 PM IST and the worker receives the matching minute cutoff', async () => {
+test('diary digest is registered at 4:30 PM IST and the worker receives the matching minute cutoff', async () => {
   assert.deepEqual(config.diaryDigestJobs, {
-    enabled: true, cutoffHour: 17, cutoffMinute: 30, cron: '30 17 * * *', timezone: 'Asia/Kolkata',
+    enabled: true, cutoffHour: 16, cutoffMinute: 30, cron: '30 16 * * *', timezone: 'Asia/Kolkata',
   });
   assert.equal(isDiaryDigestJobsReady(), false);
   try {
@@ -63,16 +63,16 @@ test('diary digest is registered at 5:30 PM IST and the worker receives the matc
     assert.equal(isDiaryDigestJobsReady(), true);
     const digestSchedule = schedules.find(({ name }) => name === DAILY_DIARY_DIGEST_JOB);
     assert.ok(digestSchedule);
-    assert.equal(digestSchedule.cron, '30 17 * * *');
+    assert.equal(digestSchedule.cron, '30 16 * * *');
     assert.equal(digestSchedule.options.tz, 'Asia/Kolkata');
     const next = cronParser.parseExpression(digestSchedule.cron, {
       tz: digestSchedule.options.tz,
-      currentDate: '2026-09-28T11:59:00Z',
+      currentDate: '2026-09-28T10:59:00Z',
     }).next().toISOString();
-    assert.equal(next, '2026-09-28T12:00:00.000Z');
+    assert.equal(next, '2026-09-28T11:00:00.000Z');
 
     await workers.get(DAILY_DIARY_DIGEST_JOB)();
-    assert.deepEqual(digestCalls, [{ timezone: 'Asia/Kolkata', cutoffHour: 17, cutoffMinute: 30 }]);
+    assert.deepEqual(digestCalls, [{ timezone: 'Asia/Kolkata', cutoffHour: 16, cutoffMinute: 30 }]);
     await startTransportJobs();
     assert.equal(schedules.filter(({ name }) => name === DAILY_DIARY_DIGEST_JOB).length, 1);
   } finally {

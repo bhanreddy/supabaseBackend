@@ -3,6 +3,7 @@ import { evaluateTripSignals } from './transportSignalService.js';
 import sql from '../db.js';
 import { transportError, withTransportTransaction } from './transportAccessService.js';
 import { evaluateGeofence } from './transportGeofenceService.js';
+import { filterGpsFix } from './transportGpsFilter.js';
 export const LOCATION_BATCH = Object.freeze({
   MAX_FIXES: 1000,
   MAX_AGE_MS: 21600000,
@@ -115,27 +116,56 @@ export async function ingestLocationBatch({
     const insertedCount = inserted.length;
     const liveTrip = ['active', 'in_progress'].includes(trip.status);
     // Only fresh observations from this session may affect live state. History remains useful for audit.
-    const fresh = accepted.filter(f => liveTrip && !f.is_mocked && now.getTime() - Date.parse(f.recorded_at) <= LOCATION_BATCH.FRESH_MS);
-    const newest = fresh.at(-1);
+    const fresh = accepted.filter(f => liveTrip && now.getTime() - Date.parse(f.recorded_at) <= LOCATION_BATCH.FRESH_MS);
+    let state = trip.gps_filter_state;
+    // Seed an existing active trip from its published fix during rollout. The
+    // candidate itself never gets to replace the quality gate's starting point.
+    if (!state && fresh.length) {
+      const [published] = await tx`SELECT latitude,longitude,speed,heading,accuracy,recorded_at,is_mocked,is_suspicious
+        FROM bus_locations WHERE school_id=${schoolId} AND bus_id=${busId} AND trip_id=${trip.id}`;
+      if (published) state = filterGpsFix(null, { ...published, latitude: Number(published.latitude), longitude: Number(published.longitude),
+        recorded_at: new Date(published.recorded_at).toISOString() }).state;
+    }
+    let newest = null;
     let location = null;
+    let suppressed = 0;
+    let quality = null;
+    for (const fix of fresh) {
+      // Old retries must not reset geofence debounce or filter state.
+      if (trip.last_automation_at && Date.parse(fix.recorded_at) <= new Date(trip.last_automation_at).getTime()) continue;
+      const result = filterGpsFix(state, fix);
+      state = result.state;
+      quality = result.reason;
+      if (!result.accepted) {
+        suppressed++;
+        if (result.reason !== 'out_of_order') {
+          await tx`UPDATE bus_trip_history SET is_suspicious=true,gps_quality=${result.reason} WHERE school_id=${schoolId} AND trip_id=${trip.id}
+            AND recorded_at=${fix.recorded_at} AND fix_id IS NOT DISTINCT FROM ${fix.fix_id}`;
+          await tx`UPDATE trip_stop_status SET geofence_hits=0,first_seen_in_radius=NULL,geofence_last_at=NULL
+            WHERE school_id=${schoolId} AND trip_id=${trip.id} AND status='pending' AND geofence_hits>0`;
+        }
+        continue;
+      }
+      await tx`UPDATE bus_trip_history SET gps_quality='accepted' WHERE school_id=${schoolId} AND trip_id=${trip.id}
+        AND recorded_at=${fix.recorded_at} AND fix_id IS NOT DISTINCT FROM ${fix.fix_id}`;
+      newest = result.position;
+      // GPS-only evidence can never benefit from a smoothed/held coordinate.
+      if (result.automationFix) {
+        await evaluateGeofence(schoolId, busId, result.automationFix, tx, trip);
+        await evaluateTripSignals(trip, result.automationFix, tx);
+        await evaluateOverspeed(schoolId, busId, { ...result.automationFix, trip_id: trip.id }, tx);
+      }
+      trip.last_automation_at = fix.recorded_at;
+    }
     if (newest) {
       [location] = await tx`INSERT INTO bus_locations(school_id,bus_id,trip_id,latitude,longitude,speed,heading,accuracy,recorded_at,is_mocked,is_suspicious)
         VALUES(${schoolId},${busId},${trip.id},${newest.latitude},${newest.longitude},${newest.speed},${newest.heading},${newest.accuracy},${newest.recorded_at},false,false)
         ON CONFLICT(bus_id) DO UPDATE SET trip_id=EXCLUDED.trip_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,
           speed=EXCLUDED.speed,heading=EXCLUDED.heading,accuracy=EXCLUDED.accuracy,recorded_at=EXCLUDED.recorded_at,received_at=now(),is_mocked=false,is_suspicious=false
         WHERE bus_locations.school_id=EXCLUDED.school_id AND EXCLUDED.recorded_at>bus_locations.recorded_at RETURNING *`;
-      for (const fix of fresh) {
-        if (trip.last_automation_at && Date.parse(fix.recorded_at) <= new Date(trip.last_automation_at).getTime()) continue;
-        await evaluateGeofence(schoolId, busId, fix, tx, trip);
-        await evaluateTripSignals(trip, fix, tx);
-        await evaluateOverspeed(schoolId, busId, {
-          ...fix,
-          trip_id: trip.id
-        }, tx);
-        trip.last_automation_at = fix.recorded_at;
-      }
-      await tx`UPDATE trips SET last_automation_at=${trip.last_automation_at} WHERE id=${trip.id} AND school_id=${schoolId}`;
     }
+    if (fresh.length) await tx`UPDATE trips SET gps_filter_state=${state ? tx.json(state) : null},last_automation_at=${trip.last_automation_at || null}
+      WHERE id=${trip.id} AND school_id=${schoolId}`;
     await tx`INSERT INTO driver_heartbeat(school_id,driver_id,last_ping,status) VALUES(${schoolId},${driverId},now(),'online')
       ON CONFLICT(school_id,driver_id) DO UPDATE SET last_ping=now(),status='online' WHERE driver_heartbeat.school_id=${schoolId}`;
     return {
@@ -143,6 +173,8 @@ export async function ingestLocationBatch({
       fixes: accepted,
       insertedCount,
       realtimeUpdated: Boolean(location),
+      suppressedCount: suppressed,
+      gpsQuality: quality,
       location: location || null,
       newestForEvaluation: null
     };

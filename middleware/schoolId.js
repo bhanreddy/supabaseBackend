@@ -110,6 +110,8 @@ const JWT_SCHOOL_ID_PATHS = [
   // Student login QR management: all list/generate/export operations are JWT tenant-bound.
   /^\/api\/v1\/student-login-qr(?:\/.*)?$/i,
   /^\/api\/v1\/role-login-qr(?:\/.*)?$/i,
+  /^\/api\/v1\/library(?:\/.*)?$/i,
+  /^\/api\/v1\/complaints(?:\/.*)?$/i,
   // School stories and student-home hero slides are JWT tenant-bound.
   /^\/api\/v1\/school-stories(?:\/.*)?$/i,
   /^\/api\/v1\/school-hero-slides(?:\/.*)?$/i,

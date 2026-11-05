@@ -1,30 +1,34 @@
-(node:10903) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
+(node:21589) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-✔ fresh release migration and repeated upgrade SQL succeed (421.660333ms)
-✔ driver GET does not create trips and concurrent starts return one trip (54.889459ms)
-✔ strict validation isolates poison points and acknowledges valid points (9.688125ms)
-✔ history and live update roll back together, then retry heals (11.971417ms)
-✔ historical, mocked, future, wrong-session points cannot advance live state (3.744625ms)
-✔ stop transitions enforce sequence and concurrent retry changes once (15.94275ms)
-✔ outbox retries provider failure and records inbox-only without claiming push (5.079708ms)
-✔ real parent/admin read queries and attendance authorization use current assignment (33.235416ms)
-✔ real inbox creation is idempotent when there are no device tokens (4.867792ms)
-✔ SOS uses canonical schema and retries return the recorded incident (3.310834ms)
-✔ route changes preserve trip snapshots and invalidate calibration (1.879666ms)
-✔ ending trips is idempotent; historical retry after end cannot publish live (5.937959ms)
-✔ fresh replay requires reliable slow fixes and advances exactly one ordered stop (33.563583ms)
-✔ calibration finalization increments once for each complete trip (42.346083ms)
-✔ cross-tenant access and direct client access to internal tables are denied (1.374667ms)
-✔ admin reorder rejects duplicates and calibration reset validates query safely (5.917458ms)
-✔ outbox recovers an abandoned lease and remembers successful device deliveries (11.046167ms)
-Local replay: 10 concurrent buses, 1000 historical fixes, slowest batch 9 ms
-✔ ten concurrent bus backlogs persist one thousand fixes without partial loss (173.256292ms)
-✔ ETA and calibration decline missing/stale/invalid evidence; high-speed dwell is not arrival (0.1335ms)
-ℹ tests 19
+✔ fresh release migration and repeated upgrade SQL succeed (573.13775ms)
+✔ driver GET does not create trips and concurrent starts return one trip (61.82975ms)
+✔ strict validation isolates poison points and acknowledges valid points (12.391834ms)
+✔ history and live update roll back together, then retry heals (19.907916ms)
+✔ historical, mocked, future, wrong-session points cannot advance live state (4.453042ms)
+✔ stop transitions enforce sequence and concurrent retry changes once (20.51225ms)
+✔ outbox retries provider failure and records inbox-only without claiming push (4.453875ms)
+✔ real parent/admin read queries and attendance authorization use current assignment (32.545333ms)
+✔ real inbox creation is idempotent when there are no device tokens (4.729167ms)
+✔ SOS uses canonical schema and retries return the recorded incident (3.275791ms)
+✔ route changes preserve trip snapshots and invalidate calibration (2.313958ms)
+✔ ending trips is idempotent; historical retry after end cannot publish live (5.982541ms)
+✔ fresh replay requires reliable slow fixes and advances exactly one ordered stop (38.020041ms)
+✔ quality gating retains raw diagnostics and cannot teleport a bus or trigger a stop (33.649417ms)
+✔ GPS state survives transactions, checks restart gaps, and isolates concurrent trips (24.012917ms)
+✔ concurrent packets for the same trip cannot rewind its trusted GPS anchor (27.000084ms)
+✔ raw coordinates, rather than a drift-held display point, govern stop arrival (23.313292ms)
+✔ calibration finalization increments once for each complete trip (33.570333ms)
+✔ cross-tenant access and direct client access to internal tables are denied (1.415917ms)
+✔ admin reorder rejects duplicates and calibration reset validates query safely (5.264916ms)
+✔ outbox recovers an abandoned lease and remembers successful device deliveries (16.370916ms)
+Local replay: 10 concurrent buses, 1000 historical fixes, slowest batch 11 ms
+✔ ten concurrent bus backlogs persist one thousand fixes without partial loss (183.281292ms)
+✔ ETA and calibration decline missing/stale/invalid evidence; high-speed dwell is not arrival (0.154917ms)
+ℹ tests 23
 ℹ suites 0
-ℹ pass 19
+ℹ pass 23
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 1162.61625
+ℹ duration_ms 2195.773

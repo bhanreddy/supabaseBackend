@@ -17,6 +17,7 @@ const ROLE_TO_PORTAL = {
   teacher: 'staff',
   accounts: 'accounts',
   driver: 'driver',
+  librarian: 'library',
   student: 'student',
   parent: 'student',
 };
@@ -48,6 +49,7 @@ function portalHomeRoute(portalType) {
     case 'admin': return '/admin/dashboard';
     case 'accounts': return '/accounts/dashboard';
     case 'driver': return '/driver/dashboard';
+    case 'library': return '/library/dashboard';
     default: return '/(tabs)/home';
   }
 }

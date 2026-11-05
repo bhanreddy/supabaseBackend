@@ -1,25 +1,46 @@
 [requirePermission] denied: user=user-1 roles=[staff] missing=transport.manage PATCH /api/v1/transport/stops/stop-1/geo
-✔ calibration leg parsing is explicit and never defaults invalid input to morning (0.335375ms)
-✔ transport.manage is required for calibration mutations (0.334541ms)
-✔ calibration endpoints ignore client tenant input and use the JWT school (0.269875ms)
-✔ route calibration requires four successful clean trips (0.824291ms)
-✔ driver calibration status exposes the server threshold (0.327583ms)
-✔ adaptive stop radius uses 40 percent and clamps both extremes (0.396292ms)
-✔ location batches sort, deduplicate, and reject stale fixes (1.517625ms)
-✔ live tracking ignores client school_id and uses the verified JWT tenant (0.296875ms)
-✔ calculateProjectedDelayMinutes returns positive and negative schedule variance (0.446208ms)
-✔ running-late threshold is strictly greater than eight minutes (0.10625ms)
-✔ calculateProjectedDelayMinutes rejects missing or invalid timestamps (0.049083ms)
-✔ projectDelayAtStop combines cumulative learned schedule with live GPS progress (0.186667ms)
-✔ projectDelayAtStop refuses an incomplete learned schedule (0.054333ms)
-✔ notifyParentsAtNextStop claims and alerts parents assigned to the following stop (0.415375ms)
-✔ bus approaching uses the dedicated confirmation sound and channel (0.036625ms)
-✔ driver present attendance uses the dedicated bus-present sound and channel (0.033958ms)
-ℹ tests 16
+✔ calibration leg parsing is explicit and never defaults invalid input to morning (0.378792ms)
+✔ transport.manage is required for calibration mutations (0.351416ms)
+✔ calibration endpoints ignore client tenant input and use the JWT school (0.286541ms)
+✔ route calibration requires four successful clean trips (0.832417ms)
+✔ driver calibration status exposes the server threshold (0.397666ms)
+✔ learned partial leg keeps observed traffic time even at a high instantaneous speed (0.594959ms)
+✔ off-route GPS falls back to live speed instead of unrelated segment progress (0.502667ms)
+✔ stopped or invalid speeds widen uncertainty and never produce NaN or infinity (0.130875ms)
+✔ arrived intermediate stop contributes no fictitious approach leg (0.060459ms)
+✔ zero ETA requires a confirmed arrival (0.161458ms)
+✔ execution order wins over array order for reverse trips (0.323542ms)
+✔ stale, future, mocked, suspicious and poor accuracy fixes cannot supply ETA (0.094208ms)
+✔ delayed observations downgrade confidence without silently counting down travel (0.061166ms)
+✔ missing route geometry never silently contributes zero travel time (0.05925ms)
+✔ completed and skipped boarding stops are not reported as arriving now (0.090333ms)
+✔ poor/unknown accuracy, malformed and mocked observations cannot replace a good fix (0.838209ms)
+✔ a single believable-accuracy GPS teleport is suppressed, then the real trajectory recovers (0.240875ms)
+✔ stationary jitter is reduced without inventing sub-sensor accuracy or a compass course (0.414167ms)
+✔ normal travel, an abrupt turn, and departure from a stationary fix remain responsive (0.182042ms)
+✔ unknown or false zero speed cannot claim an arrival while movement is measured (0.065209ms)
+✔ recovery after a signal gap requires three coherent fixes spanning four seconds (0.062958ms)
+✔ poor fixes and incoherent candidates break reacquisition confirmation (0.048666ms)
+✔ equal-timestamp and delayed fixes cannot advance state or manufacture dwell evidence (0.073167ms)
+✔ serialized filter state has the same result across process restarts (0.24925ms)
+✔ longitude wrap and high latitudes remain finite (0.090541ms)
+✔ a biased first stationary fix converges toward repeated better observations (0.118542ms)
+✔ adaptive stop radius uses 40 percent and clamps both extremes (0.426041ms)
+✔ location batches sort, deduplicate, and reject stale fixes (0.704708ms)
+✔ live tracking ignores client school_id and uses the verified JWT tenant (0.283375ms)
+✔ calculateProjectedDelayMinutes returns positive and negative schedule variance (0.571334ms)
+✔ running-late threshold is strictly greater than eight minutes (0.123875ms)
+✔ calculateProjectedDelayMinutes rejects missing or invalid timestamps (0.057375ms)
+✔ projectDelayAtStop combines cumulative learned schedule with live GPS progress (0.206125ms)
+✔ projectDelayAtStop refuses an incomplete learned schedule (0.055166ms)
+✔ notifyParentsAtNextStop claims and alerts parents assigned to the following stop (0.444ms)
+✔ bus approaching uses the dedicated confirmation sound and channel (0.039541ms)
+✔ driver present attendance uses the dedicated bus-present sound and channel (0.032416ms)
+ℹ tests 37
 ℹ suites 0
-ℹ pass 16
+ℹ pass 37
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 467.116541
+ℹ duration_ms 616.3785

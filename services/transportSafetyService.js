@@ -163,7 +163,7 @@ async function evaluateOverspeedInTransaction(schoolId, busId, newestFix, db) {
         AND trip_id=${newestFix.trip_id}
         AND recorded_at >= ${newestFix.recorded_at}::timestamptz - INTERVAL '2 minutes'
         AND recorded_at<=${newestFix.recorded_at}::timestamptz AND accuracy BETWEEN 0 AND 50
-        AND is_mocked = false
+        AND is_mocked = false AND is_suspicious = false AND gps_quality='accepted'
       ORDER BY recorded_at ASC
     `;
 

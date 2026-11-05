@@ -176,7 +176,11 @@ export async function upsertDiaryEntry({
         ${resolved.title}, ${resolved.title_te}, ${resolved.content}, ${resolved.content_te},
         ${due}, ${attachmentValue}, ${userInternalId},
         ${source}, ${originalText}, ${processedText}, ${ocrStatus}, ${aiStatus}, ${detectedLanguage},
-        ${sourceDiaryId}, ${templateId}, ${submissionId}, ${metadataJson}, ${classDiaryUploadId},
+        (SELECT id FROM diary_entries
+         WHERE id = ${isUuid(sourceDiaryId) ? sourceDiaryId : null}
+           AND school_id = ${schoolId} AND deleted_at IS NULL
+         FOR KEY SHARE),
+        ${templateId}, ${submissionId}, ${metadataJson}, ${classDiaryUploadId},
         ${syllabusChapterId}, ${syllabusTopicId}, ${academicPlanItemId}
       )
       ON CONFLICT (school_id, class_section_id, subject_id, entry_date, created_by)
@@ -224,6 +228,23 @@ export async function upsertDiaryEntry({
     if (error.code === '23505' && submissionId) {
       const existing = await findBySubmissionId(schoolId, submissionId);
       if (existing) return { entry: existing, createdNew: false, duplicate: true };
+    }
+    // Retry at most once, and only for this optional reference. The INSERT
+    // resolves and locks the source in the same statement for every caller.
+    if (sourceDiaryId && error.code === '23503'
+      && (error.constraint_name === 'diary_entries_source_diary_id_fkey'
+        || error.constraint === 'diary_entries_source_diary_id_fkey'
+        || error.message?.includes('diary_entries_source_diary_id_fkey'))) {
+      logger.warn({ schoolId, sourceDiaryId, event: 'stale_source_diary_id' },
+        'source_diary_id FK violation — retrying without stale reference');
+      return upsertDiaryEntry({
+        schoolId, userInternalId, classSectionId, subjectId, entryDate, title,
+        content, homeworkDueDate, attachments, inputLanguage, entrySource,
+        originalText, processedText, ocrStatus, aiStatus, detectedLanguage,
+        sourceDiaryId: null, templateId, submissionId, processingMetadata,
+        classDiaryUploadId, syllabusChapterId, syllabusTopicId,
+        academicPlanItemId, deferNotification,
+      });
     }
     throw error;
   }

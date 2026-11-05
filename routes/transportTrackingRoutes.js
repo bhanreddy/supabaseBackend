@@ -160,6 +160,8 @@ for (const path of ['/buses/:id/locations/batch', '/buses/:id/location']) router
     rejected_invalid: result.invalidCount,
     rejected_stale: result.staleCount,
     realtime_updated: result.realtimeUpdated,
+    suppressed_quality: result.suppressedCount,
+    gps_quality: result.gpsQuality,
     location: result.location
   });
 }));

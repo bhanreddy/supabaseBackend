@@ -8,7 +8,7 @@ export const SCHOOLIMS_LOGIN_QR_TYPE = 'SCHOOLIMS_LOGIN';
 export const SCHOOLIMS_LOGIN_QR_VERSION = 1;
 export const SCHOOLIMS_LOGIN_QR_MAX_LENGTH = 2048;
 export const STUDENT_LOGIN_QR_ALLOWED_ROLES = Object.freeze([
-  'admin', 'principal', 'management', 'accounts', 'accountant',
+  'admin', 'principal', 'management', 'accounts', 'accountant', 'librarian',
 ]);
 export const STUDENT_LOGIN_QR_DENIED_ROLES = Object.freeze([
   'teacher', 'staff', 'student', 'parent', 'driver',

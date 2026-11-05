@@ -244,9 +244,10 @@ router.post('/quick-action-usage', requireAuth, requireRole('admin'), asyncHandl
         ? req.body.action_key.trim()
         : '';
 
-    // Quick-action identifiers are admin routes. The dashboard ignores unknown
-    // keys, but rejecting malformed input prevents unbounded metric cardinality.
-    if (!/^\/admin\/[a-z0-9][a-z0-9/-]*$/i.test(actionKey) || actionKey.length > 160) {
+    // The admin catalogue also links to these shared accounts/updates screens.
+    // Keep their exact paths so opens rank against the same key as their cards.
+    const sharedActionKeys = ['/accounts/fees/collect', '/accounts/fines', '/updates'];
+    if ((!/^\/admin\/[a-z0-9][a-z0-9/-]*$/i.test(actionKey) && !sharedActionKeys.includes(actionKey)) || actionKey.length > 160) {
         return res.status(400).json({ error: 'Invalid quick action' });
     }
 

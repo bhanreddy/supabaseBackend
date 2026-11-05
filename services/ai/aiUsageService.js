@@ -21,6 +21,12 @@ const DEFAULT_DAILY_LIMITS = Object.freeze({
   DIARY_VOICE_AI: 40,
 });
 
+// PostgreSQL VARCHAR limits count characters, including supplementary Unicode
+// characters as one. Provider errors can be much longer than their log column.
+function boundedText(value, limit) {
+  return value == null ? null : Array.from(String(value)).slice(0, limit).join('');
+}
+
 export async function logAiUsage({
   schoolId,
   teacherId,
@@ -43,8 +49,8 @@ export async function logAiUsage({
         school_id, teacher_id, feature, provider, model, input_type,
         tokens_in, tokens_out, processing_ms, estimated_cost_usd, success, error_code
       ) VALUES (
-        ${schoolId}, ${teacherId || null}, ${feature}, ${provider}, ${model}, ${inputType},
-        ${tokensIn}, ${tokensOut}, ${processingMs}, ${estimatedCostUsd}, ${success}, ${errorCode}
+        ${schoolId}, ${teacherId || null}, ${boundedText(feature, 40)}, ${boundedText(provider, 40)}, ${boundedText(model, 80)}, ${boundedText(inputType, 40)},
+        ${tokensIn}, ${tokensOut}, ${processingMs}, ${estimatedCostUsd}, ${success}, ${boundedText(errorCode, 80)}
       )
     `;
   } catch (error) {

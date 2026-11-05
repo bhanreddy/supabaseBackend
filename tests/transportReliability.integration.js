@@ -135,6 +135,8 @@ try {
     await db`ALTER TABLE auth.users ADD COLUMN encrypted_password text,ADD COLUMN email text,ADD COLUMN banned_until timestamptz`;
     await initializeReleaseDatabase(db);
     await db.unsafe(fs.readFileSync(new URL('../migrations/20260921_transport_reliability.sql', import.meta.url), 'utf8'));
+    await db.unsafe(fs.readFileSync(new URL('../migrations/20261103_transport_gps_precision.sql', import.meta.url), 'utf8'));
+    await db.unsafe(fs.readFileSync(new URL('../migrations/20261103_transport_gps_precision.sql', import.meta.url), 'utf8'));
     fixture = await seed();
   });
   await test('driver GET does not create trips and concurrent starts return one trip', async () => {
@@ -194,14 +196,15 @@ try {
     recorded_at: new Date(Date.now() + offset).toISOString(),
     ...extra
   });
-  const ingest = fixes => ingestLocationBatch({
+  const ingest = (fixes, now = new Date()) => ingestLocationBatch({
     schoolId: fixture.school,
     busId: fixture.bus,
     tripId: trip.id,
     sessionId: trip.tracking_session_id,
     deviceId: 'test-device',
     driverId: fixture.driver,
-    fixes
+    fixes,
+    now
   }, db);
   await test('strict validation isolates poison points and acknowledges valid points', async () => {
     const data = await ingest([fix(0, {
@@ -219,12 +222,15 @@ try {
   });
   await test('history and live update roll back together, then retry heals', async () => {
     await db.unsafe(`CREATE FUNCTION test_live_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected live failure'; END $$; CREATE TRIGGER test_live_failure BEFORE INSERT OR UPDATE ON bus_locations FOR EACH ROW EXECUTE FUNCTION test_live_failure()`);
+    const [stateBeforeFailure] = await db`SELECT gps_filter_state FROM trips WHERE id=${trip.id}`;
     const point = fix(1000);
     await assert.rejects(() => ingest([point]), /injected live failure/);
     const [{
       count
     }] = await db`SELECT count(*)::int FROM bus_trip_history WHERE fix_id=${point.fix_id}`;
     assert.equal(count, 0);
+    const [stateAfterFailure] = await db`SELECT gps_filter_state FROM trips WHERE id=${trip.id}`;
+    assert.deepEqual(stateAfterFailure.gps_filter_state, stateBeforeFailure.gps_filter_state);
     await db.unsafe('DROP TRIGGER test_live_failure ON bus_locations');
     const retried = await ingest([point]);
     assert.equal(retried.insertedCount, 1);
@@ -431,9 +437,91 @@ try {
       speed: 10
     })]);
     stops = await tripService.tripStops(trip, db);
+    assert.equal(stops[0].status, 'arrived'); // 333 m in one second is a rejected GPS jump.
+    const departureAt = new Date(Date.now() + 15000);
+    await ingest([fix(0, { latitude: 20.003, speed: 60, recorded_at: departureAt.toISOString() })], departureAt);
+    stops = await tripService.tripStops(trip, db);
     assert.equal(stops[0].status, 'completed');
     assert.equal(stops[1].status, 'pending');
     await tripService.finishTransportTrip(request(), trip.id, 'test', db);
+  });
+  async function precisionJourney() {
+    const f = await seed();
+    const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+    const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: 'morning' }, db);
+    const epoch = Date.now() - 1000;
+    await db`UPDATE trips SET started_at=${new Date(epoch - 10000)},tracking_device_id='precision-device',auto_stops_enabled=true WHERE id=${t.id}`;
+    const sample = (seconds, patch = {}) => ({ fix_id: randomUUID(), latitude: 17.01, longitude: 78, accuracy: 5, speed: 0, heading: null, recorded_at: new Date(epoch + seconds * 1000).toISOString(), ...patch });
+    const send = (fixes, seconds) => ingestLocationBatch({ schoolId: f.school, busId: f.bus, tripId: t.id, sessionId: t.tracking_session_id,
+      deviceId: 'precision-device', driverId: f.driver, fixes, now: new Date(epoch + seconds * 1000) }, db);
+    return { f, t, sample, send };
+  }
+  await test('quality gating retains raw diagnostics and cannot teleport a bus or trigger a stop', async () => {
+    const { f, t, sample, send } = await precisionJourney();
+    await send([sample(0)], 0);
+    const [before] = await db`SELECT * FROM bus_locations WHERE school_id=${f.school} AND trip_id=${t.id}`;
+    const jump = sample(2, { latitude: 18 });
+    const weak = sample(4, { accuracy: 500 });
+    const result = await send([jump, weak], 4);
+    assert.equal(result.realtimeUpdated, false);
+    assert.equal(result.suppressedCount, 2);
+    const [after] = await db`SELECT * FROM bus_locations WHERE school_id=${f.school} AND trip_id=${t.id}`;
+    assert.equal(+after.recorded_at, +before.recorded_at);
+    const rows = await db`SELECT * FROM bus_trip_history WHERE school_id=${f.school} AND trip_id=${t.id} AND fix_id IN (${jump.fix_id},${weak.fix_id})`;
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every(row => row.is_suspicious));
+    assert.deepEqual(rows.map(row => row.gps_quality).sort(), ['implausible_jump', 'poor_accuracy']);
+    const [stop] = await tripService.tripStops({ ...t, school_id: f.school }, db);
+    assert.equal(stop.status, 'pending');
+    assert.equal(stop.geofence_hits, 0);
+    // A retry acknowledges the same IDs but cannot count as new evidence.
+    assert.equal((await send([jump, weak], 4)).insertedCount, 0);
+    const good = await send([sample(6), sample(8), sample(10)], 10);
+    assert.equal(good.realtimeUpdated, true);
+    const [{ count: qualified }] = await db`SELECT count(*)::int FROM bus_trip_history WHERE trip_id=${t.id} AND gps_quality='accepted'`;
+    assert.equal(qualified, 4);
+    assert.equal((await tripService.tripStops({ ...t, school_id: f.school }, db))[0].status, 'arrived');
+  });
+  await test('GPS state survives transactions, checks restart gaps, and isolates concurrent trips', async () => {
+    const journeys = await Promise.all([precisionJourney(), precisionJourney()]);
+    await Promise.all(journeys.map(({ send, sample }) => send([sample(0)], 0)));
+    const { f, t, sample, send } = journeys[0];
+    const first = await send([sample(40, { longitude: 78.01 })], 40);
+    assert.equal(first.realtimeUpdated, false);
+    assert.equal(first.gpsQuality, 'reacquiring');
+    assert.equal((await send([sample(42, { longitude: 78.01 })], 42)).realtimeUpdated, false);
+    const third = await send([sample(44, { longitude: 78.01 })], 44);
+    assert.equal(third.realtimeUpdated, true);
+    assert.equal(third.gpsQuality, 'reacquired');
+    const [state] = await db`SELECT gps_filter_state FROM trips WHERE school_id=${f.school} AND id=${t.id}`;
+    assert.equal(state.gps_filter_state.anchor.longitude, 78.01);
+    const [other] = await db`SELECT gps_filter_state FROM trips WHERE id=${journeys[1].t.id}`;
+    assert.equal(other.gps_filter_state.anchor.longitude, 78);
+    // After confirmed reacquisition, an older packet cannot wind back state.
+    await send([sample(43, { longitude: 78 })], 44);
+    const [latest] = await db`SELECT * FROM bus_locations WHERE school_id=${f.school} AND trip_id=${t.id}`;
+    assert.ok(Math.abs(Number(latest.longitude) - 78.01) < 0.00001);
+    assert.equal((await tripService.tripStops({ ...t, school_id: f.school }, db))[0].status, 'pending');
+  });
+  await test('concurrent packets for the same trip cannot rewind its trusted GPS anchor', async () => {
+    const { f, t, sample, send } = await precisionJourney();
+    await send([sample(0)], 0);
+    await Promise.all([send([sample(2, { longitude: 78.0001, speed: 20 })], 4), send([sample(4, { longitude: 78.0002, speed: 20 })], 4)]);
+    const [saved] = await db`SELECT gps_filter_state FROM trips WHERE school_id=${f.school} AND id=${t.id}`;
+    assert.equal(saved.gps_filter_state.anchor.recorded_at, sample(4).recorded_at);
+    const [live] = await db`SELECT * FROM bus_locations WHERE school_id=${f.school} AND trip_id=${t.id}`;
+    assert.equal(new Date(live.recorded_at).toISOString(), sample(4).recorded_at);
+    await db.unsafe(fs.readFileSync(new URL('../migrations/20261103_transport_gps_precision.sql', import.meta.url), 'utf8'));
+    const [after] = await db`SELECT gps_filter_state FROM trips WHERE id=${t.id}`;
+    assert.deepEqual(after.gps_filter_state, saved.gps_filter_state);
+  });
+  await test('raw coordinates, rather than a drift-held display point, govern stop arrival', async () => {
+    const { f, t, sample, send } = await precisionJourney();
+    // First coordinate starts just outside the 100 m stop entry circle.
+    await send([sample(0, { longitude: 78.0009, accuracy: 10 })], 0);
+    await send([sample(2, { longitude: 78.0009, accuracy: 10 }), sample(4, { longitude: 78.0009, accuracy: 10 })], 4);
+    const [stop] = await tripService.tripStops({ ...t, school_id: f.school }, db);
+    assert.equal(stop.status, 'pending');
   });
   await test('calibration finalization increments once for each complete trip', async () => {
     trip = await tripService.startTransportTrip(request(), {

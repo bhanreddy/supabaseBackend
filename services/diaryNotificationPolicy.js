@@ -1,9 +1,9 @@
 // Earlier posts are collected by the daily digest. Posts published at or after
 // this cutoff alert families immediately, independently of the server timezone.
 export const DAILY_DIARY_DIGEST_SCHEDULE = Object.freeze({
-  cutoffHour: 17,
+  cutoffHour: 16,
   cutoffMinute: 30,
-  cron: '30 17 * * *',
+  cron: '30 16 * * *',
   timezone: 'Asia/Kolkata',
 });
 

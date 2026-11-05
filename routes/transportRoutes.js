@@ -1,6 +1,6 @@
 import { transportTripHealth } from '../services/transportHealthService.js';
 import transportTrackingRoutes from './transportTrackingRoutes.js';
-import { authorizeBusRead,resolveTransportStudent,transportError } from '../services/transportAccessService.js';
+import { authorizeBusRead,resolveTransportStudent,transportError,isLiveTrip } from '../services/transportAccessService.js';
 import { tripStops,effectiveRouteStops,transportLeg } from '../services/transportTripService.js';
 import express from 'express';
 import sql from '../db.js';
@@ -48,7 +48,7 @@ router.use(transportTrackingRoutes);
  * Haversine distance in km between two lat/lon points
  */
 /** A GPS fix older than this is presented as stale to tracking clients. */
-const LOCATION_FRESH_SECONDS = 120;
+const LOCATION_FRESH_SECONDS = 30;
 
 /** Calendar grouping is a school operation, not the server's UTC date. */
 const kolkataDate = (date = new Date()) => {
@@ -1818,7 +1818,7 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
   const leg = normalizeLeg(trip.trip_direction);
   const [locations, stopRows, segmentRows] = await Promise.all([
     sql`
-      SELECT latitude, longitude, speed, heading, recorded_at
+      SELECT latitude, longitude, speed, heading, accuracy, is_mocked, is_suspicious, recorded_at
       FROM bus_locations
       WHERE school_id = ${schoolId}
         AND bus_id = ${trip.bus_id}
@@ -1862,9 +1862,10 @@ router.get('/my-bus/live', requireAuth, asyncHandler(async (req, res) => {
       longitude: Number(rawLocation.longitude),
       speed: rawLocation.speed != null ? Number(rawLocation.speed) : null,
       heading: rawLocation.heading != null ? Number(rawLocation.heading) : null,
+      accuracy: rawLocation.accuracy == null ? null : Number(rawLocation.accuracy),
       recorded_at: rawLocation.recorded_at,
       age_seconds: ageSeconds,
-      is_fresh: ageSeconds != null && ageSeconds <= LOCATION_FRESH_SECONDS,
+      is_fresh: isLiveTrip(trip.status) && !rawLocation.is_mocked && !rawLocation.is_suspicious && (rawLocation.accuracy != null && Number(rawLocation.accuracy) >= 0 && Number(rawLocation.accuracy) <= 100) && ageSeconds != null && ageSeconds <= LOCATION_FRESH_SECONDS,
     } : null,
     eta_minutes: eta.eta_minutes,
     eta_low_minutes: eta.eta_low_minutes,
@@ -1925,7 +1926,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
   // tracking. A fix from a previous trip is never displayed as current.
   if (trip?.bus_id) {
     const [latestLocation] = await sql`
-      SELECT latitude, longitude, speed, heading, recorded_at
+      SELECT latitude, longitude, speed, heading, accuracy, is_mocked, is_suspicious, recorded_at
       FROM bus_locations
       WHERE school_id = ${req.schoolId}
         AND bus_id = ${trip.bus_id}
@@ -1940,9 +1941,10 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
         longitude: Number(latestLocation.longitude),
         speed: latestLocation.speed == null ? null : Number(latestLocation.speed),
         heading: latestLocation.heading == null ? null : Number(latestLocation.heading),
+        accuracy: latestLocation.accuracy == null ? null : Number(latestLocation.accuracy),
         recorded_at: latestLocation.recorded_at,
         age_seconds: ageSeconds,
-        is_fresh: ageSeconds <= LOCATION_FRESH_SECONDS,
+        is_fresh: isLiveTrip(trip.status) && !latestLocation.is_mocked && !latestLocation.is_suspicious && (latestLocation.accuracy != null && Number(latestLocation.accuracy) >= 0 && Number(latestLocation.accuracy) <= 100) && ageSeconds <= LOCATION_FRESH_SECONDS,
       };
     }
   }
@@ -1951,7 +1953,7 @@ router.get('/routes/:routeId/live', requirePermission('transport.view'), asyncHa
     route: route.name,
     tracking_health: await transportTripHealth(req.schoolId, trip),
     trip: trip ? { ...trip, ui_status: mapTripUiStatus(trip.status) } : null,
-    stops,
+    stops: stops.map(stop => ({ ...stop, latitude: stop.latitude == null ? null : Number(stop.latitude), longitude: stop.longitude == null ? null : Number(stop.longitude) })),
     location,
   });
 }));

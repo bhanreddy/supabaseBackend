@@ -24,9 +24,9 @@ try{
   const port=await new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
   run('postgres-initialize','initdb',['-D',path.join(work,'data'),'-A','trust','--no-locale']);
   run('postgres-start','pg_ctl',['-D',path.join(work,'data'),'-l',path.join(work,'postgres.log'),'-o',`-h 127.0.0.1 -p ${port}`,'start']);started=true;
-  run('backend-transport-unit',process.execPath,['--test','services/transportPhaseE.test.js','services/transportCalibrationService.test.js','services/transportCalibrationAdminService.test.js','services/transportProactiveNotificationService.test.js']);
+  run('backend-transport-unit',process.execPath,['--test','services/transportGpsFilter.test.js','services/transportEtaService.test.js','services/transportPhaseE.test.js','services/transportCalibrationService.test.js','services/transportCalibrationAdminService.test.js','services/transportProactiveNotificationService.test.js']);
   run('backend-transport-integration',process.execPath,['--experimental-test-module-mocks','--test','tests/transportReliability.integration.js'],backend,{TRANSPORT_TEST_DATABASE_URL:`postgres://${encodeURIComponent(os.userInfo().username)}@127.0.0.1:${port}/postgres`});
-  run('frontend-transport',process.execPath,['scripts/run-tests.cjs','--runInBand','--watch=false','--runTestsByPath','src/services/driverLocationTask.test.ts','src/services/driverLocationPermissionFlow.test.ts'],frontend);
+  run('frontend-transport',process.execPath,['scripts/run-tests.cjs','--runInBand','--watch=false','--runTestsByPath','src/services/driverLocationTask.test.ts','src/services/driverLocationPermissionFlow.test.ts','src/services/transportMapModel.test.ts','src/components/LiveBusMap.test.tsx','src/__tests__/adminLiveBusTracking.test.tsx','src/__tests__/parentBusTracking.test.tsx'],frontend);
   const output=run('native-config',process.execPath,['node_modules/expo/bin/cli','config','--type','introspect','--json'],frontend);
   const config=JSON.parse(output);
   const permissions=config.android?.permissions||[];

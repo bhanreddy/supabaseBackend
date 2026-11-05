@@ -9,6 +9,7 @@ export const ROLE_LOGIN_QR_SUBJECTS = Object.freeze([
   { code: 'management', label: 'Management', rank: 90 },
   { code: 'accounts', label: 'Accounts', rank: 70 },
   { code: 'accountant', label: 'Accountant', rank: 70 },
+  { code: 'librarian', label: 'Librarian', rank: 60 },
   { code: 'staff', label: 'Staff', rank: 40 },
   { code: 'teacher', label: 'Teacher', rank: 40 },
   { code: 'driver', label: 'Driver', rank: 30 },

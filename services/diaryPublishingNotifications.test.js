@@ -85,7 +85,7 @@ beforeEach(() => {
   state.entries = [];
   state.duplicate = false;
   state.failNotification = false;
-  mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-28T11:59:59Z') });
+  mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-28T10:59:59Z') });
 });
 afterEach(() => mock.timers.reset());
 
@@ -151,7 +151,7 @@ function assertImmediate(count = 1) {
 }
 
 test('manual diary published after the cutoff alerts immediately, regardless of entry date', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   await upsertDiaryEntry({
     schoolId: 17, userInternalId: 'teacher-1', classSectionId: classId,
     subjectId, entryDate: '2026-09-27', title: 'Mathematics', content: 'Complete exercise 4',
@@ -161,7 +161,7 @@ test('manual diary published after the cutoff alerts immediately, regardless of 
 
 for (const entrySource of ['MANUAL', 'PHOTO', 'COPIED']) {
   test(`${entrySource} Smart Diary sends one immediate alert for a late batch`, async () => {
-    mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+    mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
     await publishDiaryTargets({
       schoolId: 17, userInternalId: 'teacher-1', userId: 'teacher-user', roles: ['teacher'],
       targets: [{ class_section_id: classId, subject_id: subjectId }, { class_section_id: classId, subject_id: subjectId }],
@@ -174,7 +174,7 @@ for (const entrySource of ['MANUAL', 'PHOTO', 'COPIED']) {
 
 for (const sendOriginal of [true, false]) {
   test(`late class diary ${sendOriginal ? 'photo' : 'subjects'} sends one immediate alert`, async () => {
-    mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+    mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
     await publishClassDiary({
       schoolId: 17, userInternalId: 'teacher-1', classSectionId: classId,
       entryDate: '2026-09-28', imageUrl: 'https://example.test/diary.jpg', submissionId, sendOriginal,
@@ -189,7 +189,7 @@ for (const sendOriginal of [true, false]) {
 }
 
 test('retrying an existing submission after the cutoff does not alert again', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   state.duplicate = true;
   state.entries.push({ id: 'existing', class_section_id: classId, notification_sent_at: new Date().toISOString() });
   const result = await upsertDiaryEntry({ schoolId: 17, submissionId });
@@ -198,8 +198,8 @@ test('retrying an existing submission after the cutoff does not alert again', as
 });
 
 test('status-only OCR completion does not reset a delivered late alert', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
-  const sentAt = '2026-09-28T12:00:00Z';
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
+  const sentAt = '2026-09-28T11:00:00Z';
   state.entries.push({ id: 'diary-1', class_section_id: classId, notification_sent_at: sentAt });
   await patchDiaryAiFields(17, 'diary-1', { aiStatus: 'skipped' });
   assert.equal(state.entries[0].notification_sent_at, sentAt);
@@ -207,14 +207,14 @@ test('status-only OCR completion does not reset a delivered late alert', async (
 });
 
 test('OCR content published after the cutoff alerts immediately', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   state.entries.push({ id: 'diary-1', class_section_id: classId, notification_sent_at: null });
   await patchDiaryAiFields(17, 'diary-1', { content: 'Processed homework', aiStatus: 'succeeded' });
   assertImmediate();
 });
 
 test('delivery exceptions preserve the published diary for the next digest', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   state.failNotification = true;
   const { entry } = await upsertDiaryEntry({
     schoolId: 17, userInternalId: 'teacher-1', classSectionId: classId,
@@ -225,7 +225,7 @@ test('delivery exceptions preserve the published diary for the next digest', asy
 });
 
 test('partial delivery failures remain eligible for the digest', async () => {
-  mock.timers.setTime(Date.parse('2026-09-28T12:00:01Z'));
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   state.entries.push({ id: 'diary-1', class_section_id: classId, notification_sent_at: null });
   await notifyDiaryEntriesAfterCutoff(17, state.entries, {
     notify: async () => ({ successCount: 1, failureCount: 1 }),
@@ -235,7 +235,7 @@ test('partial delivery failures remain eligible for the digest', async () => {
 });
 
 test('marking delivered entries is scoped to the school, published IDs, and pre-dispatch version', async () => {
-  const now = new Date('2026-09-28T12:00:01Z');
+  const now = new Date('2026-09-28T11:00:01Z');
   let marker;
   await notifyDiaryEntriesAfterCutoff(17, [{ id: 'diary-1', class_section_id: classId }], {
     now,

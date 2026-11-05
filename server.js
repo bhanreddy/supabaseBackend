@@ -206,6 +206,7 @@ import authRouter from './routes/authRoutes.js';
 import studentsRouter from './routes/studentsRoutes.js';
 import studentLoginQrRouter from './routes/studentLoginQrRoutes.js';
 import roleLoginQrRouter from './routes/roleLoginQrRoutes.js';
+import libraryRouter from './routes/libraryRoutes.js';
 import studentDashboardRouter from './routes/studentDashboardRoutes.js';
 import teachersRouter from './routes/teachersRoutes.js';
 import staffRouter from './routes/staffRoutes.js';
@@ -344,6 +345,7 @@ app.get('/', (req, res) => {
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/student-login-qr', studentLoginQrRouter);
 app.use('/api/v1/role-login-qr', roleLoginQrRouter);
+app.use('/api/v1/library', libraryRouter);
 app.use('/api/v1/students/documents', studentDocumentRouter);
 app.use('/api/v1/students', studentsRouter);
 app.use('/api/v1/student', studentDashboardRouter);

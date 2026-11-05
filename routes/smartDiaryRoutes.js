@@ -393,6 +393,19 @@ router.post('/publish', requirePermission('diary.create'), asyncHandler(async (r
     submission_id: body.submission_ids?.[index] || (index === 0 ? body.submission_id : null),
   }));
 
+  // Validate source_diary_id before passing to publishDiaryTargets.
+  // A client may cache a UUID from a previous session that has since been
+  // hard-deleted or never belonged to this school. An unresolved FK would
+  // trigger a 23503 violation (diary_entries_source_diary_id_fkey).
+  let sourceDiaryId = isUuid(body.source_diary_id) ? body.source_diary_id : null;
+  if (sourceDiaryId) {
+    const [sourceEntry] = await sql`
+      SELECT id FROM diary_entries
+      WHERE id = ${sourceDiaryId} AND school_id = ${req.schoolId} AND deleted_at IS NULL
+    `;
+    if (!sourceEntry) sourceDiaryId = null;
+  }
+
   const results = await publishDiaryTargets({
     schoolId: req.schoolId,
     userInternalId: req.user.internal_id,
@@ -414,7 +427,7 @@ router.post('/publish', requirePermission('diary.create'), asyncHandler(async (r
       ocr_status: body.ocr_status || null,
       ai_status: body.ai_status || null,
       detected_language: body.detected_language || extraction.detectedLanguage || null,
-      source_diary_id: isUuid(body.source_diary_id) ? body.source_diary_id : null,
+      source_diary_id: sourceDiaryId,
       template_id: isUuid(body.template_id) ? body.template_id : null,
       processing_metadata: buildProcessingMetadata(extraction, {
         entrySource: body.entry_source,

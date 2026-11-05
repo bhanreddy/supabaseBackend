@@ -24,6 +24,8 @@ import { enqueueTransitionNotifications } from './transportTripService.js';
 export const GEOFENCE = {
   /** Consecutive in-radius fixes required before arriving (debounce a GPS spike). */
   DEBOUNCE_HITS: 2,
+  /** Fast sampling must still provide independent evidence over time. */
+  MIN_ARRIVAL_SPAN_MS: 4000,
   /** Dwell time in-radius that also satisfies arrival when speed is unknown (ms). */
   DWELL_MS: 8000,
   /** At/below this speed the bus is treated as stopped/boarding (km/h). */
@@ -55,7 +57,8 @@ export const hasLeftRadius = (distM, radiusM, factor = GEOFENCE.EXIT_RADIUS_FACT
 export const shouldAutoArrive = ({ hits, firstSeenMs, nowMs, speedKmh, distM, radiusM }) => {
   if (distM > radiusM) return false;
   if (hits < GEOFENCE.DEBOUNCE_HITS) return false;
-  const slow = speedKmh != null && Number(speedKmh) < GEOFENCE.SLOW_SPEED_KMH;
+  if (firstSeenMs == null || !Number.isFinite(firstSeenMs) || !Number.isFinite(nowMs) || nowMs - firstSeenMs < GEOFENCE.MIN_ARRIVAL_SPAN_MS) return false;
+  const slow = speedKmh != null && Number.isFinite(Number(speedKmh)) && Number(speedKmh) >= 0 && Number(speedKmh) < GEOFENCE.SLOW_SPEED_KMH;
   const dwelled = firstSeenMs != null && nowMs - firstSeenMs >= GEOFENCE.DWELL_MS;
   return speedKmh != null ? slow : dwelled;
 };

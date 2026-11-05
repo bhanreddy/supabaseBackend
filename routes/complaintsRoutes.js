@@ -11,7 +11,15 @@ const router = express.Router();
 
 async function assertCanRaiseComplaintForStudent(req, raised_for_student_id) {
   const isAdmin = req.user?.roles.includes('admin');
-  if (isAdmin) return null;
+  const isLibrarian = req.user?.roles.includes('librarian');
+  if (isAdmin || isLibrarian) {
+    const [student] = await sql`
+      SELECT id FROM students WHERE id = ${raised_for_student_id}
+        AND school_id = ${req.schoolId} AND deleted_at IS NULL
+        ${!isAdmin ? sql`AND status_id = ${ACTIVE_STUDENT_STATUS_ID}` : sql``}
+    `;
+    return student ? null : { status: 400, error: 'Student is not available in this school' };
+  }
 
   const [enrollment] = await sql`
     SELECT se.class_section_id, cs.class_teacher_id

@@ -38,6 +38,7 @@ const contentEngineMigrationName = '20260914_v438_content_engine.sql';
 const contentEngineHardeningMigrationName = '20260914_v439_content_engine_hardening.sql';
 const databaseBackupMigrationName = '20260914_v445_database_backup_subsystem.sql';
 const transportReliabilityMigrationName = '20260921_transport_reliability.sql';
+const transportGpsPrecisionMigrationName = '20261103_transport_gps_precision.sql';
 const examPerSectionTimetableMigrationName = '20260923_exam_per_section_timetable.sql';
 const parentProfilePhotoPermissionMigrationName = '20260925_parent_profile_photo_permission.sql';
 const examHallTicketBatchesMigrationName = '20260925_exam_hall_ticket_batches.sql';
@@ -50,6 +51,7 @@ const accountsLeaveHalfDayMigrationName = '20260930_accounts_leave_half_day.sql'
 const accountsLeaveApplyOnlyMigrationName = '20260930_accounts_leave_apply_only.sql';
 const attendanceSchoolLocalDateMigrationName = '20261008_attendance_school_local_date.sql';
 const roleLoginQrMigrationName = '20261013_role_login_qr.sql';
+const librarianLibraryMigrationName = '20261104_librarian_library.sql';
 const staffAttendanceLookupMigrationName = '20261014_staff_attendance_lookup_indexes.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
@@ -237,6 +239,7 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
   await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
   await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
+  await applyNamedSqlMigration(db, transportGpsPrecisionMigrationName, 4611103);
   await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
   await applyNamedSqlMigration(db, parentProfilePhotoPermissionMigrationName, 4490925);
   await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
@@ -249,6 +252,7 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
   await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
   await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
+  await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -457,7 +461,12 @@ export async function verifyReleaseDatabase(db) {
   if (!String(attendanceDateCheck?.definition || '').includes('attendance_date_is_not_future')) {
     throw new Error('Attendance date check still uses the database clock');
   }
-  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine + Database Backups', freshBaseline: readReleaseBaseline().manifest.id };
+  const [libraryCheck] = await db`SELECT to_regclass('public.library_books') AS books,
+    to_regclass('public.library_copies') AS copies, to_regclass('public.library_loans') AS loans,
+    to_regclass('public.library_reservations') AS reservations, to_regclass('public.library_settings') AS settings,
+    to_regclass('public.library_activity') AS activity`;
+  if (!libraryCheck || Object.values(libraryCheck).some((value) => !value)) throw new Error('Library tables are missing');
+  return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine + Database Backups + Library', freshBaseline: readReleaseBaseline().manifest.id };
 }
 
 function sessionConnectionUrl(source) {
@@ -468,8 +477,8 @@ function sessionConnectionUrl(source) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const mode = process.argv[2];
-  if (!['--init','--upgrade','--check','--student-login-qr'].includes(mode)) {
-    throw new Error('Usage: node scripts/migrate_release.js --init | --upgrade | --check | --student-login-qr');
+  if (!['--init','--upgrade','--check','--student-login-qr','--library'].includes(mode)) {
+    throw new Error('Usage: node scripts/migrate_release.js --init | --upgrade | --check | --student-login-qr | --library');
   }
   const source = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL;
   if (!source) throw new Error('Set DATABASE_URL_DIRECT to a direct/session connection');
@@ -512,6 +521,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, databaseBackupMigrationName, 4450914);
       await applyNamedSqlMigration(db, databaseBackupHardeningMigrationName, 4460914);
       await applyNamedSqlMigration(db, transportReliabilityMigrationName, 4470921);
+      await applyNamedSqlMigration(db, transportGpsPrecisionMigrationName, 4611103);
       await applyNamedSqlMigration(db, examPerSectionTimetableMigrationName, 4480923);
       await applyNamedSqlMigration(db, parentProfilePhotoPermissionMigrationName, 4490925);
       await applyNamedSqlMigration(db, examHallTicketBatchesMigrationName, 4500925);
@@ -524,8 +534,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, accountsLeaveApplyOnlyMigrationName, 4570930);
       await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
       await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
+      await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
     }
-    if (mode==='--student-login-qr') {
+    if (mode==='--library') {
+      await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
+      const [row] = await db`SELECT to_regclass('public.library_loans') AS name`;
+      if (!row?.name) throw new Error('Library tables were not created');
+      console.log('Librarian role and library storage are installed');
+    } else if (mode==='--student-login-qr') {
       await applyStudentLoginQrMigration(db);
       const [row] = await db`SELECT to_regclass('public.student_login_qr_credentials') AS name`;
       if (!row?.name) throw new Error('student_login_qr_credentials was not created');
