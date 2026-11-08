@@ -19,6 +19,8 @@ const db = async (strings, ...values) => {
       content: values[6],
       attachments: values[9],
       notification_sent_at: null,
+      updated_at: new Date(),
+      _published_at: new Date().toISOString(),
       _was_insert: true,
     };
     state.entries.push(entry);
@@ -28,8 +30,9 @@ const db = async (strings, ...values) => {
     return query.includes('submission_id') && !state.duplicate ? [] : [state.entries[0]];
   }
   if (query.includes('SET notification_sent_at = now()')) {
+    const sentIds = new Set(values[0].map(({ id }) => id));
     for (const entry of state.entries) {
-      if (values[1].includes(entry.id)) entry.notification_sent_at = new Date().toISOString();
+      if (sentIds.has(entry.id)) entry.notification_sent_at = new Date().toISOString();
     }
     return [];
   }
@@ -38,6 +41,8 @@ const db = async (strings, ...values) => {
     state.entries[0] = {
       ...state.entries[0], content: 'Processed homework',
       notification_sent_at: contentUpdated ? null : state.entries[0].notification_sent_at,
+      updated_at: new Date(),
+      _published_at: new Date().toISOString(),
     };
     return [state.entries[0]];
   }
@@ -76,7 +81,7 @@ mock.module('./smartDiary/classTeacherService.js', {
   namedExports: { loadClassSubjects: async () => [{ id: subjectId, name: 'Mathematics' }] },
 });
 
-const { upsertDiaryEntry, publishDiaryTargets, patchDiaryAiFields, notifyDiaryEntriesAfterCutoff } = await import('./smartDiary/publishService.js');
+const { upsertDiaryEntry, publishDiaryTargets, patchDiaryAiFields, notifyDiaryEntriesAfterCutoff, withDiaryPublication } = await import('./smartDiary/publishService.js');
 const { publishClassDiary } = await import('./smartDiary/classDiaryPublish.js');
 
 beforeEach(() => {
@@ -147,7 +152,7 @@ function assertImmediate(count = 1) {
   assert.deepEqual(state.notifications[0][0], ['parent-1']);
   assert.equal(state.notifications[0][1], 'DIARY_UPDATED');
   assert.deepEqual(state.notifications[0][3], { role: 'parent', schoolId: 17, deepLink: '/Screen/diary' });
-  assert.ok(state.entries.every((entry) => entry.notification_sent_at), 'Sent entries must be excluded from the next digest');
+  assert.ok(state.entries.every((entry) => entry.notification_sent_at), 'Successful late alerts must be marked as sent');
 }
 
 test('manual diary published after the cutoff alerts immediately, regardless of entry date', async () => {
@@ -213,7 +218,7 @@ test('OCR content published after the cutoff alerts immediately', async () => {
   assertImmediate();
 });
 
-test('delivery exceptions preserve the published diary for the next digest', async () => {
+test('delivery exceptions leave the diary published', async () => {
   mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
   state.failNotification = true;
   const { entry } = await upsertDiaryEntry({
@@ -224,30 +229,39 @@ test('delivery exceptions preserve the published diary for the next digest', asy
   assert.equal(state.entries[0].notification_sent_at, null);
 });
 
-test('partial delivery failures remain eligible for the digest', async () => {
+test('partial delivery failures leave the late publication unmarked', async () => {
   mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
-  state.entries.push({ id: 'diary-1', class_section_id: classId, notification_sent_at: null });
-  await notifyDiaryEntriesAfterCutoff(17, state.entries, {
-    notify: async () => ({ successCount: 1, failureCount: 1 }),
+  const publication = {
+    id: 'diary-1',
+    class_section_id: classId,
+    notification_sent_at: null,
+    updated_at: new Date(),
+    _published_at: new Date().toISOString(),
+  };
+  state.entries.push(publication);
+  let attempted = 0;
+  await notifyDiaryEntriesAfterCutoff(17, [withDiaryPublication(publication)], {
+    notify: async () => {
+      attempted++;
+      return { successCount: 1, failureCount: 1 };
+    },
   });
+  assert.equal(attempted, 1);
   assert.equal(state.entries[0].notification_sent_at, null);
   assert.ok(state.queries.every((query) => !query.includes('SET notification_sent_at')));
 });
 
-test('marking delivered entries is scoped to the school, published IDs, and pre-dispatch version', async () => {
-  const now = new Date('2026-09-28T11:00:01Z');
-  let marker;
-  await notifyDiaryEntriesAfterCutoff(17, [{ id: 'diary-1', class_section_id: classId }], {
-    now,
-    db: async (strings, ...values) => {
-      if (strings.join('').includes('recipient_people')) return [{ id: 'student-1' }];
-      marker = { query: strings.join('?'), values };
-      return [];
-    },
-    notify: async () => ({ successCount: 1, failureCount: 0 }),
-  });
-  assert.deepEqual(marker.values, [17, ['diary-1'], now]);
-  assert.match(marker.query, /notification_sent_at IS NULL/);
-  assert.match(marker.query, /GREATEST\(COALESCE\(updated_at, created_at\), created_at\) <=/);
-  assert.match(marker.query, /deleted_at IS NULL/);
+test('a batch that crosses 4:30 PM sends immediately only for entries saved at or after the cutoff', async () => {
+  mock.timers.setTime(Date.parse('2026-09-28T11:00:01Z'));
+  state.entries = ['2026-09-28T10:59:59.999Z', '2026-09-28T11:00:00.000Z'].map((timestamp, index) => ({
+    id: `diary-${index + 1}`,
+    class_section_id: classId,
+    notification_sent_at: null,
+    updated_at: new Date(timestamp),
+    _published_at: timestamp,
+  }));
+  await notifyDiaryEntriesAfterCutoff(17, state.entries.map(withDiaryPublication));
+  assert.equal(state.notifications.length, 1);
+  assert.equal(state.entries[0].notification_sent_at, null);
+  assert.ok(state.entries[1].notification_sent_at);
 });

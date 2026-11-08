@@ -37,7 +37,7 @@ test('daily diary digest deduplicates subjects and siblings into one parent noti
   });
 });
 
-test('daily diary recipient query includes family logins in the prior 4:30 PM IST cutoff window', async () => {
+test('daily diary recipient query includes family logins in the same day cutoff window', async () => {
   let captured;
   const db = async (strings, ...values) => {
     captured = { query: strings.join('?'), values };
@@ -50,19 +50,16 @@ test('daily diary recipient query includes family logins in the prior 4:30 PM IS
   assert.ok(captured.query.includes('JOIN student_parents sp'));
   assert.ok(captured.query.includes('JOIN parents parent'));
   assert.ok(captured.query.includes("u.account_status = 'active'"));
-  assert.ok(captured.query.includes("dw.window_end - INTERVAL '1 day'"));
-  assert.ok(captured.query.includes('<= dw.window_end'));
+  assert.ok(captured.query.includes('>= dw.window_start'));
+  assert.ok(captured.query.includes('< dw.window_end'));
   assert.ok(captured.query.includes('d.notification_sent_at IS NULL'));
-  assert.ok(captured.query.includes("INTERVAL '1 minute'"));
   assert.ok(captured.query.includes('SELECT school_id, person_id FROM updated_students'));
   assert.ok(captured.query.includes('u.school_id = recipient.school_id'));
   assert.deepEqual(captured.values, [
     'Asia/Kolkata',
+    'Asia/Kolkata',
     16,
     30,
-    'Asia/Kolkata',
-    'Asia/Kolkata',
-    'Asia/Kolkata',
     'Asia/Kolkata',
   ]);
 });
@@ -73,7 +70,7 @@ test('daily diary digest uses the same 4:30 PM cutoff as the scheduler by defaul
     db: async (_strings, ...params) => { values = params; return []; },
     notify: async () => { throw new Error('No diary should be dispatched'); },
   });
-  assert.deepEqual(values.slice(0, 4), ['Asia/Kolkata', 16, 30, 'Asia/Kolkata']);
+  assert.deepEqual(values, ['Asia/Kolkata', 'Asia/Kolkata', 16, 30, 'Asia/Kolkata']);
 });
 
 test('daily diary digest keeps recipients from different schools in separate sends', async () => {

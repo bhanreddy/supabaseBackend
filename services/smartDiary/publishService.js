@@ -14,6 +14,15 @@ import logger from '../../utils/logger.js';
 
 export { isUuid, sanitizeDueDate, sanitizeSource };
 
+const publishedAt = Symbol('diaryPublishedAt');
+
+export function withDiaryPublication(row) {
+  if (!row) return row;
+  const { _published_at, ...entry } = row;
+  // Keep the exact PostgreSQL timestamp for version checks without exposing it in API responses.
+  return Object.defineProperty(entry, publishedAt, { value: _published_at });
+}
+
 export async function teacherMayAccessAssignment(schoolId, userId, classSectionId, subjectId) {
   if (!classSectionId) return false;
   const [staff] = await sql`
@@ -208,11 +217,12 @@ export async function upsertDiaryEntry({
         notification_sent_at = NULL,
         deleted_at = NULL,
         updated_at = now()
-      RETURNING *, (xmax = 0) AS _was_insert
+      RETURNING *, (xmax = 0) AS _was_insert, updated_at::text AS _published_at
     `;
     const row = result[0];
     const createdNew = row._was_insert === true;
-    const { _was_insert, ...entry } = row;
+    const { _was_insert, ...published } = row;
+    const entry = withDiaryPublication(published);
     await recordDiaryPhotoHistory({
       schoolId,
       diaryEntryId: entry.id,
@@ -267,7 +277,7 @@ export async function patchDiaryAiFields(schoolId, diaryId, fields = {}) {
     });
   }
 
-  const [updated] = await sql`
+  const [row] = await sql`
     UPDATE diary_entries SET
       title = ${resolved.title},
       title_te = ${resolved.title_te},
@@ -284,8 +294,9 @@ export async function patchDiaryAiFields(schoolId, diaryId, fields = {}) {
         THEN NULL ELSE notification_sent_at END,
       updated_at = now()
     WHERE id = ${diaryId} AND school_id = ${schoolId}
-    RETURNING *
+    RETURNING *, updated_at::text AS _published_at
   `;
+  const updated = withDiaryPublication(row);
 
   // Status-only OCR updates must not re-alert families about the same photo.
   if (fields.content != null || fields.title != null) {
@@ -338,12 +349,12 @@ export async function parentRecipientUserIds(schoolId, classSectionIds, db = sql
 
 /** Send one alert per family for a completed late publication (including batches). */
 export async function notifyDiaryEntriesAfterCutoff(schoolId, entries, {
-  now = new Date(),
   db = sql,
   notify = sendNotificationToUsers,
 } = {}) {
-  if (!isAfterDiaryNotificationCutoff(now)) return;
-  const pending = entries.filter((entry) => entry?.id && !entry.notification_sent_at);
+  const pending = entries.filter((entry) => entry?.[publishedAt]
+    && !entry.notification_sent_at
+    && isAfterDiaryNotificationCutoff(new Date(entry.updated_at)));
   if (pending.length === 0) return;
 
   try {
@@ -352,19 +363,21 @@ export async function notifyDiaryEntriesAfterCutoff(schoolId, entries, {
     const result = await notify(recipients, 'DIARY_UPDATED', DIARY_DIGEST_MESSAGE, {
       role: 'parent', schoolId, deepLink: '/Screen/diary',
     });
-    // Keep failed dispatches eligible for the next digest as a fallback.
     if (result?.failureCount > 0) return;
 
+    // Only mark the version we sent. A concurrent edit starts a new publication.
+    const sentVersions = pending.map((entry) => ({ id: entry.id, updated_at: entry[publishedAt] }));
     await db`
-      UPDATE diary_entries SET notification_sent_at = now()
-      WHERE school_id = ${schoolId}
-        AND id = ANY(${pending.map((entry) => entry.id)})
-        AND notification_sent_at IS NULL
-        AND GREATEST(COALESCE(updated_at, created_at), created_at) <= ${now}
-        AND deleted_at IS NULL
+      UPDATE diary_entries d SET notification_sent_at = now()
+      FROM jsonb_to_recordset(${db.json(sentVersions)}::jsonb) AS sent(id uuid, updated_at timestamptz)
+      WHERE d.school_id = ${schoolId}
+        AND d.id = sent.id
+        AND d.updated_at = sent.updated_at
+        AND d.notification_sent_at IS NULL
+        AND d.deleted_at IS NULL
     `;
   } catch (error) {
-    // Diary publication succeeds even if delivery fails; the digest can retry.
+    // Diary publication succeeds even if delivery fails.
     logger.error({ err: error, schoolId, event: 'late_diary_dispatch_failed' }, 'Late diary notification failed');
   }
 }

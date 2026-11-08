@@ -9,10 +9,8 @@ export const DIARY_DIGEST_MESSAGE = Object.freeze({
 });
 
 /**
- * Resolve parent accounts whose children received a diary update since the
- * previous daily cutoff. A post made after 4:30 PM IST is included in the
- * following day's digest as a fallback if its immediate alert failed. Late
- * posts already dispatched are excluded by notification_sent_at.
+ * Resolve parent accounts for diary activity from local midnight up to the
+ * same day's cutoff. Later publications use the immediate notification path.
  *
  * The DISTINCT pair is the core guarantee: multiple subjects and multiple
  * children in the same school still resolve to one notification recipient.
@@ -21,15 +19,17 @@ export const DIARY_DIGEST_MESSAGE = Object.freeze({
  */
 export async function getDailyDiaryDigestRecipients(timezone, cutoffHour, cutoffMinute, db = sql) {
   return db`
-    WITH digest_window AS (
-      SELECT (
-        date_trunc('day', now() AT TIME ZONE ${timezone})
-        + (${cutoffHour} * INTERVAL '1 hour')
-        + (${cutoffMinute} * INTERVAL '1 minute')
-      ) AT TIME ZONE ${timezone} AS window_end
+    WITH digest_day AS (
+      SELECT (now() AT TIME ZONE ${timezone})::date AS cutoff_date
+    ), digest_window AS (
+      SELECT cutoff_date,
+        cutoff_date::timestamp AT TIME ZONE ${timezone} AS window_start,
+        (cutoff_date + make_interval(hours => ${cutoffHour}, mins => ${cutoffMinute}))
+          AT TIME ZONE ${timezone} AS window_end
+      FROM digest_day
     ), updated_students AS (
       SELECT DISTINCT d.school_id, student.id AS student_id, student.person_id,
-        (dw.window_end AT TIME ZONE ${timezone})::date AS cutoff_date
+        dw.cutoff_date
       FROM diary_entries d
       CROSS JOIN digest_window dw
       JOIN schools school
@@ -44,14 +44,15 @@ export async function getDailyDiaryDigestRecipients(timezone, cutoffHour, cutoff
         ON student.id = se.student_id
        AND student.school_id = d.school_id
        AND student.deleted_at IS NULL
-      WHERE GREATEST(COALESCE(d.updated_at, d.created_at), d.created_at)
-              > dw.window_end - INTERVAL '1 day'
+      WHERE now() >= dw.window_end
         AND GREATEST(COALESCE(d.updated_at, d.created_at), d.created_at)
-              <= dw.window_end
+              >= dw.window_start
+        AND GREATEST(COALESCE(d.updated_at, d.created_at), d.created_at)
+              < dw.window_end
         AND d.notification_sent_at IS NULL
         AND d.deleted_at IS NULL
-        AND se.start_date <= (dw.window_end AT TIME ZONE ${timezone})::date
-        AND (se.end_date IS NULL OR se.end_date >= (dw.window_end AT TIME ZONE ${timezone})::date)
+        AND se.start_date <= dw.cutoff_date
+        AND (se.end_date IS NULL OR se.end_date >= dw.cutoff_date)
     ), recipient_people AS (
       SELECT school_id, person_id FROM updated_students
       UNION
