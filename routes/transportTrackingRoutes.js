@@ -5,7 +5,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/apiResponse.js';
 import { authorizeBusRead, authorizeTrip, requireDriver, transportError, isLiveTrip } from '../services/transportAccessService.js';
 import { startTransportTrip, finishTransportTrip, transitionTransportStop, tripStops, effectiveRouteStops, transportDate, transportLeg } from '../services/transportTripService.js';
-import { ingestLocationBatch } from '../services/transportLocationIngestService.js';
+import { ingestLocationBatch, ingestLegacyLocationBatch } from '../services/transportLocationIngestService.js';
 import { getLegCalibrationStatus } from '../services/transportCalibrationService.js';
 import { enqueueStopNotification, wakeTransportOutbox } from '../services/transportOutboxService.js';
 const router = express.Router();
@@ -79,10 +79,13 @@ router.get('/driver/my-trip', asyncHandler(async (req, res) => {
 router.post('/driver/trip/:tripId/start', asyncHandler(async (req, res) => {
   const id = checkId(req.params.tripId);
   const [existing] = await sql`SELECT route_id,trip_direction FROM trips WHERE id=${id} AND school_id=${req.schoolId}`;
+  // Older builds start a virtual trip (route ID) with an empty body.
+  const [route] = await sql`SELECT direction FROM transport_routes
+    WHERE id=${existing?.route_id || id} AND school_id=${req.schoolId} AND deleted_at IS NULL`;
   const trip = await startTransportTrip(req, {
     ...req.body,
     route_id: existing?.route_id || id,
-    trip_direction: req.body?.trip_direction || existing?.trip_direction
+    trip_direction: req.body?.trip_direction || existing?.trip_direction || (route && transportLeg(route.direction))
   });
   return reply(res, req, trip);
 }));
@@ -102,10 +105,10 @@ for (const action of ['arrive', 'complete', 'skip']) router.post(`/trips/:tripId
   });
 }));
 router.post('/driver/trip/:tripId/stop/:stopId/reach', asyncHandler(async (req, res) => {
-  const stop = await transitionTransportStop(req, checkId(req.params.tripId), checkId(req.params.stopId), 'arrive', req.body);
+  const stop = await transitionTransportStop(req, checkId(req.params.tripId), checkId(req.params.stopId), 'reach', req.body);
   return reply(res, req, {
     stop,
-    message: 'Arrival confirmed'
+    message: 'Stop reached'
   });
 }));
 for (const path of ['/trips/:tripId/end', '/driver/trip/:tripId/complete']) router.post(path, asyncHandler(async (req, res) => {
@@ -140,11 +143,14 @@ router.post('/trips/:tripId/tracking-session', asyncHandler(async (req, res) => 
 for (const path of ['/buses/:id/locations/batch', '/buses/:id/location']) router.post(path, asyncHandler(async (req, res) => {
   const driverId = await requireDriver(req.schoolId, req.user);
   const input = req.body || {};
-  if (!input.trip_id || !input.session_id) throw transportError(409, 'TRACKING_SESSION_REQUIRED', 'Update the driver app and start or resume tracking before uploading locations');
-  checkId(input.trip_id);
-  checkId(input.session_id);
+  const legacy = input.trip_id == null && input.session_id == null;
+  if (!legacy) {
+    if (!input.trip_id || !input.session_id) throw transportError(409, 'TRACKING_SESSION_REQUIRED', 'Both trip and session identity are required');
+    checkId(input.trip_id);
+    checkId(input.session_id);
+  }
   if (input.fixes !== undefined && !Array.isArray(input.fixes)) throw transportError(400, 'INVALID_BATCH', 'fixes must be an array');
-  const result = await ingestLocationBatch({
+  const result = await (legacy ? ingestLegacyLocationBatch : ingestLocationBatch)({
     schoolId: req.schoolId,
     busId: checkId(req.params.id),
     driverId,

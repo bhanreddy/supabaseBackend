@@ -62,10 +62,12 @@ mock.module('../services/geminiTranslator.js', {
 const tripService = await import('../services/transportTripService.js');
 const {
   ingestLocationBatch,
+  ingestLegacyLocationBatch,
   normalizeLocationBatch
 } = await import('../services/transportLocationIngestService.js');
 const {
   drainTransportOutbox,
+  drainTransportOutboxBatches,
   enqueueTransportUsers
 } = await import('../services/transportOutboxService.js');
 const {
@@ -431,13 +433,13 @@ try {
       speed: 0
     })]);
     stops = await tripService.tripStops(trip, db);
-    assert.equal(stops[0].status, 'arrived');
+    assert.equal(stops[0].status, 'completed');
     await ingest([fix(0, {
       latitude: 20.003,
       speed: 10
     })]);
     stops = await tripService.tripStops(trip, db);
-    assert.equal(stops[0].status, 'arrived'); // 333 m in one second is a rejected GPS jump.
+    assert.equal(stops[0].status, 'completed'); // 333 m in one second is a rejected GPS jump.
     const departureAt = new Date(Date.now() + 15000);
     await ingest([fix(0, { latitude: 20.003, speed: 60, recorded_at: departureAt.toISOString() })], departureAt);
     stops = await tripService.tripStops(trip, db);
@@ -480,7 +482,7 @@ try {
     assert.equal(good.realtimeUpdated, true);
     const [{ count: qualified }] = await db`SELECT count(*)::int FROM bus_trip_history WHERE trip_id=${t.id} AND gps_quality='accepted'`;
     assert.equal(qualified, 4);
-    assert.equal((await tripService.tripStops({ ...t, school_id: f.school }, db))[0].status, 'arrived');
+    assert.equal((await tripService.tripStops({ ...t, school_id: f.school }, db))[0].status, 'completed');
   });
   await test('GPS state survives transactions, checks restart gaps, and isolates concurrent trips', async () => {
     const journeys = await Promise.all([precisionJourney(), precisionJourney()]);
@@ -711,6 +713,232 @@ try {
       distM: 10,
       radiusM: 100
     }), false);
+  });
+
+  for (const direction of ['morning', 'evening']) {
+    for (const arrival of ['manual', 'gps']) {
+      await test(`${direction} ${arrival}: reaching execution stop 2 alerts stop 3 parents exactly once`, async () => {
+        const f = await seed();
+        const targetStop = direction === 'morning' ? f.stops[2] : f.stops[0];
+        await db`UPDATE student_transport SET stop_id=${targetStop} WHERE school_id=${f.school}`;
+        const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+        const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: direction }, db);
+        const stops = await tripService.tripStops(t, db);
+        assert.equal(stops[2].stop_id, targetStop);
+        await tripService.transitionTransportStop(req, t.id, stops[0].stop_id, 'arrive', {}, db);
+        await tripService.transitionTransportStop(req, t.id, stops[0].stop_id, 'complete', {}, db);
+        const alerts = () => db`SELECT * FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+        assert.equal((await alerts()).length, 0, 'Stop 3 must not ring at Stop 1');
+        if (arrival === 'manual') {
+          await Promise.all(Array.from({ length: 3 }, () => tripService.transitionTransportStop(req, t.id, stops[1].stop_id, 'arrive', {}, db)));
+        } else {
+          const epoch = Date.now() - 20000;
+          await db`UPDATE trips SET auto_stops_enabled=true,tracking_device_id='approach-test',started_at=${new Date(epoch - 10000)} WHERE id=${t.id}`;
+          const fixes = [0, 5000, 10000].map(offset => ({
+            fix_id: randomUUID(), latitude: Number(stops[1].latitude), longitude: Number(stops[1].longitude),
+            accuracy: 5, speed: 0, heading: null, recorded_at: new Date(epoch + offset).toISOString(),
+          }));
+          await ingestLocationBatch({ schoolId: f.school, busId: f.bus, tripId: t.id,
+            sessionId: t.tracking_session_id, deviceId: 'approach-test', driverId: f.driver, fixes }, db);
+          assert.equal((await tripService.tripStops(t, db))[1].status, 'completed');
+        }
+        await tripService.transitionTransportStop(req, t.id, stops[1].stop_id, 'complete', {}, db);
+        let rows = await alerts();
+        assert.equal(rows.length, 1, 'arrival, departure, and retries share one outbox key');
+        assert.equal(rows[0].stop_id, targetStop);
+        assert.equal(rows[0].payload.user_id, f.parentUser);
+        assert.equal(rows[0].payload.vars.stopName, stops[2].snapshot_name);
+        // Retry a provider outage without losing the alert or extending its deadline.
+        await drainTransportOutboxBatches(db, async (users) => {
+          if (users.includes(f.parentUser)) throw new Error('test provider offline');
+          return { successCount: 1, failureCount: 0 };
+        });
+        rows = await alerts();
+        assert.equal(rows[0].status, 'pending');
+        await db`UPDATE transport_outbox SET available_at=now() WHERE id=${rows[0].id}`;
+        const delivered = [];
+        await drainTransportOutboxBatches(db, async (users, type, vars, context) => {
+          if (users.includes(f.parentUser)) delivered.push({ type, vars, context });
+          return { successCount: 1, failureCount: 0 };
+        });
+        assert.equal(delivered.length, 1);
+        assert.equal(delivered[0].type, 'TRANSPORT_BUS_APPROACHING');
+        assert.equal(+delivered[0].context.expiresAt, +rows[0].expires_at);
+        assert.equal((await alerts())[0].status, 'sent');
+      });
+    }
+  }
+  await test('arrival at the parent stop expires an unsent approaching alert', async () => {
+    const f = await seed();
+    await db`UPDATE student_transport SET stop_id=${f.stops[2]} WHERE school_id=${f.school}`;
+    const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+    const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: 'morning' }, db);
+    await tripService.transitionTransportStop(req, t.id, f.stops[0], 'skip', {}, db);
+    await tripService.transitionTransportStop(req, t.id, f.stops[1], 'skip', {}, db);
+    await tripService.transitionTransportStop(req, t.id, f.stops[2], 'arrive', {}, db);
+    await drainTransportOutboxBatches(db, async (users, type) => {
+      assert.ok(!users.includes(f.parentUser) || type !== 'TRANSPORT_BUS_APPROACHING');
+      return { successCount: 1, failureCount: 0 };
+    });
+    const [row] = await db`SELECT status FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+    assert.equal(row.status, 'expired');
+  });
+  await test('immediate queue drain handles more than 30 recipients without a later wake', async () => {
+    const f = await seed();
+    for (let n = 0; n < 35; n++) await enqueueTransportUsers({
+      schoolId: f.school, key: `crowded-stop:${n}`, type: 'TRANSPORT_BUS_APPROACHING', userIds: [f.parentUser],
+    }, db);
+    // Non-trip fixtures exercise batching alone; trip authorization is tested above.
+    await db`UPDATE transport_outbox SET event_type='TRANSPORT_OVERSPEED_ALERT' WHERE school_id=${f.school}`;
+    let sent = 0;
+    await drainTransportOutboxBatches(db, async (users) => {
+      if (users.includes(f.parentUser)) sent++;
+      return { successCount: 1, failureCount: 0 };
+    });
+    assert.equal(sent, 35);
+  });
+
+  await test('previous driver API starts an empty-body virtual trip and reaches stops 1 and 2 with one tap each', async () => {
+    const f = await seed();
+    await db`UPDATE student_transport SET stop_id=${f.stops[2]} WHERE school_id=${f.school}`;
+    const legacyTarget = tripService.transportLeg('both') === 'morning' ? f.stops[2] : f.stops[0];
+    await db`UPDATE student_transport SET stop_id=${legacyTarget} WHERE school_id=${f.school}`;
+    requestOverride = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = (path, body = {}) => fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Id': 'previous-build' }, body: JSON.stringify(body) });
+    try {
+      const start = await post(`/driver/trip/${f.route}/start`);
+      assert.equal(start.status, 200, await start.text());
+      const [t] = await db`SELECT * FROM trips WHERE school_id=${f.school} AND status IN ('active','in_progress')`;
+      const stops = await tripService.tripStops(t, db);
+      for (const stop of stops.slice(0, 2)) {
+        const path = `/driver/trip/${t.id}/stop/${stop.stop_id}/reach`;
+        const result = await post(path);
+        assert.equal(result.status, 200, await result.text());
+        assert.equal((await post(path)).status, 200, 'legacy checkpoint retries are idempotent');
+      }
+      assert.deepEqual((await tripService.tripStops(t, db)).map(s => s.status), ['completed','completed','pending']);
+      const rows = await db`SELECT * FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].stop_id, stops[2].stop_id);
+      assert.equal(rows[0].payload.user_id, f.parentUser);
+      const [{ count }] = await db`SELECT count(*)::int FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_DEPARTED'`;
+      assert.equal(count, 0, 'Reached does not prove departure');
+      const upload = await post(`/buses/${f.bus}/locations/batch`, { fixes: [{
+        latitude: 17.02, longitude: 78, speed: 0, heading: null,
+        recorded_at: new Date().toISOString(), is_mocked: false,
+      }] });
+      assert.equal(upload.status, 200, await upload.text());
+      const [bound] = await db`SELECT tracking_device_id FROM trips WHERE id=${t.id}`;
+      assert.equal(bound.tracking_device_id, 'previous-build');
+      const partial = await post(`/buses/${f.bus}/locations/batch`, { trip_id: t.id, fixes: [] });
+      assert.equal(partial.status, 409, 'incomplete modern scope must not fall back to legacy');
+    } finally { requestOverride = null; }
+  });
+  await test('legacy GPS scope cannot take another device, another tenant, or fixes from a previous trip', async () => {
+    const f = await seed();
+    const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+    const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: 'morning' }, db);
+    const input = { schoolId: f.school, busId: f.bus, driverId: f.driver, deviceId: 'old-build', fixes: [{
+      latitude: 17.01, longitude: 78, speed: 0, accuracy: 5, recorded_at: new Date().toISOString(),
+    }] };
+    await assert.rejects(() => ingestLegacyLocationBatch({ ...input, deviceId: null }, db), e => e.transportCode === 'DEVICE_REQUIRED');
+    await assert.rejects(() => ingestLegacyLocationBatch({ ...input, schoolId: fixture.school }, db), e => e.transportCode === 'NO_ACTIVE_TRIP');
+    await assert.rejects(() => ingestLegacyLocationBatch({ ...input, driverId: fixture.driver }, db), e => e.transportCode === 'NO_ACTIVE_TRIP');
+    const first = await ingestLegacyLocationBatch(input, db);
+    assert.equal(first.insertedCount, 1);
+    assert.equal((await ingestLegacyLocationBatch(input, db)).insertedCount, 0);
+    await assert.rejects(() => ingestLegacyLocationBatch({ ...input, deviceId: 'different-device' }, db), e => e.transportCode === 'DEVICE_CONFLICT');
+    await tripService.finishTransportTrip(req, t.id, 'test', db);
+    await assert.rejects(() => ingestLegacyLocationBatch(input, db), e => e.transportCode === 'NO_ACTIVE_TRIP');
+    const next = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: 'morning' }, db);
+    const replay = await ingestLegacyLocationBatch(input, db);
+    assert.equal(replay.insertedCount, 0);
+    assert.equal(replay.acknowledgements[0].reason, 'outside_trip');
+    const [{ count }] = await db`SELECT count(*)::int FROM bus_trip_history WHERE trip_id=${next.id}`;
+    assert.equal(count, 0);
+  });
+  await test('legacy reached enforces stop sequence and rolls back its notification with the checkpoint', async () => {
+    const f = await seed();
+    await db`UPDATE student_transport SET stop_id=${f.stops[2]} WHERE school_id=${f.school}`;
+    const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+    const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: 'morning' }, db);
+    await assert.rejects(() => tripService.transitionTransportStop(req, t.id, f.stops[1], 'reach', {}, db), e => e.transportCode === 'STOP_ORDER');
+    await tripService.transitionTransportStop(req, t.id, f.stops[0], 'reach', {}, db);
+    await assert.rejects(() => db.begin(async tx => {
+      await tripService.transitionTransportStop(req, t.id, f.stops[1], 'reach', {}, tx);
+      throw new Error('rollback legacy checkpoint');
+    }), /rollback legacy checkpoint/);
+    assert.equal((await tripService.tripStops(t, db))[1].status, 'pending');
+    const rows = await db`SELECT * FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+    assert.equal(rows.length, 0);
+    await Promise.all(Array.from({ length: 3 }, () => tripService.transitionTransportStop(req, t.id, f.stops[1], 'reach', {}, db)));
+    const [{ count }] = await db`SELECT count(*)::int FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+    assert.equal(count, 1);
+  });
+
+  for (const legacy of [false, true]) {
+    for (const direction of ['morning', 'evening']) {
+      await test(`${legacy ? 'previous' : 'current'} frontend ${direction}: GPS alone reaches stops and alerts the following stop on the first trip`, async () => {
+        const f = await seed();
+        const target = direction === 'morning' ? f.stops[2] : f.stops[0];
+        await db`UPDATE student_transport SET stop_id=${target} WHERE school_id=${f.school}`;
+        const req = { schoolId: f.school, user: { internal_id: f.user, roles: ['driver'], permissions: [] } };
+        const t = await tripService.startTransportTrip(req, { route_id: f.route, trip_direction: direction }, db);
+        assert.equal(t.auto_stops_enabled, false, 'the first trip has no learned calibration');
+        const epoch = Date.now();
+        await db`UPDATE trips SET started_at=${new Date(epoch - 1000)},tracking_device_id='gps-auto-test' WHERE id=${t.id}`;
+        const stops = await tripService.tripStops(t, db);
+        const sample = (second, stop, extra = {}) => ({
+          latitude: Number(stop.latitude), longitude: Number(stop.longitude), speed: 0, heading: null,
+          ...(legacy ? {} : { accuracy: 5 }), recorded_at: new Date(epoch + second * 1000).toISOString(), ...extra,
+        });
+        const send = (fixes, second) => (legacy ? ingestLegacyLocationBatch : ingestLocationBatch)({
+          schoolId: f.school, busId: f.bus, driverId: f.driver, deviceId: 'gps-auto-test',
+          tripId: t.id, sessionId: t.tracking_session_id, fixes, now: new Date(epoch + second * 1000),
+        }, db);
+        await send([sample(0, stops[0])], 0);
+        assert.equal((await tripService.tripStops(t, db))[0].status, 'pending', 'one point cannot mark reached');
+        const firstBatch = [4, 8, 12, 16].map(sec => sample(sec, stops[0]));
+        await send(firstBatch, 16);
+        let states = await tripService.tripStops(t, db);
+        assert.equal(states[0].status, 'completed', 'old app sees reached at arrival, before departure');
+        assert.equal(states[0].arrival_source, 'geofence');
+        assert.equal(states[0].departure_time, null);
+        assert.equal(states[1].status, 'pending');
+        // Pull away only after the reached checkpoint is already visible.
+        const departureLatitude = Number(stops[0].latitude) + (direction === 'morning' ? 0.002 : -0.002);
+        await send([sample(26, stops[0], { latitude: departureLatitude, speed: 30 })], 26);
+        states = await tripService.tripStops(t, db);
+        assert.ok(states[0].departure_time);
+        const secondBatch = [80, 84, 88, 92, 96].map(sec => sample(sec, stops[1]));
+        await send(secondBatch, 96);
+        states = await tripService.tripStops(t, db);
+        assert.deepEqual(states.map(s => s.status), ['completed', 'completed', 'pending']);
+        assert.equal(states[1].departure_time, null);
+        const alerts = () => db`SELECT * FROM transport_outbox WHERE trip_id=${t.id} AND event_type='TRANSPORT_BUS_APPROACHING'`;
+        let rows = await alerts();
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].stop_id, target);
+        assert.equal(rows[0].payload.user_id, f.parentUser);
+        const replay = await send(secondBatch, 96);
+        assert.equal(replay.insertedCount, 0);
+        await send([sample(100, stops[1]), sample(104, stops[1])], 104);
+        assert.equal((await alerts()).length, 1, 'repeat GPS does not notify the same parent again');
+        const [position] = await db`SELECT accuracy FROM bus_locations WHERE trip_id=${t.id}`;
+        assert.equal(position.accuracy == null, legacy, 'missing accuracy remains unknown');
+      });
+    }
+  }
+  await test('unlocated and uncalibrated learned stops cannot be reached by a coordinate match', async () => {
+    for (const source of ['unavailable', 'learned']) {
+      const { f, t, sample, send } = await precisionJourney();
+      await db`UPDATE trips SET auto_stops_enabled=false WHERE id=${t.id}`;
+      await db`UPDATE trip_stop_status SET coordinate_source=${source},
+        snapshot_latitude=${source === 'unavailable' ? null : 17.01} WHERE trip_id=${t.id}`;
+      await send([sample(0), sample(4), sample(8)], 8);
+      assert.equal((await tripService.tripStops(t, db))[0].status, 'pending');
+    }
   });
 } finally {
   if (server) await new Promise(r => server.close(r));

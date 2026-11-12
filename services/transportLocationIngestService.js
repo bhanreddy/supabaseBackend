@@ -3,7 +3,7 @@ import { evaluateTripSignals } from './transportSignalService.js';
 import sql from '../db.js';
 import { transportError, withTransportTransaction } from './transportAccessService.js';
 import { evaluateGeofence } from './transportGeofenceService.js';
-import { filterGpsFix } from './transportGpsFilter.js';
+import { filterGpsFix, filterLegacyGpsFix } from './transportGpsFilter.js';
 export const LOCATION_BATCH = Object.freeze({
   MAX_FIXES: 1000,
   MAX_AGE_MS: 21600000,
@@ -76,6 +76,30 @@ export function normalizeLocationBatch(rawFixes, now = new Date()) {
     duplicateCount
   };
 }
+/** Older driver builds send { fixes } without a tracking-session handshake.
+ * Resolve their scope from the authenticated assignment, under the trip lock.
+ * Never take over another device or attach queued fixes to a non-live trip.
+ */
+export async function ingestLegacyLocationBatch({ schoolId, busId, driverId, deviceId, fixes, now = new Date() }, db = sql) {
+  if (!deviceId || typeof deviceId !== 'string' || deviceId.length > 200) {
+    throw transportError(409, 'DEVICE_REQUIRED', 'Device identity required');
+  }
+  return withTransportTransaction(db, async tx => {
+    const [trip] = await tx`SELECT t.* FROM trips t JOIN buses b ON b.id=t.bus_id AND b.school_id=t.school_id
+      WHERE t.school_id=${schoolId} AND t.bus_id=${busId} AND t.driver_id=${driverId}
+      AND b.driver_id=${driverId} AND b.is_active=true AND b.deleted_at IS NULL
+      AND t.status IN ('active','in_progress') FOR UPDATE OF t`;
+    if (!trip) throw transportError(409, 'NO_ACTIVE_TRIP', 'Start your assigned trip before uploading locations');
+    if (trip.tracking_device_id && trip.tracking_device_id !== deviceId) {
+      throw transportError(409, 'DEVICE_CONFLICT', 'Another device owns this trip');
+    }
+    if (!trip.tracking_device_id) await tx`UPDATE trips SET tracking_device_id=${deviceId}
+      WHERE id=${trip.id} AND school_id=${schoolId}`;
+    return ingestLocationBatch({ schoolId, busId, driverId, deviceId,
+      tripId: trip.id, sessionId: trip.tracking_session_id, fixes, now, allowLegacyAccuracy: true }, tx);
+  });
+}
+
 export async function ingestLocationBatch({
   schoolId,
   busId,
@@ -84,6 +108,7 @@ export async function ingestLocationBatch({
   deviceId,
   driverId,
   fixes: rawFixes,
+  allowLegacyAccuracy = false,
   now = new Date()
 }, db = sql) {
   if (!tripId || !sessionId || !deviceId || !driverId) throw transportError(409, 'TRACKING_SESSION_REQUIRED', 'Start or resume tracking before uploading locations');
@@ -133,7 +158,8 @@ export async function ingestLocationBatch({
     for (const fix of fresh) {
       // Old retries must not reset geofence debounce or filter state.
       if (trip.last_automation_at && Date.parse(fix.recorded_at) <= new Date(trip.last_automation_at).getTime()) continue;
-      const result = filterGpsFix(state, fix);
+      const result = allowLegacyAccuracy && fix.accuracy == null
+        ? filterLegacyGpsFix(state, fix) : filterGpsFix(state, fix);
       state = result.state;
       quality = result.reason;
       if (!result.accepted) {
@@ -146,14 +172,16 @@ export async function ingestLocationBatch({
         }
         continue;
       }
-      await tx`UPDATE bus_trip_history SET gps_quality='accepted' WHERE school_id=${schoolId} AND trip_id=${trip.id}
+      await tx`UPDATE bus_trip_history SET gps_quality=${result.reason === 'legacy_accuracy_unknown' ? result.reason : 'accepted'} WHERE school_id=${schoolId} AND trip_id=${trip.id}
         AND recorded_at=${fix.recorded_at} AND fix_id IS NOT DISTINCT FROM ${fix.fix_id}`;
       newest = result.position;
       // GPS-only evidence can never benefit from a smoothed/held coordinate.
       if (result.automationFix) {
         await evaluateGeofence(schoolId, busId, result.automationFix, tx, trip);
         await evaluateTripSignals(trip, result.automationFix, tx);
-        await evaluateOverspeed(schoolId, busId, { ...result.automationFix, trip_id: trip.id }, tx);
+        if (!result.automationFix.legacy_accuracy_unknown) {
+          await evaluateOverspeed(schoolId, busId, { ...result.automationFix, trip_id: trip.id }, tx);
+        }
       }
       trip.last_automation_at = fix.recorded_at;
     }

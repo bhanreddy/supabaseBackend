@@ -38,7 +38,7 @@ mock.module('./diaryDigestService.js', {
 });
 
 for (const [modulePath, namedExports] of [
-  ['./transportOutboxService.js', { drainTransportOutbox: async () => 0 }],
+  ['./transportOutboxService.js', { drainTransportOutboxBatches: async () => 0 }],
   ['./transportMaintenanceService.js', { runTransportMaintenanceForSchool: async () => {} }],
   ['./feeAutomationJobService.js', { runNightlyFeeReminderScan: async () => {}, FEE_REMINDER_JOB_NAME: 'fees' }],
   ['./attendanceAutomationJobService.js', { runNightlyAttendanceRiskScan: async () => {}, ATTENDANCE_RISK_JOB_NAME: 'attendance' }],

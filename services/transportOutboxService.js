@@ -107,6 +107,7 @@ export async function drainTransportOutbox(db = sql, send, limit = 30) {
           schoolId: row.school_id,
           idempotencyKey: `transport:${row.id}`,
           requireInbox: true,
+          expiresAt: row.expires_at,
           deliveredTokenHashes: [...deliveredTokenHashes]
         });
         for (const outcome of result.tokenResults || []) if (outcome.success && outcome.token) deliveredTokenHashes.add(createHash('sha256').update(outcome.token).digest('hex'));
@@ -134,16 +135,34 @@ export async function drainTransportOutbox(db = sql, send, limit = 30) {
   }));
   return rows.length;
 }
+export async function drainTransportOutboxBatches(db = sql, send, maxBatches = 20) {
+  let drained = 0;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const count = await drainTransportOutbox(db, send);
+    drained += count;
+    if (count < 30) break;
+  }
+  return drained;
+}
+
 let wakeRunning = false;
+let wakeRequested = false;
 /** Optimization only. pg-boss also drains durable rows after process restart. */
 export function wakeTransportOutbox() {
+  wakeRequested = true;
   if (wakeRunning) return;
   wakeRunning = true;
-  setImmediate(() => drainTransportOutbox().catch(() => {
-    logger.warn({
-      event: 'transport_outbox_unavailable'
-    });
-  }).finally(() => {
-    wakeRunning = false;
-  }));
+  wakeRequested = false;
+  setImmediate(async () => {
+    try {
+      // A busy stop may notify more than 30 parents. Do not leave the rest
+      // waiting for the next GPS request or minute-based recovery worker.
+      if (await drainTransportOutboxBatches() >= 600) wakeRequested = true;
+    } catch {
+      logger.warn({ event: 'transport_outbox_unavailable' });
+    } finally {
+      wakeRunning = false;
+      if (wakeRequested) wakeTransportOutbox();
+    }
+  });
 }

@@ -120,6 +120,7 @@ export async function startTransportTrip(req, input, db = sql) {
   });
 }
 export async function transitionTransportStop(req, tripId, stopId, action, body = {}, db = sql) {
+  if (!['arrive', 'complete', 'skip', 'reach'].includes(action)) throw transportError(400, 'INVALID_STOP_ACTION', 'Invalid stop action');
   return withTransportTransaction(db, async tx => {
     const trip = await authorizeTrip(req, tripId, tx, {
       write: true,
@@ -157,7 +158,14 @@ export async function transitionTransportStop(req, tripId, stopId, action, body 
       recorded_at: body.recorded_at,
       isMocked: body.is_mocked === true
     }, tx);
-    await enqueueTransitionNotifications(trip, updated, tx);
+    // The original driver app has a single Reached button. Its atomic
+    // checkpoint includes arrival, but must not claim the bus has departed.
+    if (action === 'reach' && stop.status === 'pending') {
+      await enqueueStopNotification(trip, stopId, 'BUS_STOP_REACHED', {
+        stopName: updated.snapshot_name || 'stop'
+      }, tx);
+    }
+    await enqueueTransitionNotifications(trip, updated, tx, { notifyDeparture: action !== 'reach' });
     await tx`INSERT INTO transport_audit_events(school_id,trip_id,actor_id,event_type,details)
       VALUES(${req.schoolId},${trip.id},${req.user.internal_id || req.user.id},'stop_transition',
         ${tx.json({
@@ -169,11 +177,11 @@ export async function transitionTransportStop(req, tripId, stopId, action, body 
     return updated;
   });
 }
-export async function enqueueTransitionNotifications(trip, stop, db = sql) {
+export async function enqueueTransitionNotifications(trip, stop, db = sql, { notifyDeparture = true } = {}) {
   if (stop.status === 'arrived') await enqueueStopNotification(trip, stop.stop_id, 'BUS_STOP_REACHED', {
     stopName: stop.snapshot_name || 'stop'
   }, db);
-  if (stop.status === 'completed' && normalizeLeg(trip.trip_direction) === 'morning') {
+  if (notifyDeparture && stop.status === 'completed' && normalizeLeg(trip.trip_direction) === 'morning') {
     // Departure describes the vehicle only. Confirmed boarding is sent by the attendance workflow.
     await enqueueStopNotification(trip, stop.stop_id, 'TRANSPORT_BUS_DEPARTED', {
       stopName: stop.snapshot_name || 'stop',

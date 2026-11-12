@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterGpsFix, gpsDistance, GPS_FILTER } from './transportGpsFilter.js';
+import { filterGpsFix, filterLegacyGpsFix, gpsDistance, GPS_FILTER } from './transportGpsFilter.js';
 import { shouldAutoArrive } from './transportGeofenceService.js';
 const epoch = Date.parse('2026-11-03T03:00:00Z');
 const fix = (seconds = 0, patch = {}) => ({ latitude: 17, longitude: 78, accuracy: 5, speed: 0, heading: null, recorded_at: new Date(epoch + seconds * 1000).toISOString(), ...patch });
@@ -104,4 +104,19 @@ test('a biased first stationary fix converges toward repeated better observation
   const initialError = gpsDistance(origin, state.position);
   for (let i = 1; i <= 20; i++) state = filterGpsFix(state, fix(i * 2)).state;
   assert.ok(gpsDistance(origin, state.position) < initialError * 0.1);
+});
+
+test('legacy coordinates preserve unknown accuracy and reject mocked fixes, replays, and jumps', () => {
+  const first = filterLegacyGpsFix(null, fix(0, { accuracy: null }));
+  assert.equal(first.accepted, true);
+  assert.equal(first.position.accuracy, null);
+  assert.equal(first.automationFix.legacy_accuracy_unknown, true);
+  assert.equal(filterLegacyGpsFix(first.state, fix(0, { accuracy: null })).reason, 'out_of_order');
+  assert.equal(filterLegacyGpsFix(first.state, fix(2, { accuracy: null, latitude: 20 })).reason, 'implausible_jump');
+  assert.equal(filterLegacyGpsFix(first.state, fix(4, { accuracy: null, is_mocked: true })).reason, 'mocked_or_suspicious');
+  const moving = filterLegacyGpsFix(first.state, fix(2, { accuracy: null, longitude: 78.0004, speed: 0 }));
+  assert.ok(moving.automationFix.speed > 50, 'old substituted zero speed must not disguise measured motion');
+  const restored = filterLegacyGpsFix(JSON.parse(JSON.stringify(first.state)), fix(8, { accuracy: null }));
+  assert.equal(restored.accepted, true);
+  assert.equal(restored.position.accuracy, null);
 });

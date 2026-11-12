@@ -36,8 +36,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== RESULTS / EXAM =====
     RESULT_RELEASED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🏆 Results Announced',
         bodyTemplate: '📊 {{message}}',
         titleTemplate_te: '🏆 ఫలితాలు ప్రకటించబడ్డాయి',
@@ -46,8 +46,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     EXAM_TIMETABLE_PUBLISHED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📅 Exam Timetable & Syllabus Published',
         bodyTemplate: '📝 {{message}}',
         titleTemplate_te: '📅 పరీక్షల టైమ్‌టేబుల్ & సిలబస్ ప్రచురించబడింది',
@@ -80,8 +80,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== LMS (Homework / Assignment) =====
     LMS_CONTENT: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🎓 New Study Material',
         bodyTemplate: '📖 {{message}}',
         titleTemplate_te: '🎓 కొత్త అధ్యయన సామగ్రి',
@@ -92,8 +92,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== TIMETABLE (Event / Circular) =====
     TIMETABLE_UPDATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📅 Timetable Update',
         bodyTemplate: '🕐 {{message}}',
         titleTemplate_te: '📅 టైమ్‌టేబుల్ నవీకరణ',
@@ -104,8 +104,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== NOTICES (Announcement) =====
     NOTICE_ADMIN_STUDENT: {
-        channelId: 'notification_default',
-        sound: 'notification_default.wav',
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
         titleTemplate: '📢 Admin Notice',
         bodyTemplate: '🗞️ {{message}}',
         titleTemplate_te: '📢 అడ్మిన్ నోటీసు',
@@ -136,8 +136,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FEE_COLLECTED: {   // Payment confirmation — General/Other
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Fee Received',
         bodyTemplate: '💰 {{message}}',
         titleTemplate_te: '✅ ఫీజు అందుకున్నారు',
@@ -146,8 +146,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FEE_PAYMENT_DELETION_REQUESTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🗑️ Payment Deletion Request',
         bodyTemplate: '🧾 {{message}}',
         titleTemplate_te: '🗑️ చెల్లింపు తొలగింపు అభ్యర్థన',
@@ -156,8 +156,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FEE_PAYMENT_DELETION_APPROVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Payment Deletion Approved',
         bodyTemplate: '🧾 {{message}}',
         titleTemplate_te: '✅ చెల్లింపు తొలగింపు ఆమోదించబడింది',
@@ -166,8 +166,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FEE_PAYMENT_DELETION_REJECTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '❌ Payment Deletion Rejected',
         bodyTemplate: '🧾 {{message}}',
         titleTemplate_te: '❌ చెల్లింపు తొలగింపు తిరస్కరించబడింది',
@@ -236,8 +236,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FINE_CANCELLED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'ℹ️ Fine Cancelled',
         bodyTemplate: '📝 {{message}}',
         titleTemplate_te: 'ℹ️ జరిమానా రద్దు చేయబడింది',
@@ -246,8 +246,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FINE_PAID: {
-        channelId: 'fee_reminder',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Fine Payment Recorded',
         bodyTemplate: '🧾 {{message}}',
         titleTemplate_te: '✅ జరిమానా చెల్లింపు నమోదు చేయబడింది',
@@ -256,8 +256,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     FINE_DISPUTE_UPDATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '💬 Fine Review Status',
         bodyTemplate: '🔍 {{message}}',
         titleTemplate_te: '💬 జరిమానా సమీక్ష స్థితి',
@@ -268,8 +268,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== ADMISSION DOCUMENTS =====
     ADMISSION_DOCUMENT_REMINDER: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Admission documents pending',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'ప్రవేశ పత్రాలు పెండింగ్‌లో ఉన్నాయి',
@@ -280,8 +280,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== LEAVES (General) =====
     LEAVE_SUBMITTED: {   // Notify admin only
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📨 Leave Request',
         bodyTemplate: '🏖️ {{message}}',
         titleTemplate_te: '📨 సెలవు అభ్యర్థన',
@@ -290,8 +290,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     LEAVE_APPROVED: {    // Notify applicant only
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Leave Approved',
         bodyTemplate: '🎉 {{message}}',
         titleTemplate_te: '✅ సెలవు ఆమోదించబడింది',
@@ -300,8 +300,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     LEAVE_REJECTED: {    // Notify applicant only
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '❌ Leave Rejected',
         bodyTemplate: '🚫 {{message}}',
         titleTemplate_te: '❌ సెలవు తిరస్కరించబడింది',
@@ -312,8 +312,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== EXPENSES (General) =====
     EXPENSE_CREATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📤 Expense Submitted',
         bodyTemplate: '🧾 {{message}}',
         titleTemplate_te: '📤 ఖర్చు సమర్పించబడింది',
@@ -322,8 +322,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     EXPENSE_APPROVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Expense Approved',
         bodyTemplate: '💹 {{message}}',
         titleTemplate_te: '✅ ఖర్చు ఆమోదించబడింది',
@@ -332,8 +332,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     EXPENSE_REJECTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '❌ Expense Rejected',
         bodyTemplate: '🚫 {{message}}',
         titleTemplate_te: '❌ ఖర్చు తిరస్కరించబడింది',
@@ -344,8 +344,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== PAYROLL (General) =====
     PAYROLL_SUCCESS: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '💰 Salary Credited',
         bodyTemplate: '🏦 {{message}}',
         titleTemplate_te: '💰 జీతం జమ అయింది',
@@ -356,8 +356,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== ACCESS CONTROL (General) =====
     ACCESS_RESPONSE: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🔐 Access Request Update',
         bodyTemplate: '🔓 {{message}}',
         titleTemplate_te: '🔐 యాక్సెస్ అభ్యర్థన నవీకరణ',
@@ -368,8 +368,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== TRANSPORT (General — bus checkpoints) =====
     BUS_STOP_REACHED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Update',
         titleTemplate_te: '🚌 బస్ అప్‌డేట్',
         bodyTemplate: '📍 Bus has reached {{stopName}}',
@@ -379,8 +379,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     BUS_TRIP_COMPLETED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🏁 Trip Completed',
         titleTemplate_te: '🏁 ప్రయాణం పూర్తయింది',
         bodyTemplate: '🚌 Trip on route "{{routeName}}" is complete',
@@ -390,8 +390,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_TRIP_STARTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Started',
         titleTemplate_te: '🚌 బస్ ప్రారంభమైంది',
         bodyTemplate: '🚌 Your child\'s school bus has started its journey. Track its progress to {{stopName}} in the app.',
@@ -414,8 +414,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_BUS_RUNNING_LATE: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Delay',
         titleTemplate_te: '🚌 బస్ ఆలస్యం',
         bodyTemplate: '🚌 Bus running ~{{delayMinutes}} min late today.',
@@ -425,8 +425,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_BUS_DEPARTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Departed',
         titleTemplate_te: '🚌 బస్ బయలుదేరింది',
         bodyTemplate: '🚌 Bus departed {{stopName}} — {{studentName}} {{boardingStatus}}.',
@@ -436,8 +436,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_BUS_RUNNING_LATE: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Delay',
         titleTemplate_te: '🚌 బస్ ఆలస్యం',
         bodyTemplate: '🚌 Bus running ~{{delayMinutes}} min late today.',
@@ -447,8 +447,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_BUS_DEPARTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🚌 Bus Departed',
         titleTemplate_te: '🚌 బస్ బయలుదేరింది',
         bodyTemplate: '🚌 Bus departed {{stopName}} — {{studentName}} {{boardingStatus}}.',
@@ -458,8 +458,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     TRANSPORT_TRIP_CANCELLED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '⚠️ Trip Cancelled',
         titleTemplate_te: '⚠️ ప్రయాణం రద్దు',
         bodyTemplate: '⚠️ Today\'s school bus trip has been cancelled. Please arrange alternative transport for your child.',
@@ -495,8 +495,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== MESSENGER =====
     MESSAGE_RECEIVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '💬 New Message',
         bodyTemplate: '📩 {{message}}',
         titleTemplate_te: '💬 కొత్త సందేశం',
@@ -507,8 +507,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== BATCH 2: ATTENDANCE RISK =====
     ATTENDANCE_RISK_WARNING: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '⚠️ Attendance Warning',
         titleTemplate_te: '⚠️ హాజరు హెచ్చరిక',
         bodyTemplate: 'Attendance for {{studentName}} has reached {{attendancePct}}% (threshold: {{threshold}}%). Please monitor regularly.',
@@ -529,8 +529,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== BATCH 2: SUBSTITUTION =====
     SUBSTITUTION_ASSIGNED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📋 Substitution Assigned',
         titleTemplate_te: '📋 సబ్‌స్టిట్యూషన్ కేటాయింపు',
         bodyTemplate: 'You have been assigned Period {{periodNumber}}, {{className}} {{subjectName}}, covering for {{originalTeacher}} on {{date}}.',
@@ -573,8 +573,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== BATCH 2: PARENT HELP DESK =====
     SUPPORT_TICKET_CREATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🎫 Support Request Received',
         titleTemplate_te: '🎫 సపోర్ట్ అభ్యర్థన అందింది',
         bodyTemplate: 'Ticket {{ticketNumber}} ({{category}}): "{{subject}}" has been received.',
@@ -583,8 +583,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['ticketNumber', 'category', 'subject']
     },
     SUPPORT_TICKET_REPLIED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '💬 Support Ticket Update',
         titleTemplate_te: '💬 సపోర్ట్ టికెట్ నవీకరణ',
         bodyTemplate: 'New reply on Ticket {{ticketNumber}} ({{category}}): "{{messageSnippet}}"',
@@ -593,8 +593,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['ticketNumber', 'category', 'messageSnippet']
     },
     POPUP_ANNOUNCEMENT: {
-        channelId: 'notification_default',
-        sound: 'notification_default.wav',
+        channelId: 'voice_alert',
+        sound: 'voice_alert.wav',
         titleTemplate: '📢 School update',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '📢 పాఠశాల నవీకరణ',
@@ -604,8 +604,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     SUPPORT_TICKET_RESOLVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '✅ Support Request Resolved',
         titleTemplate_te: '✅ సపోర్ట్ అభ్యర్థన పరిష్కరించబడింది',
         bodyTemplate: 'Ticket {{ticketNumber}} ({{category}}) has been resolved.',
@@ -615,8 +615,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     VISITOR_REQUEST_PENDING: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Campus visit request',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'క్యాంపస్ సందర్శన అభ్యర్థన',
@@ -625,8 +625,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     VISITOR_REQUEST_APPROVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Campus visit approved',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'క్యాంపస్ సందర్శన ఆమోదించబడింది',
@@ -635,8 +635,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     VISITOR_REQUEST_REJECTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Campus visit declined',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'క్యాంపస్ సందర్శన తిరస్కరించబడింది',
@@ -645,8 +645,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     VISITOR_ARRIVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Visitor arrived',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'సందర్శకుడు వచ్చారు',
@@ -675,8 +675,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     DELIVERY_RECEIVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Package received at gate',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'గేట్ వద్ద ప్యాకేజీ అందింది',
@@ -685,8 +685,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     STUDENT_RELEASED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Student released',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'విద్యార్థి విడుదలయ్యారు',
@@ -707,8 +707,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== ACADEMIC CALENDAR & SCHEDULING =====
     CALENDAR_EVENT_PUBLISHED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📅 New Event: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '📅 కొత్త ఈవెంట్: {{title}}',
@@ -717,8 +717,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     CALENDAR_EVENT_REMINDER: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '⏰ Reminder: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '⏰ రిమైండర్: {{title}}',
@@ -727,8 +727,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     CALENDAR_EVENT_UPDATED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🔄 Event Updated: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '🔄 ఈవెంట్ మార్చబడింది: {{title}}',
@@ -739,8 +739,8 @@ export const NotificationEventConfig = Object.freeze({
     CALENDAR_EVENT_CANCELLED: {
         // Calendar cancellations (including exams) use the same general alert
         // as other calendar updates, rather than the complaint/emergency sound.
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '❌ Event Cancelled: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '❌ ఈవెంట్ రద్దు చేయబడింది: {{title}}',
@@ -749,8 +749,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     HOLIDAY_ANNOUNCED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🏖️ Holiday Announcement',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '🏖️ సెలవు ప్రకటన',
@@ -760,8 +760,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     EVENT_PUBLISHED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📅 Event: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '📅 ఈవెంట్: {{title}}',
@@ -770,8 +770,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     EVENT_CONSENT_PENDING: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Consent needed: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'సమ్మతి అవసరం: {{title}}',
@@ -780,8 +780,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['title', 'message']
     },
     EVENT_PAYMENT_PENDING: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Event fee pending: {{title}}',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'ఈవెంట్ రుసుము బాకీ: {{title}}',
@@ -802,8 +802,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== ADMISSIONS & ENQUIRIES =====
     ADMISSION_APPLICATION_SUBMITTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Admission Application Submitted',
         bodyTemplate: 'Application {{application_no}} has been submitted successfully for {{student_name}}.',
         titleTemplate_te: 'ప్రవేశ దరఖాస్తు సమర్పించబడింది',
@@ -812,8 +812,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['application_no', 'student_name']
     },
     ADMISSION_DOC_VERIFIED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Document Verified',
         bodyTemplate: 'Your document {{doc_name}} has been verified.',
         titleTemplate_te: 'పత్రం ధృవీకరించబడింది',
@@ -832,8 +832,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['doc_name', 'reason']
     },
     ADMISSION_INTERVIEW_SCHEDULED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Interaction Scheduled',
         bodyTemplate: 'Admission interaction scheduled on {{date}} at {{time}}.',
         titleTemplate_te: 'ఇంటరాక్షన్ షెడ్యూల్ చేయబడింది',
@@ -842,8 +842,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['date', 'time']
     },
     ADMISSION_APPROVED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Admission Approved! 🎉',
         bodyTemplate: 'Congratulations! Application {{application_no}} has been approved.',
         titleTemplate_te: 'ప్రవేశం ఆమోదించబడింది! 🎉',
@@ -852,8 +852,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['application_no']
     },
     ADMISSION_CONFIRMED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Admission Confirmed',
         bodyTemplate: 'Student enrolled successfully with Admission No {{admission_no}}.',
         titleTemplate_te: 'ప్రవేశం ఖరారైంది',
@@ -872,8 +872,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['application_no']
     },
     ADMISSION_REMINDER: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Admission reminder',
         bodyTemplate: 'Application {{application_no}} still needs action. Status: {{status}}.',
         titleTemplate_te: 'ప్రవేశ రిమైండర్',
@@ -882,8 +882,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['application_no', 'status']
     },
     ADMISSION_WAITLISTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Waitlisted',
         bodyTemplate: 'Application {{application_no}} has been waitlisted.',
         titleTemplate_te: 'వెయిట్‌లిస్ట్',
@@ -903,8 +903,8 @@ export const NotificationEventConfig = Object.freeze({
     },
 
     INTELLIGENCE_PATTERN_DETECTED: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Student pattern ready for review',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'విద్యార్థి నమూనా సమీక్షకు సిద్ధం',
@@ -913,8 +913,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     ANECDOTE_FOLLOWUP_DUE: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Follow-up due',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'ఫాలో-అప్ గడువు',
@@ -923,8 +923,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     INTERVENTION_REVIEW_DUE: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: 'Intervention review',
         bodyTemplate: '{{message}}',
         titleTemplate_te: 'మధ్యవర్తిత్వ సమీక్ష',
@@ -935,8 +935,8 @@ export const NotificationEventConfig = Object.freeze({
 
     // ===== CONTENT ENGINE (DAILY THOUGHT & NEWS) =====
     DAILY_THOUGHT: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '🌅 Today\'s Thought',
         bodyTemplate: '{{message}}',
         titleTemplate_te: '🌅 నేటి ఆలోచన',
@@ -945,8 +945,8 @@ export const NotificationEventConfig = Object.freeze({
         requiredParams: ['message']
     },
     DAILY_NEWS: {
-        channelId: 'voice_alert',
-        sound: 'voice_alert.wav',
+        channelId: 'notification_default',
+        sound: 'notification_default.wav',
         titleTemplate: '📰 Today\'s News',
         bodyTemplate: '{{title}} — {{message}}',
         titleTemplate_te: '📰 నేటి వార్తలు',

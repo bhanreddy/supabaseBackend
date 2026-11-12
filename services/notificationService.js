@@ -128,7 +128,10 @@ export async function sendNotificationToUsers(userIds = [], type, params = {}, c
         type,
         recipientUserId: userId,
         notificationId: inboxIdsByUser.get(String(userId)) || '',
-        customSound: true
+        customSound: true,
+        expiresAt: context.expiresAt,
+        messageId: context.idempotencyKey
+          ? createHash('sha256').update(`${context.idempotencyKey}:${userId}`).digest('hex') : null,
       }));
     }
   }
@@ -302,6 +305,8 @@ async function sendBatch(tokens, {
   recipientUserId = null,
   notificationId = '',
   customSound = true,
+  expiresAt = null,
+  messageId = null,
 }) {
   if (tokens.length === 0) return { success: 0, failure: 0, tokenResults: [] };
 
@@ -310,6 +315,13 @@ async function sendBatch(tokens, {
   // named exactly <soundBase>.wav in android/app/src/main/res/raw/.
   const soundBase = soundFile && soundFile !== 'default' ? soundFile.replace(/\.[^/.]+$/, "") : 'default';
   const presentation = notificationPresentation(type);
+  // Approaching alerts must not be stored by the provider for a full day.
+  // Preserve the outbox's original deadline across delivery retries.
+  const timeSensitive = ['TRANSPORT_BUS_APPROACHING', 'TRANSPORT_BUS_RUNNING_LATE'].includes(type);
+  const now = Date.now();
+  const deadline = timeSensitive
+    ? Math.min(now + 600_000, expiresAt ? new Date(expiresAt).getTime() : Infinity)
+    : null;
 
   const message = {
     tokens,
@@ -324,7 +336,7 @@ async function sendBatch(tokens, {
 
     android: {
       priority: 'high',        // Delivered even in Doze mode
-      ttl: 86400 * 1000,       // TTL is in MILLISECONDS for admin SDK, not seconds
+      ttl: deadline == null ? 86400 * 1000 : Math.max(0, deadline - now),
       notification: {
         title,                 // Override for Android-specific customization
         body,
@@ -341,6 +353,7 @@ async function sendBatch(tokens, {
 
     apns: {
       headers: {
+        ...(deadline == null ? {} : { 'apns-expiration': String(Math.floor(deadline / 1000)) }),
         'apns-priority': '10',      // 10 = immediate delivery (required for alert)
         'apns-push-type': 'alert'   // Required on iOS 13+ when showing an alert
       },
@@ -374,7 +387,7 @@ async function sendBatch(tokens, {
       // notification tap; it is never trusted for API authorization.
       recipientUserId: String(recipientUserId || ''),
       notificationId: String(notificationId || ''),
-      messageId: String(randomUUID())
+      messageId: String(messageId || randomUUID())
     }
   };
 
@@ -831,6 +844,9 @@ export async function sendNotificationToUsersWithReport(userIds = [], type, para
           recipientUserId: userId,
           notificationId: inboxIdsByUser.get(String(userId)) || '',
           customSound: true,
+          expiresAt: context.expiresAt,
+          messageId: context.idempotencyKey
+            ? createHash('sha256').update(`${context.idempotencyKey}:${userId}`).digest('hex') : null,
         }).then((batchRes) => ({ deviceChunk, batchRes }))
       );
     }

@@ -130,3 +130,26 @@ export function filterGpsFix(previousState, fix) {
     automationFix: reacquired ? null : { ...fix, speed, heading },
   };
 }
+
+/** Compatibility gate for released apps that do not transmit sensor accuracy.
+ * Retain that uncertainty, reject jumps/replays/mocked fixes, and expose raw
+ * coordinates only. The geofence applies a tighter radius and longer dwell.
+ */
+export function filterLegacyGpsFix(previousState, fix) {
+  let state = previousState || {};
+  const anchor = state.legacy_anchor || state.anchor;
+  const time = Date.parse(fix.recorded_at);
+  const reject = reason => ({ state, accepted: false, reason, position: null, automationFix: null });
+  if (!validPoint(fix) || !Number.isFinite(time)) return reject('invalid_fix');
+  if (fix.is_mocked || fix.is_suspicious) return reject('mocked_or_suspicious');
+  const seconds = anchor ? (time - Date.parse(anchor.recorded_at)) / 1000 : null;
+  if (seconds != null && seconds <= 0) return reject('out_of_order');
+  const distance = anchor ? gpsDistance(anchor, fix) : 0;
+  if (seconds != null && distance > GPS_FILTER.MAX_SPEED_MPS * seconds) return reject('implausible_jump');
+  const derivedSpeed = seconds != null && distance > 10 ? distance / seconds * 3.6 : 0;
+  const speed = Math.max(derivedSpeed, fix.speed ?? 0);
+  const raw = { ...fix, accuracy: null, speed };
+  state = { ...state, legacy_anchor: raw };
+  return { state, accepted: true, reason: 'legacy_accuracy_unknown', position: raw,
+    automationFix: { ...raw, legacy_accuracy_unknown: true } };
+}

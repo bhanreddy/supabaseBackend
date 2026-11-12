@@ -90,17 +90,17 @@ for (const eventType of ['SCHOOL_EVENT', 'EXAM', 'TEST']) {
       }, recipients[index].language_code);
       assert.deepEqual(message.notification, { title: rendered.title, body: rendered.body });
       assert.match(message.notification.body, /cancelled/);
-      assert.equal(message.android.notification.channelId, 'voice_alert_custom');
-      assert.equal(message.android.notification.sound, 'voice_alert');
-      assert.equal(message.apns.payload.aps.sound, 'voice_alert.wav');
-      assert.equal(message.data.channelId, 'voice_alert_custom');
-      assert.equal(message.data.sound, 'voice_alert');
+      assert.equal(message.android.notification.channelId, 'notification_default_custom');
+      assert.equal(message.android.notification.sound, 'notification_default');
+      assert.equal(message.apns.payload.aps.sound, 'notification_default.wav');
+      assert.equal(message.data.channelId, 'notification_default_custom');
+      assert.equal(message.data.sound, 'notification_default');
       assert.equal(message.data.type, 'CALENDAR_EVENT_CANCELLED');
       assert.equal(message.data.deepLink, `/Screen/calendar?eventId=${event.id}`);
       assert.equal(message.data.recipientUserId, recipients[index].user_id);
     }
     assert.equal(state.summaries[0].type, 'CALENDAR_EVENT_CANCELLED');
-    assert.equal(state.summaries[0].channelId, 'voice_alert');
+    assert.equal(state.summaries[0].channelId, 'notification_default');
     assert.equal(state.summaries[0].tokensSent, 2);
   });
 }
@@ -152,10 +152,11 @@ test('diary notifications use only the dedicated sound in every delivery payload
 });
 
 for (const [type, sound] of [
-  ['LEAVE_APPROVED', 'voice_alert'],
-  ['MESSAGE_RECEIVED', 'voice_alert'],
-  ['NOTICE_ADMIN_STUDENT', 'notification_default'],
-  ['POPUP_ANNOUNCEMENT', 'notification_default'],
+  ['LEAVE_APPROVED', 'notification_default'],
+  ['MESSAGE_RECEIVED', 'notification_default'],
+  ['FINE_PAID', 'notification_default'],
+  ['NOTICE_ADMIN_STUDENT', 'voice_alert'],
+  ['POPUP_ANNOUNCEMENT', 'voice_alert'],
 ]) {
   test(`${type} sends the correct sound and channel for all delivery modes`, async () => {
     await sendNotificationToUsers(recipients.map(({ user_id }) => user_id), type, {
