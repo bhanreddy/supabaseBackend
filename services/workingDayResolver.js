@@ -1,4 +1,7 @@
 import sql from '../db.js';
+import { resolveDayRules, policyForDate, eventApplies } from './attendanceCalendarModel.js';
+import { calendarTimezone } from './calendarTime.js';
+import { attendanceCalendarSchema } from './attendanceCalendarSchema.js';
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -49,7 +52,7 @@ export function getWeekdayName(dateStr) {
  *   reason: string|null
  * }>}
  */
-export async function resolveSchoolDay(schoolId, rawDate, dbClient = sql) {
+export async function resolveSchoolDay(schoolId, rawDate, dbClient = sql, context = {}) {
   const date = formatYMD(rawDate);
   if (!date) {
     throw new Error('resolveSchoolDay requires a valid date');
@@ -58,18 +61,61 @@ export async function resolveSchoolDay(schoolId, rawDate, dbClient = sql) {
   const dayOfWeek = getWeekdayName(date);
 
   // 1. Fetch any published calendar events active on this date for the school
-  const events = await dbClient`
+  let events = await dbClient`
     SELECT 
       id, title, title_te, event_type, holiday_type, attendance_enabled,
-      timetable_enabled, copy_timetable_from_day, priority, status
+      timetable_enabled, copy_timetable_from_day, priority, status,
+      start_date, end_date, start_datetime, end_datetime, recurrence_rule, recurrence_parent_id,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('target_type', t.target_type, 'target_id', t.target_id))
+        FROM calendar_event_targets t WHERE t.event_id = calendar_events.id AND t.school_id = calendar_events.school_id), '[]'::jsonb) AS targets
     FROM calendar_events
     WHERE school_id = ${numericSchoolId}
       AND ${date} >= start_date
-      AND ${date} <= end_date
-      AND status = 'PUBLISHED'
+      AND (${date} <= end_date OR recurrence_rule IS NOT NULL)
+      AND status IN ('PUBLISHED', 'COMPLETED')
       AND deleted_at IS NULL
     ORDER BY priority DESC, created_at DESC
   `;
+
+  const [rollout] = await dbClient`SELECT value FROM school_settings
+    WHERE school_id = ${numericSchoolId} AND key = 'attendance_calendar_v2_enabled'`;
+  if (rollout?.value === 'true' && (await attendanceCalendarSchema(dbClient)).ready) {
+    const policies = await dbClient`SELECT * FROM attendance_calendar_policies WHERE school_id = ${numericSchoolId} AND effective_from <= ${date}`;
+    let scoped = { class_section_id: context.classSectionId, class_id: context.classId };
+    if (context.classSectionId && !context.classId) {
+      const [section] = await dbClient`SELECT class_id FROM class_sections WHERE id = ${context.classSectionId} AND school_id = ${numericSchoolId}`;
+      scoped.class_id = section?.class_id;
+    }
+    // With no class context, only school-wide operational overrides apply.
+    // A holiday for a particular student/role must not close the entire school.
+    const applicable = events.filter(e => !e.targets?.length || e.targets.some(t => t.target_type === 'ENTIRE_SCHOOL')
+      || ((context.classSectionId || context.classId) && eventApplies(e, scoped, null, null, [])));
+    const ids = applicable.map(e => e.id);
+    const overrides = ids.length ? await dbClient`SELECT id, override_event_ids FROM calendar_events
+      WHERE school_id = ${numericSchoolId} AND id = ANY(${ids})` : [];
+    const overrideMap = new Map(overrides.map(e => [e.id, e.override_event_ids]));
+    const { expandRecurrenceOccurrences } = await import('./calendarService.js');
+    const timezone = await calendarTimezone(dbClient, numericSchoolId);
+    const expanded = applicable.flatMap(e => {
+      const normalized = { ...e, school_timezone: timezone, start_date: formatYMD(e.start_date), end_date: formatYMD(e.end_date), override_event_ids: overrideMap.get(e.id) || [] };
+      return e.recurrence_rule?.frequency && !e.recurrence_parent_id ? expandRecurrenceOccurrences(normalized, date, date) : [normalized];
+    }).filter(e => e.start_date <= date && e.end_date >= date);
+    const rules = resolveDayRules(date, expanded, policyForDate(policies, date));
+    const [school] = await dbClient`SELECT timetable_mode FROM schools WHERE id = ${numericSchoolId}`;
+    const special = rules.day_type === 'SPECIAL_WORKING_DAY';
+    const holiday = ['EMERGENCY_CLOSURE', 'FIXED_HOLIDAY', 'LOCAL_HOLIDAY'].includes(rules.day_type);
+    const override = special ? rules.source_event?.copy_timetable_from_day?.toLowerCase() || (dayOfWeek === 'sunday' ? 'monday' : dayOfWeek) : null;
+    return { date, dayOfWeek, enhanced: true, isWorkingDay: rules.is_attendance_expected, isHoliday: holiday,
+      isSpecialWorkingDay: special, holidayType: rules.holiday_type || null, holidayId: holiday ? rules.source_event?.id : null,
+      holidayTitle: rules.holiday_name || null, holidayName: rules.holiday_name || null,
+      specialWorkingDayId: special ? rules.source_event?.id : null, specialWorkingDayTitle: special ? rules.source_event?.title : null,
+      specialWorkingDayName: special ? rules.source_event?.title : null,
+      timetableOverride: override, timetableDay: override || (school?.timetable_mode === 'per_day' ? dayOfWeek : 'monday'),
+      timetableEnabled: rules.is_attendance_expected && rules.source_event?.timetable_enabled !== false,
+      attendanceAllowed: rules.is_attendance_expected, conflict: rules.conflict,
+      reason: rules.holiday_name || rules.source_event?.title || (rules.is_attendance_expected ? 'Regular School Day' : 'Weekly holiday') };
+  }
+  events = events.filter(e => e.status !== 'COMPLETED' && (!e.end_date || formatYMD(e.end_date) >= date));
 
   // Look for Special Working Day overrides first (takes precedence over normal holidays/Sundays)
   const specialWorkingEvent = events.find((e) => e.event_type === 'SPECIAL_WORKING_DAY');

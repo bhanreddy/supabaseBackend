@@ -35,7 +35,11 @@ import {
 import feeRecoveryRouter from './feeRecoveryRoutes.js';
 import { CalendarService } from '../services/calendarService.js';
 
+import { requireFeeCollectionAccess } from '../middleware/feeCollectionAccess.js';
+import feeCollectionAccessRouter from './feeCollectionAccessRoutes.js';
+
 const router = express.Router();
+router.use('/collection-access', feeCollectionAccessRouter);
 
 // Mount Fee Recovery Intelligence sub-router
 router.use('/recovery', feeRecoveryRouter);
@@ -916,7 +920,7 @@ async function handleFeeCollection(req, res, successMessage) {
   }
 }
 
-router.post('/collect', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
+router.post('/collect', requirePermission('fees.collect'), requireFeeCollectionAccess, asyncHandler(async (req, res) => {
   return handleFeeCollection(req, res, 'Payment collected successfully');
 }));
 
@@ -935,7 +939,7 @@ router.post('/collect', requirePermission('fees.collect'), asyncHandler(async (r
  * can bypass approval. There is no per-line approval-queue in combined mode —
  * blocked lines are reported so the collector can adjust and retry.
  */
-router.post('/collect-multi', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
+router.post('/collect-multi', requirePermission('fees.collect'), requireFeeCollectionAccess, asyncHandler(async (req, res) => {
   const { items = [], fine_items = [], payment_method, transaction_ref, remarks } = req.body;
 
   if ((!Array.isArray(items) || items.length === 0) && (!Array.isArray(fine_items) || fine_items.length === 0)) {
@@ -1046,7 +1050,7 @@ router.post('/collect-multi', requirePermission('fees.collect'), asyncHandler(as
   }
 }));
 
-router.post('/transactions', requirePermission('fees.collect'), asyncHandler(async (req, res) => {
+router.post('/transactions', requirePermission('fees.collect'), requireFeeCollectionAccess, asyncHandler(async (req, res) => {
   return handleFeeCollection(req, res, 'Transaction recorded');
 }));
 

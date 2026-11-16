@@ -1212,8 +1212,8 @@ router.post(
 
     const msg =
       status === 'approved'
-        ? 'Your request for out-of-hours access has been GRANTED until midnight tonight.'
-        : 'Your request for out-of-hours access has been DENIED.';
+        ? 'Your request for after-hours fee collection has been GRANTED until midnight tonight.'
+        : 'Your request for after-hours fee collection has been DENIED.';
 
     try {
       const response = await sendNotificationToUsers(

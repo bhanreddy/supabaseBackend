@@ -2,6 +2,9 @@ import dns from 'node:dns';
 import postgres from 'postgres';
 import { createClient } from '@supabase/supabase-js';
 import config from './config/env.js';
+import { assertIsolatedTestDatabase } from './utils/testDatabaseGuard.js';
+
+assertIsolatedTestDatabase(config.databaseUrl);
 
 // Prefer IPv4 for every outbound connection in this process (main pool,
 // pg-boss, supabase-js). The Supabase poolers are IPv4-reachable, but some

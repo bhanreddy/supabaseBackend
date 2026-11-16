@@ -1,0 +1,38 @@
+{
+  "removed_test_anecdotes": 1,
+  "removed_test_plans": 1,
+  "cascaded_test_outcomes": 1,
+  "removed_generated_metric_caches": 3,
+  "removed_generated_signals": 1,
+  "removed_archived_test_templates": 2,
+  "removed_test_general_expenses": 1,
+  "hidden_test_notifications": 1,
+  "notification_delivery_records": [],
+  "preexisting_profile": "Active-plan count corrected from actual remaining records. Other refreshed cached values retained because no before-image is available.",
+  "feature_overrides": "Tests used upsert/delete on School 1 overrides/subscriptions/requests. Prior existence cannot be established from this run; no guessed restoration performed.",
+  "initial_admission_cleanup": {
+    "removed_test_students": 1,
+    "removed_test_parents": 1,
+    "removed_test_persons": 2,
+    "removed_test_enrollments": 1,
+    "removed_test_links": 1,
+    "removed_test_fee_assignments": 1,
+    "removed_test_contacts": 2,
+    "admission_counter": "Intentionally not decremented; allocated test number remains a gap."
+  },
+  "requires_backup_review": {
+    "school_20_profile_id": "3d83fa29-d737-47d9-9aee-e56abcced1ad",
+    "school_1_user_id": "984f8a31-a135-465f-ab88-211e1157b341",
+    "affected_keys": {
+      "school_feature_overrides": "fees",
+      "user_feature_overrides": "analytics",
+      "feature_access_requests": "advanced_reports",
+      "feature_notification_subscriptions": "ai_predictive_enrollment"
+    },
+    "test_window_utc": [
+      "2026-11-15T18:38:50Z",
+      "2026-11-15T18:40:40Z"
+    ],
+    "prior_values": "Not captured; do not infer restoration values."
+  }
+}

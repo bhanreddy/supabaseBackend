@@ -10,6 +10,8 @@ Deploy the backend and frontend changes together. Run against the intended schoo
 npm run migrate:release -- --library
 ```
 
+This also applies `20261116_employee_leave_access.sql`, which grants own-leave viewing and application access to Librarian and Accounts for existing and future schools.
+
 The migration is also included in the standard `--init` and `--upgrade` release paths. It seeds the role and permissions for existing and future schools and creates library storage. Existing QR storage and the server login QR key must already be configured for the QR tools. No production database migration or deployment is performed by the local tests.
 
 ## Features
@@ -20,9 +22,10 @@ The migration is also included in the standard `--init` and `--upgrade` release 
 - Configure loan days, maximum loans, renewal limits, and overdue fine per day. Dates use the school timezone; the fine rate is captured when the book is issued. Record full or partial payments against returned-book fines in the library ledger, with an audit trail. These payments are not school-fee receipts or a payment gateway integration.
 - View inventory and circulation totals, overdue loans, loan history, fine balances, and recent activity. Export the summary/activity report as CSV.
 - Use the existing staff complaint wizard to report on any active student in the school, individually or in a batch. Librarians see their own reports; administrators handle resolutions through the existing complaint flow. Teachers retain their existing class-assignment checks. Parent/student notifications retain their current behavior.
+- Apply for full-day or half-day leave and track pending, approved, and rejected applications through **Apply Leave** in the librarian dashboard/menu. Accounts uses the same form, accessible from its dashboard and desktop/mobile navigation.
 - Generate, regenerate, preview, print, and export Student Login QR and Role Login QR cards using the existing tools. Librarians may issue role cards for librarian, staff/teacher, driver, gatekeeper, and parent accounts. Accounts, principal, management, and admin accounts outrank librarians and remain unavailable to them. Student login setup is referred to Accounts/admin.
 
-Administrators and principals can open Library from the admin navigation. Librarians receive library and complaint permissions only; they do not receive school administration, staff management, or fee permissions.
+Administrators and principals can open Library from the admin navigation. Librarians receive library, complaint, and own-leave permissions; they do not receive school administration, staff management, or fee permissions.
 
 ## Verify
 

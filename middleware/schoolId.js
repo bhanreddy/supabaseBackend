@@ -10,6 +10,7 @@
  * never from query/body. Matches full req.path (e.g. /api/v1/settings/upi).
  */
 const JWT_SCHOOL_ID_PATHS = [
+  /^\/api\/v1\/results\/(?:exam-intelligence|exam-analytics)(?:\/.*)?$/i,
   // Transport is an authenticated, tenant-bound domain.  A build-time client
   // school_id is not an authorization boundary and must never select data.
   // Keep this broad rule before the legacy transport exceptions below so every

@@ -50,8 +50,11 @@ const examOnlySpecialSubjectsMigrationName = '20260926_exam_only_special_subject
 const accountsLeaveHalfDayMigrationName = '20260930_accounts_leave_half_day.sql';
 const accountsLeaveApplyOnlyMigrationName = '20260930_accounts_leave_apply_only.sql';
 const attendanceSchoolLocalDateMigrationName = '20261008_attendance_school_local_date.sql';
+const examIntelligenceMigrationName = '20261115_exam_intelligence.sql';
+const studentAttendanceCalendarMigrationName = '20261115_student_attendance_calendar.sql';
 const roleLoginQrMigrationName = '20261013_role_login_qr.sql';
 const librarianLibraryMigrationName = '20261104_librarian_library.sql';
+const employeeLeaveAccessMigrationName = '20261116_employee_leave_access.sql';
 const staffAttendanceLookupMigrationName = '20261014_staff_attendance_lookup_indexes.sql';
 const databaseBackupHardeningMigrationName = '20260914_v446_backup_subsystem_hardening.sql';
 
@@ -233,6 +236,9 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, staffAttendanceLookupMigrationName, 4601014);
   await applyStudentLoginQrMigration(db);
   await applySmartPopupManagerMigration(db);
+  await applyNamedSqlMigration(db, academicCalendarEngineMigrationName, 4270912);
+  await applyNamedSqlMigration(db, academicCalendarHardeningMigrationName, 4280912);
+  await applyNamedSqlMigration(db, academicCalendarProductionMigrationName, 4290912);
   await applyNamedSqlMigration(db, finePenaltyMigrationName, 4220912);
   await applyNamedSqlMigration(db, fineHardeningMigrationName, 4230912);
   await applyNamedSqlMigration(db, celebrationSettingsMigrationName, 4240912);
@@ -253,6 +259,9 @@ export async function initializeReleaseDatabase(db) {
   await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
   await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
   await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
+  await applyNamedSqlMigration(db, employeeLeaveAccessMigrationName, 4651116);
+  await applyNamedSqlMigration(db, studentAttendanceCalendarMigrationName, 4631115);
+  await applyNamedSqlMigration(db, examIntelligenceMigrationName, 4641115);
 }
 
 export async function verifyReleaseDatabase(db) {
@@ -466,6 +475,9 @@ export async function verifyReleaseDatabase(db) {
     to_regclass('public.library_reservations') AS reservations, to_regclass('public.library_settings') AS settings,
     to_regclass('public.library_activity') AS activity`;
   if (!libraryCheck || Object.values(libraryCheck).some((value) => !value)) throw new Error('Library tables are missing');
+  const [attendanceCalendarCheck] = await db`SELECT to_regclass('public.attendance_calendar_policies') AS policies,
+    to_regclass('public.attendance_report_finalizations') AS reports, to_regclass('public.attendance_calendar_alerts') AS alerts`;
+  if (!attendanceCalendarCheck || Object.values(attendanceCalendarCheck).some(value => !value)) throw new Error('Student attendance calendar migration is missing');
   return { ready: true, migrationScope: 'Batches 1-3 + Staff Attendance V2 + Smart Popup Manager + Academic Calendar + Academic Planner + Content Engine + Database Backups + Library', freshBaseline: readReleaseBaseline().manifest.id };
 }
 
@@ -477,8 +489,8 @@ function sessionConnectionUrl(source) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const mode = process.argv[2];
-  if (!['--init','--upgrade','--check','--student-login-qr','--library'].includes(mode)) {
-    throw new Error('Usage: node scripts/migrate_release.js --init | --upgrade | --check | --student-login-qr | --library');
+  if (!['--init','--upgrade','--check','--student-login-qr','--library','--attendance-calendar','--exam-intelligence'].includes(mode)) {
+    throw new Error('Usage: node scripts/migrate_release.js --init | --upgrade | --check | --student-login-qr | --library | --attendance-calendar | --exam-intelligence');
   }
   const source = process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL;
   if (!source) throw new Error('Set DATABASE_URL_DIRECT to a direct/session connection');
@@ -535,9 +547,23 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await applyNamedSqlMigration(db, attendanceSchoolLocalDateMigrationName, 4581008);
       await applyNamedSqlMigration(db, roleLoginQrMigrationName, 4591013);
       await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
+      await applyNamedSqlMigration(db, employeeLeaveAccessMigrationName, 4651116);
+      await applyNamedSqlMigration(db, studentAttendanceCalendarMigrationName, 4631115);
+      await applyNamedSqlMigration(db, examIntelligenceMigrationName, 4641115);
     }
-    if (mode==='--library') {
+    if (mode==='--exam-intelligence') {
+      await applyNamedSqlMigration(db, examIntelligenceMigrationName, 4641115);
+      console.log('Exam Intelligence storage installed; school flags remain unchanged');
+    } else if (mode==='--attendance-calendar') {
+      for (const table of ['calendar_events', 'calendar_event_targets', 'exams', 'exam_subjects', 'events', 'event_audience_targets']) {
+        const [row] = await db`SELECT to_regclass(${'public.' + table}) AS name`;
+        if (!row?.name) throw new Error(`Install the existing academic calendar, exam timetable and events migrations first: ${table} is missing`);
+      }
+      await applyNamedSqlMigration(db, studentAttendanceCalendarMigrationName, 4631115);
+      console.log('Student attendance calendar storage is installed; school rollout flags remain unchanged');
+    } else if (mode==='--library') {
       await applyNamedSqlMigration(db, librarianLibraryMigrationName, 4621104);
+      await applyNamedSqlMigration(db, employeeLeaveAccessMigrationName, 4651116);
       const [row] = await db`SELECT to_regclass('public.library_loans') AS name`;
       if (!row?.name) throw new Error('Library tables were not created');
       console.log('Librarian role and library storage are installed');

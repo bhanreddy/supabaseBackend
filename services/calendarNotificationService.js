@@ -1,6 +1,10 @@
 import sql from '../db.js';
 import { sendNotificationToUsers } from './notificationService.js';
 import logger from '../utils/logger.js';
+import { processAttendanceCalendarAlerts, nextCalendarAlertTime } from './attendanceCalendarAlerts.js';
+import { isHolidayEvent, policyForDate, schoolToday } from './attendanceCalendarModel.js';
+import { calendarTimezone } from './calendarTime.js';
+import { attendanceCalendarSchema } from './attendanceCalendarSchema.js';
 
 /**
  * Resolve target user IDs for a calendar event based on its audience targets.
@@ -50,7 +54,7 @@ export async function resolveTargetUserIds(schoolId, eventId, tx = sql) {
         FROM student_enrollments se
         JOIN class_sections cs ON se.class_section_id = cs.id
         JOIN students s ON se.student_id = s.id
-        JOIN users u ON (u.person_id = s.person_id)
+        JOIN users u ON (u.person_id = s.person_id AND u.school_id = s.school_id)
         WHERE se.school_id = ${numericSchoolId}
           AND cs.class_id::text = ${String(t.target_id)}
           AND se.status = 'active'
@@ -64,9 +68,9 @@ export async function resolveTargetUserIds(schoolId, eventId, tx = sql) {
         SELECT DISTINCT u.id
         FROM student_enrollments se
         JOIN class_sections cs ON se.class_section_id = cs.id
-        JOIN student_parents sp ON sp.student_id = se.student_id
-        JOIN parents p ON sp.parent_id = p.id
-        JOIN users u ON u.person_id = p.person_id
+        JOIN student_parents sp ON sp.student_id = se.student_id AND sp.deleted_at IS NULL
+        JOIN parents p ON sp.parent_id = p.id AND p.deleted_at IS NULL
+        JOIN users u ON u.person_id = p.person_id AND u.school_id = p.school_id
         WHERE se.school_id = ${numericSchoolId}
           AND cs.class_id::text = ${String(t.target_id)}
           AND se.status = 'active'
@@ -80,7 +84,7 @@ export async function resolveTargetUserIds(schoolId, eventId, tx = sql) {
         SELECT DISTINCT u.id
         FROM student_enrollments se
         JOIN students s ON se.student_id = s.id
-        JOIN users u ON (u.person_id = s.person_id)
+        JOIN users u ON (u.person_id = s.person_id AND u.school_id = s.school_id)
         WHERE se.school_id = ${numericSchoolId}
           AND se.class_section_id::text = ${String(t.target_id)}
           AND se.status = 'active'
@@ -92,9 +96,9 @@ export async function resolveTargetUserIds(schoolId, eventId, tx = sql) {
       const parentUsers = await tx`
         SELECT DISTINCT u.id
         FROM student_enrollments se
-        JOIN student_parents sp ON sp.student_id = se.student_id
-        JOIN parents p ON sp.parent_id = p.id
-        JOIN users u ON u.person_id = p.person_id
+        JOIN student_parents sp ON sp.student_id = se.student_id AND sp.deleted_at IS NULL
+        JOIN parents p ON sp.parent_id = p.id AND p.deleted_at IS NULL
+        JOIN users u ON u.person_id = p.person_id AND u.school_id = p.school_id
         WHERE se.school_id = ${numericSchoolId}
           AND se.class_section_id::text = ${String(t.target_id)}
           AND se.status = 'active'
@@ -108,13 +112,13 @@ export async function resolveTargetUserIds(schoolId, eventId, tx = sql) {
       const studentAndParents = await tx`
         SELECT DISTINCT u.id
         FROM students s
-        LEFT JOIN users u ON u.person_id = s.person_id
+        LEFT JOIN users u ON u.person_id = s.person_id AND u.school_id = s.school_id AND u.deleted_at IS NULL
         WHERE s.id::text = ${String(t.target_id)} AND s.school_id = ${numericSchoolId}
         UNION
         SELECT DISTINCT u.id
         FROM student_parents sp
-        JOIN parents p ON sp.parent_id = p.id
-        JOIN users u ON u.person_id = p.person_id
+        JOIN parents p ON sp.parent_id = p.id AND p.deleted_at IS NULL
+        JOIN users u ON u.person_id = p.person_id AND u.school_id = p.school_id AND u.deleted_at IS NULL
         WHERE sp.student_id::text = ${String(t.target_id)} AND p.school_id = ${numericSchoolId}
       `;
       studentAndParents.forEach((u) => {
@@ -244,7 +248,7 @@ export async function processPendingReminders({ db = sql, notify = sendNotificat
         SELECT
           r.id as reminder_id, r.school_id, r.event_id, r.remind_at,
           e.title, e.description, e.start_date, e.start_datetime, e.end_datetime,
-          e.is_all_day, e.location, e.status
+          e.is_all_day, e.location, e.status, e.event_type, e.holiday_type
         FROM calendar_event_reminders r
         JOIN calendar_events e ON r.event_id = e.id
         WHERE r.status = 'PENDING'
@@ -258,6 +262,23 @@ export async function processPendingReminders({ db = sql, notify = sendNotificat
 
       for (const item of pending) {
         try {
+          if (isHolidayEvent(item) || ['EXAM', 'TEST'].includes(item.event_type)) {
+            const [flag] = await tx`SELECT value FROM school_settings WHERE school_id = ${item.school_id} AND key = 'attendance_calendar_v2_enabled'`;
+            if (flag?.value === 'true' && (await attendanceCalendarSchema(tx)).ready) {
+              const policies = await tx`SELECT * FROM attendance_calendar_policies WHERE school_id = ${item.school_id}`;
+              const timezone = await calendarTimezone(tx, item.school_id);
+              const policy = policyForDate(policies, schoolToday(timezone));
+              if (isHolidayEvent(item) ? !policy.notify_holidays : !policy.notify_exams) {
+                await tx`UPDATE calendar_event_reminders SET status = 'SENT', sent_at = now(), updated_at = now() WHERE id = ${item.reminder_id}`;
+                continue;
+              }
+              const due = nextCalendarAlertTime(new Date(), timezone, policy.quiet_start?.slice(0, 5), policy.quiet_end?.slice(0, 5));
+              if (due > new Date()) {
+                await tx`UPDATE calendar_event_reminders SET remind_at = ${due}, updated_at = now() WHERE id = ${item.reminder_id}`;
+                continue;
+              }
+            }
+          }
           const userIds = await resolveTargetUserIds(item.school_id, item.event_id, tx);
           if (userIds && userIds.length > 0) {
             const formattedTime = formatEventDate(item);
@@ -267,6 +288,7 @@ export async function processPendingReminders({ db = sql, notify = sendNotificat
               message,
             }, {
               schoolId: item.school_id,
+              idempotencyKey: `calendar-reminder:${item.reminder_id}`,
               deepLink: `/Screen/calendar?eventId=${item.event_id}`,
             });
           }
@@ -309,12 +331,14 @@ export function startCalendarReminderWorker() {
 
   // Initial check shortly after startup
   setTimeout(() => {
+    processAttendanceCalendarAlerts({ db: sql, notify: sendNotificationToUsers, resolveTargets: resolveTargetUserIds }).catch(err => logger.error({ err }, 'attendance_calendar_alerts_failed'));
     processPendingReminders().catch((err) => {
       logger.error({ err }, 'calendar_initial_reminders_failed');
     });
   }, 5000);
 
   reminderTimer = setInterval(() => {
+    processAttendanceCalendarAlerts({ db: sql, notify: sendNotificationToUsers, resolveTargets: resolveTargetUserIds }).catch(err => logger.error({ err }, 'attendance_calendar_alerts_failed'));
     processPendingReminders().catch((err) => {
       logger.error({ err }, 'calendar_interval_reminders_failed');
     });

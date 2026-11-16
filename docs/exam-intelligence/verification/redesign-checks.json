@@ -1,0 +1,31 @@
+{
+  "verified_at_utc": "2026-11-16T08:36:14.676074+00:00",
+  "scope": "Frontend UX redesign; existing Exam Intelligence data and permissions retained",
+  "frontend_tests_passed": 17,
+  "typecheck": "passed",
+  "feature_lint": "passed",
+  "web_build": "passed",
+  "browser_checks": [
+    "Desktop real FA-1 / class 7-A",
+    "390x844 responsive layout",
+    "Dark mode, restored light mode",
+    "Metric switching",
+    "Cohort selection",
+    "Chart pagination",
+    "Expandable detailed table"
+  ],
+  "application_deployed": false,
+  "dependencies_added": false,
+  "source_sha256": {
+    "SchoolIMS-Frontend/src/features/exam-intelligence/DeeperAnalysis.tsx": "ba5e4c1ea54a77fa3a70697e5dcf33f89677bdece28742399e2f099168c1142c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/ExamIntelligenceScreen.tsx": "2bb9ab37fd36b68638495bd046b435e8afe758f3990677a5e8fade1421569efb",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/IntelligenceCharts.tsx": "f228f3a76634d8381c472658c1a604a74c3c68c1112688f2e67a19f1f9e356d1",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/IntelligencePrimitives.tsx": "1215a738eda239347c49cea71c99e0d621e6e396f7cd89f02b07b9d646a8682c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/LegacyExamAnalyticsScreen.tsx": "8347b79e05f10631d84229f9db70860e1542287ecd6e211f98394a90e90bff7c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/WorkspaceChrome.tsx": "0b062535686d7aecf1b1ebcb25abfab42d01403b125ff435d671c2a6233fba95",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/WorkspacePanels.tsx": "cd06cc9ab5838dd1892f56316beba9c1c32883807cad0269fdcc483e759c76fb",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/palette.ts": "f20a86519234040a10d26a11b2f58c18c2ff4298b2e19f01dc17a4c53589ca35",
+    "SchoolIMS-Frontend/src/__tests__/examIntelligence.test.tsx": "b19da99caf0b951ad316e7f508501acdd11436fb9d0aefe8b4b8878d42242e3b"
+  },
+  "navigation_text_contrast": "All eight light navigation pairs >=4.5:1 on their actual tinted surfaces; see redesign-contrast.json"
+}

@@ -1,4 +1,6 @@
 import express from 'express';
+import examIntelligenceRouter from './examIntelligenceRoutes.js';
+import { capabilities as examIntelligenceCapabilities, legacyAnalyticsReport, readSnapshot as readExamSnapshot } from '../services/examIntelligenceService.js';
 import sql from '../db.js';
 import { requirePermission, requireAnyPermission, requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
@@ -25,6 +27,7 @@ import {
 } from '../services/examResultPublishingService.js';
 import { ACTIVE_STUDENT_STATUS_ID } from '../utils/activeStudentFilter.js';
 import CalendarService from '../services/calendarService.js';
+import { attendanceCalendarSchema } from '../services/attendanceCalendarSchema.js';
 import { RESULT_PUBLICATION_GATED_EXAM_TYPES } from '../utils/examResultVisibility.js';
 import { emitSchoolEvent, AUTOMATION_EVENTS } from '../services/automationEventService.js';
 import {
@@ -72,6 +75,7 @@ import { resolveFormativePrintPapers } from '../services/assessmentPrintPapersSe
 import { isSecondaryAssessmentClass, prepareSummativeMarksSection, summativeFormativeKeys, usesSummativeMarksRegister } from '../services/summativeMarksPrintService.js';
 
 const router = express.Router();
+router.use('/exam-intelligence', examIntelligenceRouter);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ABSENT_RESULT_MARKS = new Set(['A', 'AB']);
 
@@ -99,6 +103,7 @@ async function syncExamSubjectToCalendar(schoolId, examSubjectId, options = {}) 
       LEFT JOIN class_sections class_section ON class_section.id = es.class_section_id
       LEFT JOIN sections section ON section.id = class_section.section_id
       WHERE es.id = ${examSubjectId} AND es.school_id = ${schoolId}
+        AND es.deleted_at IS NULL AND e.deleted_at IS NULL AND e.status <> 'cancelled'
     `;
     if (!row?.exam_date || (!row.timetable_published && !options.force)) {
       await CalendarService.syncSourceEvent(schoolId, 'EXAM', examSubjectId, null);
@@ -343,6 +348,11 @@ export async function revertExamTimetableToDraft(schoolId, examId, tx = sql) {
 export async function notifyPublishedTimetableUsers(schoolId, exam, options = {}) {
   try {
     const db = options.db || sql;
+    // Enhanced schools use the durable calendar delivery queue, which applies
+    // exam opt-outs, quiet hours and per-recipient preferences. Avoid a second
+    // consolidated push from the legacy publication path.
+    const [rollout] = await db`SELECT value FROM school_settings WHERE school_id = ${schoolId} AND key = 'attendance_calendar_v2_enabled'`;
+    if (rollout?.value === 'true' && (await attendanceCalendarSchema(db)).ready) return { recipientCount: 0, userIds: [], queuedByCalendar: true };
     let sendNotification = options.sendNotification;
     if (!sendNotification) {
       const { sendNotificationToUsers } = await import('../services/notificationService.js');
@@ -1522,6 +1532,15 @@ router.get('/exam-analytics', requirePermission('admin.manage'), asyncHandler(as
   const studentId = typeof req.query.student_id === 'string' ? req.query.student_id.trim() : '';
   if (!UUID_RE.test(classSectionId) || !UUID_RE.test(examId) || (studentId && !UUID_RE.test(studentId))) {
     return res.status(400).json({ error: 'Valid class_section_id and exam_id are required' });
+  }
+
+  if ((await examIntelligenceCapabilities(req.schoolId)).enabled) {
+    res.set('Cache-Control', 'private, no-store');
+    const data = await readExamSnapshot(tx => legacyAnalyticsReport(req.schoolId, {
+      class_section_id: classSectionId, exam_id: examId, ...(studentId ? { student_id: studentId } : {}),
+    }, tx));
+    await sql`INSERT INTO audit_logs(school_id,user_id,action,entity,entity_id,details) VALUES(${req.schoolId},${req.staffPortalAccess?.admin_user_id || req.user.internal_id || req.user.id},'READ exam_analytics_compatibility','exam_intelligence',${examId},${sql.json({calculation_version:'exam-intelligence/1.0.0'})})`;
+    return sendSuccess(res, req.schoolId, data);
   }
 
   const [classSection] = await sql`

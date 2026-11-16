@@ -1,0 +1,119 @@
+{
+  "verified_at_utc": "2026-11-16T08:56:06.347Z",
+  "layouts": [
+    {
+      "bodyWidth": 320,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 251
+        },
+        {
+          "label": "Participation 94",
+          "width": 126
+        },
+        {
+          "label": "Score distribution",
+          "width": 251
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 320
+    },
+    {
+      "bodyWidth": 390,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 321
+        },
+        {
+          "label": "Participation 94",
+          "width": 126
+        },
+        {
+          "label": "Score distribution",
+          "width": 321
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 390
+    },
+    {
+      "bodyWidth": 768,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 443
+        },
+        {
+          "label": "Participation 94",
+          "width": 126
+        },
+        {
+          "label": "Score distribution",
+          "width": 443
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 768
+    },
+    {
+      "bodyWidth": 1024,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 679
+        },
+        {
+          "label": "Participation 94",
+          "width": 210
+        },
+        {
+          "label": "Score distribution",
+          "width": 679
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 1024
+    },
+    {
+      "bodyWidth": 1440,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 693
+        },
+        {
+          "label": "Participation 94",
+          "width": 210
+        },
+        {
+          "label": "Score distribution",
+          "width": 1079
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 1440
+    },
+    {
+      "bodyWidth": 1920,
+      "charts": [
+        {
+          "label": "Mean score by subject, scale 0 to 100 percent",
+          "width": 1013
+        },
+        {
+          "label": "Participation 94",
+          "width": 210
+        },
+        {
+          "label": "Score distribution",
+          "width": 1559
+        }
+      ],
+      "overflowingButtons": [],
+      "viewport": 1920
+    }
+  ]
+}

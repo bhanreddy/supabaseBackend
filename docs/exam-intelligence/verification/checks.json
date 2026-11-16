@@ -1,0 +1,40 @@
+{
+  "verified_at_utc": "2026-11-16T07:30:10.322734+00:00",
+  "backend": {
+    "passed": 90,
+    "failed": 0,
+    "skipped": 0
+  },
+  "frontend": {
+    "passed": 15,
+    "failed": 0
+  },
+  "typecheck": "passed",
+  "feature_lint": "passed",
+  "web_build": "passed",
+  "deployed": false,
+  "production_feature_migration_applied": true,
+  "pilot_enabled": true,
+  "source_sha256": {
+    "SchoolIMS-Backend/services/examIntelligenceModel.js": "48c8fdbc8c6ecb56bd1bdfd91629c026444e9c8e71706e293b5111bdd9ea99e6",
+    "SchoolIMS-Backend/services/examIntelligenceService.js": "ad97424d42d92d925f91cd506966a212cd9d59f19897c1c0dea132609e23998a",
+    "SchoolIMS-Backend/routes/examIntelligenceRoutes.js": "b997164d151ebde57379561133407d12eb20e667ce363b17b7bd3772d67695a6",
+    "SchoolIMS-Backend/migrations/20261115_exam_intelligence.sql": "a186b8a4e6a5da5e73df2a056721ce20f00993fef9f6a7f08c5b9b1eac621806",
+    "SchoolIMS-Backend/tests/examIntelligence.test.js": "526eaa257006ca391c46d59299dfd2dd11ac068b1aadfff7ca949f467c960c84",
+    "SchoolIMS-Backend/tests/examIntelligence.integration.test.js": "36068040c19e728623146dc50a45ceddf825f894e2e21db306455fa0f3a1e0fa",
+    "SchoolIMS-Backend/utils/testDatabaseGuard.js": "4b54fdba14f24bec259a1264c15033d171d7448fa1b2180a0a03c9808937955f",
+    "SchoolIMS-Backend/utils/analyticsPrivacy.js": "47bc2291f33763e4ed8caf117f706dcf2c4e9081058d2acae45c9df3792610da",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/DeeperAnalysis.tsx": "07d9a1601df3d1f65fb7f734f026c3c5a3a479415f06ccac0cd178a0efb9d8d2",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/ExamIntelligenceScreen.tsx": "9332daac9f91187127d576e44a1d1fa8ff747e5a520d01dd3cf39f8ae8d76c3b",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/IntelligencePrimitives.tsx": "d915d98db15016b5c3f3bf3cb38212e7b501abfdd836d2daa0ed8afa16110a99",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/LegacyExamAnalyticsScreen.tsx": "8347b79e05f10631d84229f9db70860e1542287ecd6e211f98394a90e90bff7c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/WorkspacePanels.tsx": "51c8fabc5b7d21c5402165565b002ed7d2e66c360fdfb4767447ff07d1eab62c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/palette.ts": "03b8407b29c4312f89a871e5620bce899e75b2c82a31cfbbd3878c831f7a4417",
+    "SchoolIMS-Frontend/src/services/examIntelligenceService.ts": "3b1d10766ccb91dd502f0829831f1c72c029d815c4a84e5773c4ca4aa4906138",
+    "SchoolIMS-Frontend/src/utils/examIntelligenceExport.ts": "f69aecae6fd1d0c566970b765c0076393eae3e57e163f4ea391db5f723bfdc6e",
+    "SchoolIMS-Frontend/src/__tests__/examIntelligence.test.tsx": "1105e61c474c529440dc51e5621553c6126eafc3ebbee1c9e9c32b36fce6d66f",
+    "SchoolIMS-Frontend/app/admin/exam-analytics.tsx": "0e0f30f825da99387c4ec0dd88dafcdea846194848078ff596634ddb3e24459a"
+  },
+  "schools_enabled": 10,
+  "enablement_record": "all-schools-enablement-20261116.json"
+}

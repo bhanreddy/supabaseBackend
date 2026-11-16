@@ -12,8 +12,25 @@ import {
   isInstructionalEventType,
 } from './calendarEventTypes.js';
 import logger from '../utils/logger.js';
+import { assertAttendanceCalendarPublication } from './attendanceCalendarPublication.js';
+import { enqueueAttendanceCalendarAlert } from './attendanceCalendarAlerts.js';
+import { calendarTimezone, schoolEventTimestamp, schoolEventClock } from './calendarTime.js';
+import { attendanceError } from './attendanceCalendarModel.js';
+import { attendanceCalendarSchema, requireAttendanceCalendarSchema } from './attendanceCalendarSchema.js';
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+// Older calendar forms serialize JSON fields, while newer forms send objects.
+// Persist the same JSON value for both so recurrence and attachments keep working.
+function normalizeCalendarInput(data) {
+  const normalized = { ...data };
+  for (const key of ['recurrence_rule', 'reminder_schedules', 'attachments']) {
+    if (typeof normalized[key] !== 'string') continue;
+    try { normalized[key] = normalized[key].trim() ? JSON.parse(normalized[key]) : null; }
+    catch { throw attendanceError(`Invalid ${key} JSON.`); }
+  }
+  return normalized;
+}
 
 /**
  * Parses a reminder schedule like '7d', '3d', '1d', '1h', '30m' into milliseconds.
@@ -49,22 +66,22 @@ function normalizeEventDates(event) {
       event.recurrence_rule = null;
     }
   }
+  if (typeof event.attachments === 'string') {
+    try { event.attachments = JSON.parse(event.attachments); } catch { event.attachments = []; }
+  }
   return event;
-}
-
-function extractClock(datetime) {
-  if (!datetime) return null;
-  const d = new Date(datetime);
-  if (Number.isNaN(d.getTime())) return null;
-  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 /**
  * Present a calendar event in both canonical and legacy frontend field names.
  */
-export function presentCalendarEvent(event) {
+export function presentCalendarEvent(event, timezone = event?.school_timezone || 'Asia/Kolkata') {
   if (!event) return event;
   const e = normalizeEventDates({ ...event });
+  if (e.targets?.length && e.targets.every(t => t.target_type === e.targets[0].target_type)) {
+    e.target_type = e.targets[0].target_type;
+    e.target_ids = e.targets.map(t => String(t.target_id));
+  }
   e.all_day = Boolean(e.is_all_day);
   e.is_holiday = e.event_type === 'HOLIDAY' || e.event_type === 'VACATION' || Boolean(e.holiday_type);
   e.is_working_day = e.event_type === 'SPECIAL_WORKING_DAY' || e.event_type === 'WORKING_DAY';
@@ -72,8 +89,8 @@ export function presentCalendarEvent(event) {
   e.affects_timetable = e.timetable_enabled === false;
   e.timetable_day_override = e.copy_timetable_from_day;
   e.source_id = e.source_entity_id;
-  e.start_time = e.start_time || extractClock(e.start_datetime);
-  e.end_time = e.end_time || extractClock(e.end_datetime);
+  e.start_time = e.start_time || schoolEventClock(e.start_datetime, timezone);
+  e.end_time = e.end_time || schoolEventClock(e.end_datetime, timezone);
   return e;
 }
 
@@ -205,7 +222,7 @@ export function expandRecurrenceOccurrences(masterEvent, windowStart, windowEnd)
 
     if (matchesRule) {
       count++;
-      if (curYMD >= winStart && curYMD <= winEnd && !exceptions.has(curYMD)) {
+      if (formatYMD(new Date(cur.getTime() + durationDays * 86400000)) >= winStart && curYMD <= winEnd && !exceptions.has(curYMD)) {
         const curEndObj = new Date(cur.getTime() + durationDays * 24 * 60 * 60 * 1000);
         const curEndYMD = formatYMD(curEndObj);
 
@@ -219,8 +236,8 @@ export function expandRecurrenceOccurrences(masterEvent, windowStart, windowEnd)
           is_recurring_instance: true,
           start_date: curYMD,
           end_date: curEndYMD,
-          start_datetime: `${curYMD}T${startTimePart}`,
-          end_datetime: `${curEndYMD}T${endTimePart}`,
+          start_datetime: masterEvent.school_timezone && masterEvent.start_datetime ? schoolEventTimestamp(curYMD, schoolEventClock(masterEvent.start_datetime, masterEvent.school_timezone), masterEvent.school_timezone) : `${curYMD}T${startTimePart}`,
+          end_datetime: masterEvent.school_timezone && masterEvent.end_datetime ? schoolEventTimestamp(curEndYMD, schoolEventClock(masterEvent.end_datetime, masterEvent.school_timezone), masterEvent.school_timezone) : `${curEndYMD}T${endTimePart}`,
         });
       }
     }
@@ -360,17 +377,21 @@ export const CalendarService = {
    * Create a new calendar event with audience targeting.
    */
   async createEvent({ schoolId, userId, data, targets = [] }) {
+    data = normalizeCalendarInput(data);
+    const schema = await attendanceCalendarSchema(sql);
+    if (!schema.overrides && (data.override_event_ids?.length || data.override_reason)) await requireAttendanceCalendarSchema(sql);
     const numericSchoolId = Number(schoolId);
+    const schoolTimezone = await calendarTimezone(sql, numericSchoolId);
     const startDate = formatYMD(data.start_date || data.start_datetime);
     const endDate = formatYMD(data.end_date || data.end_datetime || startDate);
 
     const startDatetime = data.start_datetime
       ? new Date(data.start_datetime).toISOString()
-      : `${startDate}T${data.start_time || '00:00:00'}Z`;
+      : schoolEventTimestamp(startDate, data.start_time || '00:00:00', schoolTimezone);
 
     const endDatetime = data.end_datetime
       ? new Date(data.end_datetime).toISOString()
-      : `${endDate}T${data.end_time || '23:59:59'}Z`;
+      : schoolEventTimestamp(endDate, data.end_time || '23:59:59', schoolTimezone);
 
     const isAllDay = Boolean(data.is_all_day ?? data.all_day ?? false);
     const copyTimetableFromDay = data.copy_timetable_from_day || data.timetable_day_override || null;
@@ -416,6 +437,7 @@ export const CalendarService = {
           attendance_enabled, timetable_enabled, copy_timetable_from_day, holiday_type,
           source_module, source_entity_id, recurrence_rule, recurrence_parent_id,
           reminder_schedules, attachments, created_by, published_at
+          ${schema.overrides ? tx`, override_event_ids, override_reason` : tx``}
         ) VALUES (
           ${numericSchoolId}, ${data.academic_year_id || null}, ${data.academic_term_id || null},
           ${data.title}, ${data.title_te || null}, ${data.description || null}, ${data.description_te || null},
@@ -425,10 +447,11 @@ export const CalendarService = {
           ${attendanceEnabled}, ${timetableEnabled},
           ${copyTimetableFromDay}, ${holidayType},
           ${data.source_module || 'MANUAL'}, ${data.source_entity_id || null},
-          ${data.recurrence_rule ? JSON.stringify(data.recurrence_rule) : null},
+          ${data.recurrence_rule ? tx.json(data.recurrence_rule) : null},
           ${data.recurrence_parent_id || null},
-          ${JSON.stringify(data.reminder_schedules || ['1d', '1h'])},
-          ${JSON.stringify(data.attachments || [])}, ${userId || null}, ${publishedAt}
+          ${tx.json(data.reminder_schedules || ['1d', '1h'])},
+          ${tx.json(data.attachments || [])}, ${userId || null}, ${publishedAt}
+          ${schema.overrides ? tx`, ${data.override_event_ids || []}, ${data.override_reason || null}` : tx``}
         )
         RETURNING *
       `;
@@ -443,6 +466,7 @@ export const CalendarService = {
         `;
       }
 
+      await assertAttendanceCalendarPublication(tx, numericSchoolId, event, expandRecurrenceOccurrences);
       // Record audit history
       await tx`
         INSERT INTO calendar_event_history (school_id, event_id, changed_by, change_type, new_value, change_summary)
@@ -462,13 +486,14 @@ export const CalendarService = {
       }
 
       // Trigger push notifications asynchronously
-      if (initialStatus === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true) {
+      if (initialStatus === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true
+        && !await enqueueAttendanceCalendarAlert(tx, numericSchoolId, event, 'PUBLISHED')) {
         notifyEventPublished(numericSchoolId, event).catch((err) => {
           logger.error({ err, eventId: event.id }, 'calendar_event_publish_failed');
         });
       }
 
-      return presentCalendarEvent(event);
+      return presentCalendarEvent(event, schoolTimezone);
     });
   },
 
@@ -476,6 +501,9 @@ export const CalendarService = {
    * Update an existing event.
    */
   async updateEvent({ schoolId, userId, eventId, data, targets }) {
+    data = normalizeCalendarInput(data);
+    const schema = await attendanceCalendarSchema(sql);
+    if (!schema.overrides && (data.override_event_ids?.length || data.override_reason)) await requireAttendanceCalendarSchema(sql);
     const numericSchoolId = Number(schoolId);
 
     return sql.begin(async (tx) => {
@@ -488,16 +516,17 @@ export const CalendarService = {
         throw new Error('Event not found');
       }
 
-      const startDate = data.start_date ? formatYMD(data.start_date) : oldEvent.start_date;
-      const endDate = data.end_date ? formatYMD(data.end_date) : (data.start_date ? formatYMD(data.start_date) : oldEvent.end_date);
+      const startDate = formatYMD(data.start_date || oldEvent.start_date);
+      const endDate = formatYMD(data.end_date || (data.start_date ? data.start_date : oldEvent.end_date));
 
+      const schoolTimezone = await calendarTimezone(tx, numericSchoolId);
       const startDatetime = data.start_datetime
         ? new Date(data.start_datetime).toISOString()
-        : (data.start_date || data.start_time ? `${startDate}T${data.start_time || '00:00:00'}Z` : oldEvent.start_datetime);
+        : (data.start_date || data.start_time ? schoolEventTimestamp(startDate, data.start_time || schoolEventClock(oldEvent.start_datetime, schoolTimezone) || '00:00:00', schoolTimezone) : oldEvent.start_datetime);
 
       const endDatetime = data.end_datetime
         ? new Date(data.end_datetime).toISOString()
-        : (data.end_date || data.end_time || data.start_date ? `${endDate}T${data.end_time || '23:59:59'}Z` : oldEvent.end_datetime);
+        : (data.end_date || data.end_time || data.start_date ? schoolEventTimestamp(endDate, data.end_time || schoolEventClock(oldEvent.end_datetime, schoolTimezone) || '23:59:59', schoolTimezone) : oldEvent.end_datetime);
 
       const isAllDay = data.is_all_day !== undefined ? Boolean(data.is_all_day) : (data.all_day !== undefined ? Boolean(data.all_day) : oldEvent.is_all_day);
       const copyTimetableFromDay = data.copy_timetable_from_day !== undefined
@@ -540,10 +569,13 @@ export const CalendarService = {
           timetable_enabled = ${timetableEnabled},
           copy_timetable_from_day = ${copyTimetableFromDay},
           holiday_type = ${holidayType},
+          ${schema.overrides ? tx`override_event_ids = ${data.override_event_ids ?? oldEvent.override_event_ids ?? []},
+            override_reason = ${data.override_reason ?? oldEvent.override_reason ?? null},` : tx``}
           status = COALESCE(${data.status ?? null}, status),
-          recurrence_rule = COALESCE(${data.recurrence_rule ? JSON.stringify(data.recurrence_rule) : null}, recurrence_rule),
-          attachments = COALESCE(${data.attachments ? JSON.stringify(data.attachments) : null}, attachments),
-          reminder_schedules = COALESCE(${data.reminder_schedules ? JSON.stringify(data.reminder_schedules) : null}, reminder_schedules),
+          published_at = CASE WHEN ${data.status ?? oldEvent.status} = 'PUBLISHED' AND ${oldEvent.status} <> 'PUBLISHED' THEN now() ELSE published_at END,
+          recurrence_rule = COALESCE(${data.recurrence_rule ? tx.json(data.recurrence_rule) : null}, recurrence_rule),
+          attachments = COALESCE(${data.attachments ? tx.json(data.attachments) : null}, attachments),
+          reminder_schedules = COALESCE(${data.reminder_schedules ? tx.json(data.reminder_schedules) : null}, reminder_schedules),
           updated_at = now()
         WHERE id = ${eventId} AND school_id = ${numericSchoolId}
         RETURNING *
@@ -571,6 +603,7 @@ export const CalendarService = {
         }
       }
 
+      await assertAttendanceCalendarPublication(tx, numericSchoolId, updated, expandRecurrenceOccurrences);
       // Record audit history
       await tx`
         INSERT INTO calendar_event_history (school_id, event_id, changed_by, change_type, old_value, new_value, change_summary)
@@ -578,7 +611,7 @@ export const CalendarService = {
       `;
 
       // Reschedule reminders if schedule changed
-      if (data.start_datetime || data.reminder_schedules) {
+      if (data.start_datetime || data.start_date || data.start_time || data.reminder_schedules || (oldEvent.status !== 'PUBLISHED' && updated.status === 'PUBLISHED')) {
         await tx`
           DELETE FROM calendar_event_reminders
           WHERE event_id = ${eventId} AND status = 'PENDING'
@@ -595,13 +628,14 @@ export const CalendarService = {
       }
 
       // Notify users of update if already published
-      if (oldEvent.status === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true) {
-        notifyEventUpdated(numericSchoolId, updated, oldEvent).catch((err) => {
+      if (updated.status === 'PUBLISHED' && data.notify !== false && data.skip_notifications !== true
+        && !await enqueueAttendanceCalendarAlert(tx, numericSchoolId, updated, oldEvent.status === 'PUBLISHED' ? 'UPDATED' : 'PUBLISHED', oldEvent)) {
+        (oldEvent.status === 'PUBLISHED' ? notifyEventUpdated(numericSchoolId, updated, oldEvent) : notifyEventPublished(numericSchoolId, updated)).catch((err) => {
           logger.error({ err, eventId }, 'calendar_notification_failed');
         });
       }
 
-      return presentCalendarEvent(updated);
+      return presentCalendarEvent(updated, schoolTimezone);
     });
   },
 
@@ -747,7 +781,7 @@ export const CalendarService = {
       `;
 
       if (oldEvent.status === 'PUBLISHED') {
-        notifyEventCancelled(numericSchoolId, cancelled, reason).catch(() => {});
+        if (!await enqueueAttendanceCalendarAlert(tx, numericSchoolId, cancelled, 'CANCELLED', oldEvent)) notifyEventCancelled(numericSchoolId, cancelled, reason).catch(() => {});
       }
 
       return presentCalendarEvent(cancelled);
@@ -778,6 +812,8 @@ export const CalendarService = {
         RETURNING *
       `;
 
+      await assertAttendanceCalendarPublication(tx, numericSchoolId, published, expandRecurrenceOccurrences);
+
       // Schedule reminders
       const schedules = published.reminder_schedules || ['1d', '1h'];
       const remindTimes = computeReminderTimestamps(published.start_datetime, schedules);
@@ -794,7 +830,7 @@ export const CalendarService = {
         VALUES (${numericSchoolId}, ${eventId}, ${userId || null}, 'PUBLISHED', ${JSON.stringify(published)}, 'Event published')
       `;
 
-      notifyEventPublished(numericSchoolId, published).catch((err) => {
+      if (oldEvent.status !== 'PUBLISHED' && !await enqueueAttendanceCalendarAlert(tx, numericSchoolId, published, 'PUBLISHED')) notifyEventPublished(numericSchoolId, published).catch((err) => {
         logger.error({ err, eventId }, 'calendar_event_publish_failed');
       });
 
@@ -860,7 +896,8 @@ export const CalendarService = {
         creator.display_name as created_by_name,
         approver.display_name as approved_by_name,
         ay.code as academic_year_code,
-        t.name as term_name
+        t.name as term_name,
+        (SELECT value FROM school_settings WHERE school_id = e.school_id AND key = 'school_timezone') AS school_timezone
       FROM calendar_events e
       LEFT JOIN users u ON e.created_by = u.id
       LEFT JOIN persons creator ON u.person_id = creator.id
@@ -999,7 +1036,12 @@ export const CalendarService = {
         e.is_all_day, e.location, e.status, e.priority, e.attendance_enabled,
         e.timetable_enabled, e.copy_timetable_from_day, e.holiday_type,
         e.source_module, e.source_entity_id, e.recurrence_rule, e.recurrence_parent_id,
-        e.created_by, e.published_at, e.created_at
+        e.created_by, e.published_at, e.created_at,
+        COALESCE(to_jsonb(e)->'override_event_ids', '[]'::jsonb) AS override_event_ids,
+        to_jsonb(e)->>'override_reason' AS override_reason, e.attachments, e.updated_at,
+        COALESCE((SELECT value FROM school_settings WHERE school_id = e.school_id AND key = 'school_timezone'), 'Asia/Kolkata') AS school_timezone,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('target_type', et.target_type, 'target_id', et.target_id))
+          FROM calendar_event_targets et WHERE et.school_id = e.school_id AND et.event_id = e.id), '[]'::jsonb) AS targets
       FROM calendar_events e
       LEFT JOIN calendar_event_targets t ON t.event_id = e.id
       WHERE e.school_id = ${numericSchoolId}
@@ -1097,7 +1139,7 @@ export const CalendarService = {
       return (b.priority || 'NORMAL').localeCompare(a.priority || 'NORMAL');
     });
 
-    return finalEvents.map(presentCalendarEvent);
+    return finalEvents.map(event => presentCalendarEvent(event));
   },
 
   /**
@@ -1171,8 +1213,12 @@ export const CalendarService = {
     }
 
     const isExamModule = sourceModule === 'EXAM';
+    const [rollout] = isExamModule ? await sql`SELECT value FROM school_settings
+      WHERE school_id = ${numericSchoolId} AND key = 'attendance_calendar_v2_enabled'` : [];
+    const enhancedExamAlerts = isExamModule && rollout?.value === 'true' && (await attendanceCalendarSchema(sql)).ready;
     const normalizedData = {
       ...eventData,
+      status: eventData.status || 'PUBLISHED',
       source_module: sourceModule,
       source_entity_id: entityIdStr,
       is_all_day: Boolean(eventData.is_all_day ?? eventData.all_day ?? true),
@@ -1183,8 +1229,8 @@ export const CalendarService = {
       timetable_enabled: eventData.timetable_enabled !== undefined
         ? eventData.timetable_enabled
         : (eventData.affects_timetable !== undefined ? !eventData.affects_timetable : null),
-      notify: eventData?.notify !== undefined ? eventData.notify : !isExamModule,
-      skip_notifications: eventData?.skip_notifications !== undefined ? eventData.skip_notifications : isExamModule,
+      notify: enhancedExamAlerts ? true : eventData?.notify !== undefined ? eventData.notify : !isExamModule,
+      skip_notifications: enhancedExamAlerts ? false : eventData?.skip_notifications !== undefined ? eventData.skip_notifications : isExamModule,
     };
 
     const [existing] = await sql`

@@ -867,6 +867,7 @@ export async function getStudentTimeline({
       LEFT JOIN public.users u ON u.id = i.created_by
       LEFT JOIN public.persons p ON p.id = u.person_id
       WHERE i.school_id = ${schoolId}
+        AND to_jsonb(i)->>'academic_context' IS NULL
         AND i.student_id = ${studentId}
       ORDER BY i.created_at DESC
       LIMIT ${fetchLimit}
@@ -958,6 +959,7 @@ export async function getStudentTimeline({
           o.intervention_id IN (
             SELECT id FROM public.student_interventions
             WHERE school_id = ${schoolId} AND student_id = ${studentId}
+              AND to_jsonb(student_interventions)->>'academic_context' IS NULL
           )
           OR o.anecdote_id IN (
             SELECT id FROM public.anecdotes

@@ -21,6 +21,7 @@ import { resolveActiveContext } from './middleware/activeContext.js';
 import { resolveStaffPortalAccess } from './middleware/staffPortalAccess.js';
 import { requireSchoolId } from './middleware/schoolId.js';
 import { auditLogger } from './middleware/audit.js';
+import { redactAnalyticsUrl } from './utils/analyticsPrivacy.js';
 import { errorHandler } from './utils/asyncHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import sql from './db.js';
@@ -154,7 +155,7 @@ app.use(pinoHttp({
         req(req) {
             return {
                 method: req.method,
-                url: req.url,
+                url: redactAnalyticsUrl(req.url),
             };
         },
         res(res) {
@@ -171,10 +172,10 @@ app.use(pinoHttp({
         const ms   = res[Symbol.for('pino-http.startTime')]
             ? `${Date.now() - res[Symbol.for('pino-http.startTime')]}ms`
             : '';
-        return `${icon} ${req.method.padEnd(7)} ${status} │ ${req.url}${ms ? `  (${ms})` : ''}`;
+        return `${icon} ${req.method.padEnd(7)} ${status} │ ${redactAnalyticsUrl(req.url)}${ms ? `  (${ms})` : ''}`;
     },
     customErrorMessage(req, res, err) {
-        return `💥 ${req.method.padEnd(7)} ${res.statusCode} │ ${req.url}  ▸ ${err.message}`;
+        return `💥 ${req.method.padEnd(7)} ${res.statusCode} │ ${redactAnalyticsUrl(req.url)}  ▸ ${err.message}`;
     },
     // Custom log level based on status code
     customLogLevel(req, res, err) {
@@ -468,9 +469,9 @@ app.use((err, req, res, next) => {
         typeof err.message === 'string' && /^(Teacher|Room) Collision:/.test(err.message);
 
     if (isSchedulingConflict) {
-        req.log?.warn({ err: err.message }, `⛔ ${req.method} ${req.url} — scheduling conflict`);
+        req.log?.warn({ err: err.message }, `⛔ ${req.method} ${redactAnalyticsUrl(req.url)} — scheduling conflict`);
     } else {
-        req.log?.error({ err: err.message, stack: err.stack }, `❌ ${req.method} ${req.url} — Unhandled error`);
+        req.log?.error({ err: err.message, stack: err.stack }, `❌ ${req.method} ${redactAnalyticsUrl(req.url)} — Unhandled error`);
     }
 
     // Call the original errorHandler utility

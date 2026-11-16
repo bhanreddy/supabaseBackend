@@ -232,7 +232,7 @@ router.get('/:classSectionId/slots', requirePermission('academics.view'), asyncH
   let effectiveDayOfWeek = day_of_week;
   if (date) {
     try {
-      const dayStatus = await resolveSchoolDay(schoolId, date);
+      const dayStatus = await resolveSchoolDay(schoolId, date, sql, { classSectionId });
       if (dayStatus?.timetableEnabled === false && !dayStatus?.isSpecialWorkingDay) {
         return sendSuccess(res, schoolId, []);
       }

@@ -105,6 +105,7 @@ export async function recordInterventionOutcome({
     SELECT *
     FROM public.student_interventions
     WHERE school_id = ${schoolId}
+      AND to_jsonb(student_interventions)->>'academic_context' IS NULL
       AND id = ${interventionId}
     LIMIT 1
   `;
@@ -120,7 +121,8 @@ export async function recordInterventionOutcome({
       outcome_metric = ${sql.json(afterMetric)},
       completed_at = now(),
       updated_at = now()
-    WHERE id = ${interventionId}
+    WHERE id = ${interventionId} AND school_id = ${schoolId}
+      AND to_jsonb(student_interventions)->>'academic_context' IS NULL
     RETURNING *
   `;
 
@@ -176,6 +178,7 @@ export async function updateInterventionStatus({ schoolId, interventionId, userI
       updated_at = now(),
       completed_at = CASE WHEN ${status} IN ('COMPLETED', 'OUTCOME_RECORDED') THEN now() ELSE completed_at END
     WHERE school_id = ${schoolId}
+      AND to_jsonb(student_interventions)->>'academic_context' IS NULL
       AND id = ${interventionId}
     RETURNING *
   `;
@@ -199,7 +202,7 @@ export async function getInterventions({
   const safeLimit = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (safePage - 1) * safeLimit;
 
-  const conditions = [sql`i.school_id = ${schoolId}`];
+  const conditions = [sql`i.school_id = ${schoolId}`, sql`to_jsonb(i)->>'academic_context' IS NULL`];
   if (studentId) conditions.push(sql`i.student_id = ${studentId}`);
   if (status) conditions.push(sql`i.status = ${status}`);
 

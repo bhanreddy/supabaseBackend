@@ -1,0 +1,113 @@
+{
+  "fixture": "2 schools, 3 exams each, 28 learners",
+  "summary_http_ms": 38.46154200000001,
+  "summary_gzip_bytes": 2570,
+  "query_plan": [
+    {
+      "QUERY PLAN": [
+        {
+          "Plan": {
+            "Node Type": "Nested Loop",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Join Type": "Inner",
+            "Startup Cost": 0.28,
+            "Total Cost": 21.61,
+            "Plan Rows": 1,
+            "Plan Width": 16,
+            "Actual Startup Time": 0.012,
+            "Actual Total Time": 0.028,
+            "Actual Rows": 13,
+            "Actual Loops": 1,
+            "Inner Unique": false,
+            "Shared Hit Blocks": 13,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Plans": [
+              {
+                "Node Type": "Seq Scan",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Relation Name": "exam_subjects",
+                "Alias": "p",
+                "Startup Cost": 0,
+                "Total Cost": 13.3,
+                "Plan Rows": 1,
+                "Plan Width": 16,
+                "Actual Startup Time": 0.005,
+                "Actual Total Time": 0.015,
+                "Actual Rows": 1,
+                "Actual Loops": 1,
+                "Filter": "((school_id = 1) AND (exam_id = '00000000-0000-4000-8000-000000000101'::uuid))",
+                "Rows Removed by Filter": 5,
+                "Shared Hit Blocks": 7,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0
+              },
+              {
+                "Node Type": "Index Scan",
+                "Parent Relationship": "Inner",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Scan Direction": "Forward",
+                "Index Name": "marks_school_id_exam_subject_id_student_enrollment_id_key",
+                "Relation Name": "marks",
+                "Alias": "m",
+                "Startup Cost": 0.28,
+                "Total Cost": 8.3,
+                "Plan Rows": 1,
+                "Plan Width": 32,
+                "Actual Startup Time": 0.006,
+                "Actual Total Time": 0.011,
+                "Actual Rows": 13,
+                "Actual Loops": 1,
+                "Index Cond": "((school_id = 1) AND (exam_subject_id = p.id))",
+                "Rows Removed by Index Recheck": 0,
+                "Shared Hit Blocks": 6,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0
+              }
+            ]
+          },
+          "Planning": {
+            "Shared Hit Blocks": 0,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0
+          },
+          "Planning Time": 0.072,
+          "Triggers": [],
+          "Execution Time": 0.046
+        }
+      ]
+    }
+  ]
+}

@@ -13,6 +13,7 @@ import { sendNotificationToUsers } from '../services/notificationService.js';
 import { recordAdminAttendanceBatch } from '../services/staffAttendanceV2Service.js';
 import { resolveSchoolDay } from '../services/workingDayResolver.js';
 import { enrichStudentsWithStreaks } from '../services/attendanceStreakService.js';
+import { attendanceCalendarSchema, requireAttendanceCalendarSchema } from '../services/attendanceCalendarSchema.js';
 
 const ATTENDANCE_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -397,16 +398,6 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  // Working-day resolver: prevent marking attendance on scheduled holidays unless overridden
-  const dayStatus = await resolveSchoolDay(req.schoolId, date);
-  if (dayStatus.isHoliday && !dayStatus.attendanceAllowed && !req.body.override_holiday && !isAdmin) {
-    return res.status(400).json({
-      error: `Cannot mark attendance: ${date} is a scheduled holiday (${dayStatus.holidayTitle || 'School Holiday'}).`,
-      code: 'HOLIDAY_ATTENDANCE_DISABLED',
-      holiday: dayStatus.holidayTitle,
-    });
-  }
-
   // Which half-day session this mark applies to. Each session is worth half a
   // day; the DB trigger derives the overall day status from both sessions.
   session = resolveSession(session);
@@ -432,6 +423,13 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 
   if (!class_section_id) {
     return res.status(400).json({ error: 'class_section_id is required' });
+  }
+
+  // Resolve after class detection so a class-only holiday cannot close other classes.
+  const dayStatus = await resolveSchoolDay(req.schoolId, date, sql, { classSectionId: class_section_id });
+  if (!dayStatus.attendanceAllowed && (dayStatus.enhanced || (dayStatus.isHoliday && !req.body.override_holiday && !isAdmin))) {
+    return res.status(400).json({ error: `Attendance is not expected on ${date}: ${dayStatus.reason}. Configure an authorized special working day before marking.`,
+      code: 'HOLIDAY_ATTENDANCE_DISABLED', holiday: dayStatus.holidayTitle });
   }
 
   // 2. Strict Authorization: Verify User may mark THIS session (unless Admin).
@@ -740,9 +738,9 @@ router.delete('/day', requireAuth, asyncHandler(async (req, res) => {
  * PUT /attendance/:id
  * Update single attendance record
  */
-router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req, res) => {
+const updateStudentAttendance = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { status, remarks } = req.body;
+  const { status, remarks, reason } = req.body;
 
   if (!status) {
     return res.status(400).json({ error: 'Status is required' });
@@ -753,17 +751,13 @@ router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req
     return res.status(400).json({ error: `Status must be one of: ${validStatuses.join(', ')}` });
   }
 
-  const [attendanceCheck] = await sql`
-    SELECT da.id
-    FROM daily_attendance da
-    WHERE da.id = ${id}
-      AND da.school_id = ${req.schoolId}
-      AND da.deleted_at IS NULL
-  `;
-
-  if (!attendanceCheck) {
-    return res.status(404).json({ error: 'Attendance record not found' });
+  const suppliedReason = typeof reason === 'string' ? reason.trim() : '';
+  if ((req.attendanceCorrectionRequiresReason || reason !== undefined) && !suppliedReason) {
+    return res.status(400).json({ error: 'A correction reason is required for the audit history.' });
   }
+  const schema = await attendanceCalendarSchema(sql);
+  if (req.attendanceCorrectionRequiresReason) await requireAttendanceCalendarSchema(sql);
+  const correctionReason = suppliedReason || 'Legacy client correction; no reason supplied';
 
   // Map the requested overall status onto both half-day sessions so the derived
   // `status` (recomputed by the trigger) matches what the editor intends:
@@ -775,19 +769,31 @@ router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req
     ? ['present', 'absent']
     : [status, status];
 
-  const [updated] = await sql`
+  const updated = await sql.begin(async tx => {
+    const [previous] = await tx`SELECT * FROM daily_attendance WHERE id = ${id}
+      AND school_id = ${req.schoolId} AND deleted_at IS NULL FOR UPDATE`;
+    if (!previous) return null;
+    const [row] = await tx`
     UPDATE daily_attendance
     SET
       morning_status = ${morningStatus},
       afternoon_status = ${afternoonStatus},
       remarks = COALESCE(${remarks ?? null}, remarks),
-      marked_by = ${req.user?.internal_id},
+      ${schema.correction_reason ? tx`correction_reason = ${correctionReason},` : tx``}
+      marked_by = ${req.user?.internal_id || req.user?.id},
       updated_at = NOW()
     WHERE id = ${id}
       AND school_id = ${req.schoolId}
       AND deleted_at IS NULL
     RETURNING *
-  `;
+    `;
+    // Before the feature migration, its audit trigger/column are absent. Keep
+    // existing corrections usable and write the audit atomically ourselves.
+    if (!schema.correction_reason) await tx`INSERT INTO audit_logs(school_id,user_id,action,entity,entity_id,details)
+      VALUES(${req.schoolId},${req.user?.internal_id || req.user?.id},'UPDATE','daily_attendance',${id},
+        ${tx.json({ old: previous, new: row, reason: correctionReason })})`;
+    return row;
+  });
 
   if (!updated) {
     return res.status(404).json({ error: 'Attendance record not found' });
@@ -807,7 +813,16 @@ router.put('/:id', requirePermission('attendance.edit'), asyncHandler(async (req
   }
 
   return sendSuccess(res, req.schoolId, { message: 'Attendance updated', attendance: updated });
-}));
+});
+// Existing installations send { status } only. Keep that authorized operation
+// working and record the missing explanation explicitly in the audit history.
+router.put('/:id', requirePermission('attendance.edit'), updateStudentAttendance);
+// New correction clients use explicit reasons without imposing new mandatory
+// request fields on previously released apps.
+router.put('/:id/correction', requirePermission('attendance.edit'), (req, _res, next) => {
+  req.attendanceCorrectionRequiresReason = true;
+  next();
+}, updateStudentAttendance);
 
 /**
  * GET /attendance/summary

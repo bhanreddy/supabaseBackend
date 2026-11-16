@@ -1,0 +1,36 @@
+{
+  "verified_at_utc": "2026-11-16T09:21:30.449697+00:00",
+  "scope": "Four-series across-subject student benchmark comparison",
+  "frontend_tests_passed": 23,
+  "typecheck": "passed",
+  "feature_lint": "passed",
+  "web_build": "passed",
+  "default_scale": "Actual marks using each recorded paper maximum",
+  "series": [
+    "Class average",
+    "Class minimum",
+    "Class maximum",
+    "Selected student (thicker)"
+  ],
+  "legend_position": "Below graph",
+  "browser_widths": [
+    320,
+    390,
+    1920
+  ],
+  "application_deployed": false,
+  "backend_changed": false,
+  "source_sha256": {
+    "SchoolIMS-Frontend/src/features/exam-intelligence/DeeperAnalysis.tsx": "d00561b9f812b7b919256fe137478a7c2b090e8b5a7f5787291c28fb4ccf8e50",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/ExamIntelligenceScreen.tsx": "4a799477e901cb04d5e905c6096ab06dd774275cd8595e0fbe00b6342e0455af",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/IntelligenceCharts.tsx": "9f3f506e8b9839457deeabc2502a7e118d562d27acdb48c385304af71895b748",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/IntelligencePrimitives.tsx": "c5136d6fd2420fb86c7d644db8bc354a311bc611c03f44afe80dfad5fb2a8617",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/LegacyExamAnalyticsScreen.tsx": "8347b79e05f10631d84229f9db70860e1542287ecd6e211f98394a90e90bff7c",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/ResponsiveLayout.tsx": "15ff8075ac3b636d813e79f7430d1e809c18990fcabd301ab4ee213bbc14d8fd",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/StudentBenchmarkChart.tsx": "64fe1ec17e5df58a924e8cbd0feb83d2911f3ff4c9f340ffd1f2bfbec6374715",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/WorkspaceChrome.tsx": "eef70ac324c45373a36cf829dc70bc3e020b168253ec224a3fb8924b1c7402bc",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/WorkspacePanels.tsx": "66a9e3bb950ff1e914d0e57f3c21fd95940fb2d243c44e4a35fd5897e213e00f",
+    "SchoolIMS-Frontend/src/features/exam-intelligence/palette.ts": "f20a86519234040a10d26a11b2f58c18c2ff4298b2e19f01dc17a4c53589ca35",
+    "SchoolIMS-Frontend/src/__tests__/examIntelligence.test.tsx": "48653e0056e104a85698261a2737c41021672c5430dad9116c6d635c81188609"
+  }
+}

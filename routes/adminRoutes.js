@@ -1074,8 +1074,8 @@ router.patch('/account-access/:userId', requireAuth, requireRole('admin', 'princ
         enabled: updated.enabled,
         granted_at: updated.granted_at,
         message: enabled
-            ? 'Standing access enabled — this accountant can now sign in anytime'
-            : 'Standing access disabled — normal school-hours restriction applies',
+            ? 'Standing fee collection access enabled — this accountant can now collect fees anytime'
+            : 'Standing fee collection access disabled — collection is restricted to school hours',
     });
 }));
 

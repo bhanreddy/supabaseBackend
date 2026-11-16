@@ -1,8 +1,8 @@
+import { redactAnalyticsUrl } from '../utils/analyticsPrivacy.js';
 import { readStaffDevicePublicKey } from '../utils/staffDeviceHeaders.js';
 import { supabase, createRequestAuthClient } from '../db.js';
 import sql from '../db.js';
 import { withRetry, isTransientError } from '../utils/retry.js';
-import { toZonedTime } from 'date-fns-tz';
 import config from '../config/env.js';
 import { enforceStaffDeviceProof } from '../services/staffDeviceService.js';
 
@@ -50,44 +50,6 @@ async function enforceStaffDeviceForRequest(req, res, user) {
     res.status(403).json({ error: err.message, code: err.code || 'INVALID_DEVICE_PROOF' });
     return false;
   }
-}
-
-// --- CONFIG CACHE FOR SCHOOL HOURS (per-school) ---
-const schoolHoursCache = new Map(); // keyed by schoolId
-const SCHOOL_HOURS_CACHE_TTL = 60 * 1000; // 60 seconds
-
-async function getSchoolHoursConfig(schoolId) {
-  const cached = schoolHoursCache.get(schoolId);
-  if (cached && Date.now() - cached.timestamp < SCHOOL_HOURS_CACHE_TTL) {
-    return cached.data;
-  }
-  const rows = await sql`
-        SELECT key, value FROM school_settings 
-        WHERE school_id = ${schoolId}
-          AND key IN ('school_hours_start', 'school_hours_end', 'school_timezone')
-    `;
-  const config = {};
-  for (const row of rows) {
-    config[row.key] = row.value;
-  }
-  const data = {
-    school_hours_start: config.school_hours_start || '08:00',
-    school_hours_end: config.school_hours_end || '17:00',
-    school_timezone: config.school_timezone || 'Asia/Kolkata'
-  };
-  schoolHoursCache.set(schoolId, { data, timestamp: Date.now() });
-  // Evict stale entries if map grows too large
-  if (schoolHoursCache.size > 100) {
-    const oldest = schoolHoursCache.keys().next().value;
-    schoolHoursCache.delete(oldest);
-  }
-  return data;
-}
-
-/** True when this HTTP request targets payroll routes (month-end release must work outside Mon–Fri school hours). */
-function isPayrollBackendRequest(req) {
-  const u = `${req.originalUrl || ''}${req.url || ''}${req.path || ''}`;
-  return u.includes('/payroll');
 }
 
 // ── In-Memory Token Cache ──────────────────────────────────────────────
@@ -262,7 +224,6 @@ export const identifyUser = async (req, res, next) => {
                         u.account_status,
                         u.person_id,
                         u.last_login_at,
-                        u.unrestricted_access,
                         array_agg(DISTINCT r.code) as roles,
                         array_agg(DISTINCT p.code) as permissions
                     FROM users u
@@ -295,76 +256,8 @@ export const identifyUser = async (req, res, next) => {
     // A refreshed token is valid for every active role. In particular, never
     // turn a successful silent refresh into a logout for a driver mid-trip.
 
-    // FIX #2: TIME-RESTRICTED ACCESS FOR ACCOUNTS ROLE
-    // Decision order for accounts-role requests:
-    //   1. Standing override (unrestricted_access) ON  → allow, skip the gate entirely.
-    //   2. Else within Asia/Kolkata school-hours window → allow.
-    //   3. Else (and no active temp grant)             → deny (403, client shows popup).
-    if (dbUser.roles && dbUser.roles.includes('accounts')
-        && !isPayrollBackendRequest(req)
-        && dbUser.unrestricted_access !== true) {
-      // 1. Fetch school hours from DB (cache for 60s to avoid per-request DB hits)
-      const { school_hours_start, school_hours_end, school_timezone } = await getSchoolHoursConfig(dbUser.school_id);
-
-      // 2. Get current time in school timezone
-      const now = toZonedTime(new Date(), school_timezone);
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
-      const [startH, startM] = school_hours_start.split(':').map(Number);
-      const [endH, endM] = school_hours_end.split(':').map(Number);
-      const startMinutes = startH * 60 + startM;
-      const endMinutes = endH * 60 + endM;
-
-      // 3. Also check it is a weekday (Mon–Fri only - getDay() returns 0 for Sunday, 1 for Mon, up to 6 for Sat)
-      const dayOfWeek = now.getDay();
-      const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
-
-      if (!isWeekday || currentMinutes < startMinutes || currentMinutes >= endMinutes) {
-        // Check temp_access_grants to see if an admin has granted them temporary access
-        let hasTempAccess = false;
-        try {
-          const grants = await sql`
-            SELECT id FROM temp_access_grants
-            WHERE requested_by = ${dbUser.id}
-              AND department = 'accounts'
-              AND is_active = true
-              AND expires_at > NOW()
-            LIMIT 1
-          `;
-          if (grants && grants.length > 0) {
-            hasTempAccess = true;
-          }
-        } catch (err) {
-          console.error("Error checking temp_access_grants:", err);
-        }
-
-        if (!hasTempAccess) {
-          // 4. Log violation to admin_notifications
-          try {
-            await sql`
-                          INSERT INTO admin_notifications (school_id, type, message, user_id, ip_address)
-                          VALUES (
-                              ${dbUser.school_id},
-                              'accounts_off_hours_access',
-                              ${'Accounts user ' + dbUser.id + ' attempted access outside school hours'},
-                              ${dbUser.id},
-                              ${req.ip}
-                          )
-                      `;
-          } catch (err) {
-
-          }
-
-          // 5. Return 403 — do NOT reveal exact school hours in error message
-          return res.status(403).json({
-            error: 'Access denied. Accounts department access is restricted to school hours.',
-            code: 'OUT_OF_HOURS_NO_ACCESS'
-          });
-        }
-      }
-    }
-
-    // Session age never forces logout. Account status, permissions and school
-    // hours continue to be checked by server-side authorization.
+    // Authentication is available at all hours. Fee collection enforces its
+    // own school-hours policy after authentication, including cached sessions.
 
     // Attach to req
     req.user = {
@@ -396,7 +289,7 @@ export const identifyUser = async (req, res, next) => {
 // notification fan-out endpoint), reusing the SAME primitive `identifyUser`
 // uses to validate a JWT: supabase.auth.getUser(token) + an active-user lookup.
 // Unlike `identifyUser` (Express middleware tightly coupled to one req/res and
-// carrying app-wide policy: student auto-refresh, weekly logout, off-hours), this
+// carrying app-wide policy such as student auto-refresh), this
 // is a pure function callable per-entry in a batch. It NEVER trusts any
 // client-supplied id — identity comes only from the verified token.
 export async function verifyAccessTokenIdentity(token) {
@@ -458,7 +351,7 @@ export const requirePermission = (permissionCode) => {
 
     if (!req.user.permissions.includes(permissionCode)) {
       // Never leak which permission was missing to the client; log it server-side.
-      console.warn(`[requirePermission] denied: user=${req.user.internal_id} roles=[${(req.user.roles || []).join(',')}] missing=${permissionCode} ${req.method} ${req.originalUrl}`);
+      console.warn(`[requirePermission] denied: user=${req.user.internal_id} roles=[${(req.user.roles || []).join(',')}] missing=${permissionCode} ${req.method} ${redactAnalyticsUrl(req.originalUrl)}`);
       return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
 
@@ -477,7 +370,7 @@ export const requireAnyPermission = (permissionCodes) => {
     }
     const ok = permissionCodes.some((code) => req.user.permissions.includes(code));
     if (!ok) {
-      console.warn(`[requireAnyPermission] denied: user=${req.user.internal_id} roles=[${(req.user.roles || []).join(',')}] missingAnyOf=[${permissionCodes.join(',')}] ${req.method} ${req.originalUrl}`);
+      console.warn(`[requireAnyPermission] denied: user=${req.user.internal_id} roles=[${(req.user.roles || []).join(',')}] missingAnyOf=[${permissionCodes.join(',')}] ${req.method} ${redactAnalyticsUrl(req.originalUrl)}`);
       return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
     next();

@@ -1,0 +1,10 @@
+{
+  "scheduled_results": 9613,
+  "students": 1213,
+  "subjects": 321,
+  "summary_server_ms": 1103.0595829999997,
+  "summary_gzip_bytes": 9265,
+  "summary_json_bytes": 580088,
+  "detail_page_rows": 25,
+  "environment": "Local Postgres, warm process, no network throttling/device rendering; not production SLA evidence"
+}

@@ -82,6 +82,7 @@ export async function getSchoolIntelligenceOverview({ schoolId }) {
     SELECT count(*)::int AS count
     FROM public.student_interventions
     WHERE school_id = ${schoolId}
+      AND to_jsonb(student_interventions)->>'academic_context' IS NULL
       AND status IN ('RECOMMENDED', 'ACCEPTED', 'IN_PROGRESS', 'FOLLOW_UP')
   `;
 

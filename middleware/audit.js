@@ -60,6 +60,12 @@ async function logAction(req, res, responseData, requestId) {
     } : {}),
   };
 
+  if (req.path.includes('/results/exam-intelligence')) {
+    // Academic support notes and search terms are private, not audit payloads.
+    details.body = { operation: req.method, fields: Object.keys(req.body || {}).filter(key => key !== 'school_id') };
+    details.query = { exam_id: req.query?.exam_id || null };
+  }
+
   // Basic redaction for common sensitive fields
   const redactKeys = new Set([
     'password',

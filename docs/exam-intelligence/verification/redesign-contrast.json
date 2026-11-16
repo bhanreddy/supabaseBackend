@@ -1,0 +1,50 @@
+[
+  {
+    "name": "violet",
+    "text": "#7047EB",
+    "background": "#F0EBFF",
+    "ratio": 4.758041103459963
+  },
+  {
+    "name": "indigo",
+    "text": "#4361D9",
+    "background": "#EBF0FF",
+    "ratio": 4.667897793412383
+  },
+  {
+    "name": "teal",
+    "text": "#08737E",
+    "background": "#E5F5F3",
+    "ratio": 4.964751667032294
+  },
+  {
+    "name": "amber",
+    "text": "#925805",
+    "background": "#FFF5DF",
+    "ratio": 5.352765361659965
+  },
+  {
+    "name": "pink",
+    "text": "#B33B8D",
+    "background": "#FAEAF6",
+    "ratio": 4.625654965905218
+  },
+  {
+    "name": "mint",
+    "text": "#08725C",
+    "background": "#E4F5EE",
+    "ratio": 5.20589396426586
+  },
+  {
+    "name": "coral",
+    "text": "#B44259",
+    "background": "#FFF0F2",
+    "ratio": 4.9164638620007315
+  },
+  {
+    "name": "reports",
+    "text": "#66519D",
+    "background": "#EFEAF8",
+    "ratio": 5.51126642972776
+  }
+]

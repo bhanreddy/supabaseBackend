@@ -1,4 +1,5 @@
 import express from 'express';
+import { requireFeeCollectionAccess } from '../middleware/feeCollectionAccess.js';
 import sql from '../db.js';
 import { verifyToken, requirePermission } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
@@ -388,7 +389,7 @@ router.patch(
  */
 router.post(
   '/:id/collect',
-  [...accountsGuard, requirePermission('fees.collect')],
+  [...accountsGuard, requirePermission('fees.collect'), requireFeeCollectionAccess],
   asyncHandler(async (req, res) => {
     const schoolId = req.schoolId;
     const { id } = req.params;

@@ -5,8 +5,31 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import CalendarService from '../services/calendarService.js';
 import { resolveSchoolDay, formatYMD } from '../services/workingDayResolver.js';
 import sql from '../db.js';
+import { calendarCapabilities, loadAttendancePolicies, saveAttendancePolicy, loadStudentAttendanceCalendar, DEFAULT_ATTENDANCE_POLICY } from '../services/studentAttendanceCalendarService.js';
+import { resolveStudentParamWithAccess } from '../utils/studentPortal.js';
+import { calendarActivities } from '../services/attendanceCalendarModel.js';
 
 const router = express.Router();
+
+async function readableCalendarEvent(req, event) {
+  if (req.user?.roles?.some(role => ['admin', 'principal'].includes(role)) || req.user?.permissions?.includes('events.manage')) return event;
+  const visible = await CalendarService.getEventsForUser({ schoolId: req.schoolId, user: req.user,
+    startDate: event.start_date, endDate: event.end_date, filters: { student_id: req.query.student_id } });
+  const match = visible.find(item => item.id === event.id || item.master_event_id === event.id);
+  if (!match) return null;
+  // Creator identities and management/audit history are not parent-facing data.
+  const { created_by: _creator, targets: _targets, history: _history, ...publicEvent } = match;
+  return publicEvent;
+}
+
+router.get('/attendance-policy', requirePermission('academics.manage'), asyncHandler(async (req, res) => {
+  sendSuccess(res, req.schoolId, { ...await calendarCapabilities(req.schoolId),
+    policies: await loadAttendancePolicies(req.schoolId), defaults: DEFAULT_ATTENDANCE_POLICY });
+}));
+router.put('/attendance-policy', requirePermission('academics.manage'), asyncHandler(async (req, res) => {
+  await saveAttendancePolicy(req.schoolId, req.user?.internal_id || req.user?.id, req.body);
+  sendSuccess(res, req.schoolId, { ...await calendarCapabilities(req.schoolId), policies: await loadAttendancePolicies(req.schoolId), defaults: DEFAULT_ATTENDANCE_POLICY });
+}));
 
 /**
  * GET /api/v1/calendar
@@ -14,6 +37,27 @@ const router = express.Router();
  */
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const q = req.query;
+  if (q.student_id && q.activity_period) {
+    res.set('Cache-Control', 'private, no-store');
+    const id = await resolveStudentParamWithAccess(req, res, q.student_id);
+    if (!id) return;
+    if (!['UPCOMING', 'COMPLETED', 'ALL'].includes(q.activity_period)) return sendError(res, 400, 'Choose Upcoming, Completed, or All.');
+    const data = await loadStudentAttendanceCalendar({ schoolId: req.schoolId, studentId: id,
+      userId: req.user?.internal_id || req.user?.id, roles: ['parent', 'student'], academicYearId: q.academic_year_id,
+      from: q.start_date, to: q.end_date });
+    const now = Date.now();
+    const completed = e => e.is_all_day || !e.end_datetime ? e.end_date < data.school_today : new Date(e.end_datetime).getTime() < now;
+    const kind = e => ['HOLIDAY','VACATION'].includes(e.event_type) || e.holiday_type ? 'HOLIDAY' : ['EXAM','TEST'].includes(e.event_type) ? 'EXAM' : 'SCHOOL_EVENT';
+    const events = calendarActivities(data.days)
+      .filter(e => (!q.event_type || e.event_type === q.event_type) && (!q.activity_type || q.activity_type === 'ALL' || kind(e) === q.activity_type)
+        && (q.activity_period === 'ALL' || completed(e) === (q.activity_period === 'COMPLETED')))
+      .sort((a, b) => completed(a) !== completed(b) ? completed(a) ? 1 : -1 :
+        (completed(a) ? -1 : 1) * `${a.start_date}:${a.start_datetime || ''}`.localeCompare(`${b.start_date}:${b.start_datetime || ''}`));
+    const page = Math.max(1, Number.parseInt(q.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(q.limit, 10) || 20));
+    return sendSuccess(res, req.schoolId, { events: events.slice((page - 1) * limit, page * limit),
+      meta: { page, limit, total: events.length, total_pages: Math.ceil(events.length / limit) }, school_today: data.school_today });
+  }
   const start_date = q.start_date || q.startDate;
   const end_date = q.end_date || q.endDate;
   const year = q.year;
@@ -28,7 +72,12 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
   let start = start_date;
   let end = end_date;
 
-  if (year && month && String(month).length <= 2) {
+  // Previously released calendarService sends month=YYYY-MM. Retain the
+  // separate year/month and explicit date-range request forms as well.
+  if (!start && typeof month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    start = `${month}-01`;
+    end = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10);
+  } else if (year && month && String(month).length <= 2) {
     const y = parseInt(year, 10);
     const m = parseInt(month, 10);
     start = `${y}-${String(m).padStart(2, '0')}-01`;
@@ -388,7 +437,7 @@ router.post('/import', requirePermission('events.manage'), asyncHandler(async (r
 
   const result = await CalendarService.bulkImportEvents({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     rows,
   });
 
@@ -404,7 +453,9 @@ router.get('/:id/ics', requireAuth, asyncHandler(async (req, res) => {
   const event = await CalendarService.getEventById({ schoolId: req.schoolId, eventId: id });
   if (!event) return sendError(res, 404, 'Event not found');
 
-  const ics = CalendarService.generateIcsForEvent(event);
+  const readable = await readableCalendarEvent(req, event);
+  if (!readable) return sendError(res, 403, 'Access denied');
+  const ics = CalendarService.generateIcsForEvent(readable);
   res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="event_${event.id}.ics"`);
   return res.send(ics);
@@ -418,7 +469,9 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
   const event = await CalendarService.getEventById({ schoolId: req.schoolId, eventId: id });
   if (!event) return sendError(res, 404, 'Event not found');
-  return sendSuccess(res, req.schoolId, event);
+  const readable = await readableCalendarEvent(req, event);
+  if (!readable) return sendError(res, 403, 'Access denied');
+  return sendSuccess(res, req.schoolId, readable);
 }));
 
 /**
@@ -433,7 +486,7 @@ router.post('/', requirePermission('events.manage'), asyncHandler(async (req, re
 
   const event = await CalendarService.createEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     data: req.body,
     targets: req.body.targets || [],
   });
@@ -449,7 +502,7 @@ router.put('/:id', requirePermission('events.manage'), asyncHandler(async (req, 
   const { id } = req.params;
   const updated = await CalendarService.updateEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
     data: req.body,
     targets: req.body.targets,
@@ -476,7 +529,7 @@ router.put('/:id/recurrence', requirePermission('events.manage'), asyncHandler(a
 
   const result = await CalendarService.updateRecurringEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
     scope,
     occurrenceDate: occurrence_date,
@@ -495,7 +548,7 @@ router.post('/:id/publish', requirePermission('events.manage'), asyncHandler(asy
   const { id } = req.params;
   const published = await CalendarService.publishEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
   });
   return sendSuccess(res, req.schoolId, published);
@@ -509,7 +562,7 @@ router.post('/:id/approve', requirePermission('events.manage'), asyncHandler(asy
   const { id } = req.params;
   const approved = await CalendarService.publishEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
   });
   return sendSuccess(res, req.schoolId, approved);
@@ -518,7 +571,7 @@ router.post('/:id/approve', requirePermission('events.manage'), asyncHandler(asy
 router.post('/:id/reject', requirePermission('events.manage'), asyncHandler(async (req, res) => {
   const rejected = await CalendarService.rejectEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: req.params.id,
     reason: req.body?.reason,
   });
@@ -534,7 +587,7 @@ router.post('/:id/cancel', requirePermission('events.manage'), asyncHandler(asyn
   const { reason } = req.body;
   const cancelled = await CalendarService.cancelEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
     reason,
   });
@@ -549,7 +602,7 @@ router.delete('/:id', requirePermission('events.manage'), asyncHandler(async (re
   const { id } = req.params;
   await CalendarService.deleteEvent({
     schoolId: req.schoolId,
-    userId: req.user?.id,
+    userId: req.user?.internal_id || req.user?.id,
     eventId: id,
   });
   return sendSuccess(res, req.schoolId, { message: 'Event deleted successfully' });
