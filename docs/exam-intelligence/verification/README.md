@@ -54,3 +54,11 @@ The latest spacing and screen-size refinement passed 19 frontend tests, TypeScri
 ## Student benchmark line graph
 
 The later four-series, across-subject student comparison passed 23 frontend tests, TypeScript, feature lint and the web build. See `student-lines-checks.json`, matching logs and desktop/mobile screenshots. This display uses the existing authorized Student 360 API; backend behavior and school settings were not changed.
+
+## Student search and pagination follow-up
+
+The later student-directory controls and loading flows are documented in `../UX-REDESIGN.md`. Final logs use the `student-search-` prefix. Automated frontend tests verify server pagination, debounced cohort search, admission lookup, page-size resets, loading-state isolation and retries. Browser preview access was unavailable for this increment; previous screenshots are not proof of these new controls.
+
+## Student chart visual polish
+
+The subsequent chart surface, score markers, subject labels, legend controls and focus cards passed 31 frontend tests, TypeScript, feature lint and web export. See `chart-polish-checks.json` and the matching logs. Live browser access was unavailable; earlier screenshots do not represent this styling pass.

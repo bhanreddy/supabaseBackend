@@ -1,0 +1,17 @@
+{
+  "verified_at_utc": "2026-11-16T14:18:14.638244+00:00",
+  "scope": "Visual styling and interaction of the four-series student chart",
+  "frontend_tests_passed": 31,
+  "typecheck": "passed",
+  "feature_lint": "passed",
+  "web_build": "passed",
+  "browser_verification": "Unavailable: local browser access is unavailable for this chat",
+  "series_defaults": "All four lines visible; exact existing values and zero baseline retained",
+  "application_deployed": false,
+  "backend_changed": false,
+  "dependencies_added": false,
+  "source_sha256": {
+    "SchoolIMS-Frontend/src/features/exam-intelligence/StudentBenchmarkChart.tsx": "4aa4bd1cefb554f43f5047547197f8d3e8e61d70e6c355bca96015926a2a7fbe",
+    "SchoolIMS-Frontend/src/__tests__/examIntelligence.test.tsx": "801ee72866fa7fcf8acff7b46e529e8b7506d59ffac5672cf85db250182b72f7"
+  }
+}

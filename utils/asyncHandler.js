@@ -98,6 +98,12 @@ export const errorHandler = (err, req, res, next) => {
     String(err.code || '').startsWith('08') ||
     /ETIMEDOUT|connect timeout|connection terminated|connection closed/i.test(err.message || '');
   if (isTransientDatabaseError) {
+    // pino-http otherwise synthesizes "failed with status code 503", hiding
+    // the connection failure. Keep the code while excluding database messages,
+    // query parameters, and connection credentials from the HTTP error log.
+    res.err = Object.assign(new Error('Database connection unavailable'), {
+      code: err.code || 'DATABASE_CONNECTION_ERROR',
+    });
     res.setHeader('Retry-After', '5');
     return res.status(503).json({
       error: 'Service temporarily unavailable. Please retry.',

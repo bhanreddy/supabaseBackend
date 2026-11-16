@@ -39,3 +39,21 @@ The graph uses the existing authorized Student 360 snapshot. Its class benchmark
 The learner selector retains its selection in the existing student_id URL parameter. Search/filter/sort and paging remain available, with detailed raw records behind an explicit disclosure. The comparison always requests every subject even if a subject-detail filter is active; Student 360 uses the same complete graph while retaining its filtered detail sections.
 
 Verified using real FA-1 / class 7-A results for a selected learner, including raw/percentage switching, cohort values, point inspection, bottom legend, mobile widths 320/390 and desktop layout. Screenshots: `verification/student-lines-mobile.jpg`, `student-lines-small-phone.jpg` and `student-lines-desktop.jpg`. Frontend validation passed 23 tests, TypeScript, feature lint and web export; see `verification/student-lines-*.txt`. Tests cover valid zero, missing results, actual paper maxima, all-subject requests, stale student-selection responses and the Student 360 detail-filter boundary. No backend, permission, policy, dependency or deployment changes were made for this view.
+
+## Student lookup, pagination and loading
+
+The class comparison now has an always-visible name/admission search across the complete selected exam/class cohort. Browsing defaults to 10 learners per page, with 10/25/50 choices under Filter and sort students. Previous/next controls, desktop page numbers, page totals and visible result ranges appear above and below the graph. Changing search, sorting or page size resets browsing to page one. Search is debounced; obsolete responses cannot overwrite the latest query/page. Page controls are disabled while loading and previous student graphs are hidden until the new results arrive.
+
+Student 360 also includes a direct Find another student lookup, including when no learner is selected or a graph request failed. It searches by name/admission number after two characters, returns paginated matching names, and opens the selected learner's complete across-subject graph. Searches retain the existing trusted school/exam/class scope and ignore a previously selected student_id when listing candidates.
+
+Student-page fetching and graph fetching have separate explicit loading panels. Failures stop the loading state and expose local retry controls. No persistent cache, new data source, schema, school settings or backend permission changes were introduced.
+
+Verification is recorded in `verification/student-search-{tests,types,lint,build}.txt` and `student-search-checks.json`. The frontend suites cover page changes during loading, search/page reset, page-size changes, admission lookup, retry behavior, graph retries and initial Student 360 lookup. Browser control was unavailable during this follow-up, so no new browser screenshot or visual QA claim is made. Earlier screenshots describe earlier increments only.
+
+## Student chart visual polish
+
+The four-line comparison has a violet/teal gradient chart surface, a restrained student-area fill, a gradient student stroke, halo markers and rounded score badges. Horizontal wrapped subject labels replace the rotated labels; crowded charts use numbered axes mapped to the full subject shortcuts below. The zero baseline and exact straight-segment score geometry remain unchanged. Area shading stops at unavailable results.
+
+A student avatar/header, marks/percentage segmented control, coloured interactive legend pills and a selected-subject focus card provide a clearer hierarchy. The focus card shows the student's score, actual cohort average/minimum/maximum, sample size and observed difference from that subject's mean. Legend controls can hide a line while retaining at least one visible series. All four are initially visible; the thick student line remains the primary visual series. Dark-theme colors and 44 px interactive targets are retained.
+
+Frontend verification passed 31 tests, TypeScript, feature lint and the web build. The added tests exercise legend visibility and unavailable-result focus states. Logs and source hashes use the `verification/chart-polish-` prefix. Live browser access remained unavailable, so this visual refinement has no new screenshot or browser/device QA claim. No backend, dependency, permission, school setting or deployment changes were made.
